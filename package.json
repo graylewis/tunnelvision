@@ -1,0 +1,44 @@
+{
+  "name": "tunnelvision",
+  "version": "0.1.0",
+  "description": "Screenshot every page of your app from its sitemap, version the shots by git commit, and diff them visually with pixelmatch.",
+  "type": "module",
+  "bin": {
+    "tunnelvision": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "dev": "tsc -p tsconfig.json --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "screenshot",
+    "shot-scraper",
+    "pixelmatch",
+    "visual-regression",
+    "sitemap",
+    "cli"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "fast-xml-parser": "^4.5.0",
+    "picocolors": "^1.1.1",
+    "pixelmatch": "^6.0.0",
+    "pngjs": "^7.0.0",
+    "prompts": "^2.4.2",
+    "yaml": "^2.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "@types/pngjs": "^6.0.5",
+    "@types/prompts": "^2.4.9",
+    "typescript": "^5.6.2"
+  }
+}

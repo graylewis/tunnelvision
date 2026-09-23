@@ -26,7 +26,7 @@ export async function review(opts) {
     if (ctx.version.dirty) {
         console.log(pc.yellow("  working tree is dirty; stored under a -dirty key"));
     }
-    const capture = runCapture(ctx);
+    const capture = await runCapture(ctx);
     console.log(pc.green(`  ✓ ${capture.produced.length} captured`));
     if (capture.missing.length > 0) {
         console.log(pc.red(`  ✗ ${capture.missing.length} failed`));

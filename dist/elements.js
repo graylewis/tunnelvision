@@ -1,19 +1,22 @@
-import { execFileSync } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
+import { PNG } from "pngjs";
 /** The name of the screenshot placed inside every element directory. */
 export const ELEMENT_IMAGE = "element.png";
 /** The full-page screenshot kept at each page's element root for context. */
 export const PAGE_IMAGE = "page.png";
 /** The per-page manifest filename. */
 export const ELEMENT_MANIFEST = "elements.json";
+/** React source info placed alongside `element.png` when the page uses React. */
+export const COMPONENT_FILE = "component.json";
 /**
- * In-page script. Returns an array of top-level block elements (children of
- * <body>), each with nested `children`. `__WAIT__` is replaced with a settle
- * delay because `shot-scraper javascript` has no `--wait` flag of its own.
+ * In-page script, evaluated by the capture driver after the page has loaded and
+ * settled. Returns an array of top-level block elements (children of <body>),
+ * each with nested `children`.
  */
-const EXTRACT_JS = `
+export const EXTRACT_JS = `
 new Promise((resolve) => {
-  setTimeout(() => {
+  {
     const BLOCK = new Set([
       "block", "flex", "grid", "list-item", "flow-root",
       "table", "table-row", "table-row-group", "table-header-group",
@@ -40,6 +43,91 @@ new Promise((resolve) => {
       }
       return n;
     }
+    // React lookup, mirroring click-to-component: prefer the DevTools hook,
+    // then the fiber expando react-dom attaches to every host node.
+    function reactFiber(el) {
+      const hook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+      if (hook && hook.renderers) {
+        for (const renderer of hook.renderers.values()) {
+          try {
+            const fiber = renderer.findFiberByHostInstance(el);
+            if (fiber) return fiber;
+          } catch (e) {}
+        }
+      }
+      if (el._reactRootContainer) {
+        return el._reactRootContainer._internalRoot.current.child;
+      }
+      for (const key of Object.keys(el)) {
+        if (key.startsWith("__reactFiber$") || key.startsWith("__reactInternalInstance$")) {
+          return el[key];
+        }
+      }
+      return null;
+    }
+    // React 19 records an Error at JSX creation time as \`_debugStack\` (server
+    // component owners carry it as \`debugStack\`). Its first frame outside React
+    // itself is the JSX call site.
+    const REACT_FRAME = /node_modules|jsx-dev-runtime|jsx-runtime|react-dom/;
+    const REACT_FN = /(^|\\.)(jsxDEV|jsxs?|jsxDEVImpl|jsxWithValidation\\w*|createElement)$/;
+    function parseFrame(line) {
+      // Chromium: "    at Name (url:1:2)" or "    at url:1:2"; Firefox/WebKit: "Name@url:1:2".
+      let m = line.match(/^\\s*at (?:(.*?) \\()?(.*):(\\d+):(\\d+)\\)?\\s*$/);
+      if (!m) m = line.match(/^(.*?)@(.*):(\\d+):(\\d+)\\s*$/);
+      if (!m) return null;
+      return { fn: m[1] || "", url: m[2], line: Number(m[3]), column: Number(m[4]) };
+    }
+    function reactFrame(fiber) {
+      const err = fiber && (fiber._debugStack || fiber.debugStack);
+      const stack = err && typeof err.stack === "string" ? err.stack : null;
+      if (!stack) return null;
+      for (const line of stack.split("\\n")) {
+        const f = parseFrame(line);
+        if (!f || REACT_FRAME.test(f.url) || REACT_FN.test(f.fn)) continue;
+        return { url: f.url, line: f.line, column: f.column };
+      }
+      return null;
+    }
+    function reactName(fiber) {
+      const type = fiber.elementType || fiber.type;
+      // Server component owners (React 19) are plain info objects, not fibers.
+      if (typeof fiber.tag !== "number") return fiber.name || "Anonymous Component";
+      switch (fiber.tag) {
+        case 0: case 1: case 2:
+          return (type && (type.displayName || type.name)) || "Anonymous Component";
+        case 3: return "HostRoot";
+        case 4: return "HostPortal";
+        case 5: case 26: case 27: return String(type);
+        case 6: return "String";
+        case 7: return "React.Fragment";
+        case 9: return "Context.Consumer";
+        case 10: return "Context.Provider";
+        case 11:
+          return (type && (type.displayName || (type.render && (type.render.displayName || type.render.name)))) || "React.forwardRef";
+        case 14: case 15: {
+          const inner = type && (type.type || type);
+          return (type && type.displayName) || (inner && (inner.displayName || inner.name)) || "React.memo";
+        }
+        case 16: return "React.lazy";
+        default: return "Unknown (" + fiber.tag + ")";
+      }
+    }
+    function reactInfo(el) {
+      const fiber = reactFiber(el);
+      if (!fiber) return null;
+      // Like click-to-component, fall back to the nearest ancestor with a source.
+      let frame = reactFrame(fiber);
+      for (let p = el.parentElement; !frame && p; p = p.parentElement) {
+        frame = reactFrame(reactFiber(p));
+      }
+      const components = [];
+      const seen = new Set();
+      for (let owner = fiber._debugOwner; owner && !seen.has(owner); owner = owner._debugOwner || owner.owner) {
+        seen.add(owner);
+        components.push({ name: reactName(owner), frame: reactFrame(owner) });
+      }
+      return { frame, components };
+    }
     function walk(el, parentSel) {
       const out = [];
       for (const child of el.children) {
@@ -60,6 +148,8 @@ new Promise((resolve) => {
               width: Math.round(r.width),
               height: Math.round(r.height)
             },
+            box: { x: r.x + window.scrollX, y: r.y + window.scrollY, width: r.width, height: r.height },
+            react: reactInfo(child),
             children: walk(child, sel)
           });
         } else {
@@ -69,27 +159,9 @@ new Promise((resolve) => {
       return out;
     }
     resolve(walk(document.body, "body"));
-  }, __WAIT__);
+  }
 });
 `;
-/**
- * Run `shot-scraper javascript` against `url` and return the raw element tree.
- * Throws if the page fails to load or the script errors.
- */
-export function extractElementTree(url, opts = {}) {
-    const js = EXTRACT_JS.replace("__WAIT__", String(Math.max(0, Math.floor(opts.wait ?? 0))));
-    const args = ["javascript", url, js];
-    if (opts.authFile)
-        args.push("-a", opts.authFile);
-    const out = execFileSync("shot-scraper", args, {
-        cwd: opts.cwd,
-        encoding: "utf8",
-        maxBuffer: 128 * 1024 * 1024,
-        stdio: ["ignore", "pipe", "inherit"],
-    });
-    const parsed = JSON.parse(out);
-    return Array.isArray(parsed) ? parsed : [];
-}
 function slugify(s) {
     return s
         .toLowerCase()
@@ -134,6 +206,8 @@ export function assignDirs(nodes, parentDir = "") {
             dir,
             selector: node.selector,
             rect: node.rect,
+            box: node.box ?? node.rect,
+            react: node.react ?? null,
             children: assignDirs(node.children, dir),
         };
     });
@@ -143,7 +217,7 @@ export function collectShots(nodes) {
     const shots = [];
     const visit = (list) => {
         for (const node of list) {
-            shots.push({ selector: node.selector, relOutput: `${node.dir}/${ELEMENT_IMAGE}` });
+            shots.push({ box: node.box, relOutput: `${node.dir}/${ELEMENT_IMAGE}` });
             visit(node.children);
         }
     };
@@ -153,4 +227,34 @@ export function collectShots(nodes) {
 /** Convert a POSIX relative output path into an absolute filesystem path. */
 export function resolveElementOutput(pageRoot, relOutput) {
     return path.join(pageRoot, ...relOutput.split("/"));
+}
+/**
+ * Crop every element out of the full-page screenshot at `pageFile`. Element
+ * boxes are in CSS pixels, so they're scaled by `scale` (the device pixel
+ * ratio) and clamped to the image. Returns the relative outputs written and
+ * those skipped because their box lies outside the page.
+ */
+export function cropElements(pageFile, pageRoot, shots, scale) {
+    const page = PNG.sync.read(fs.readFileSync(pageFile));
+    const produced = [];
+    const missing = [];
+    for (const shot of shots) {
+        // Round outwards, as Playwright does for element screenshots.
+        const { box } = shot;
+        const x0 = Math.max(0, Math.floor(box.x * scale));
+        const y0 = Math.max(0, Math.floor(box.y * scale));
+        const x1 = Math.min(page.width, Math.ceil((box.x + box.width) * scale));
+        const y1 = Math.min(page.height, Math.ceil((box.y + box.height) * scale));
+        if (x1 <= x0 || y1 <= y0) {
+            missing.push(shot.relOutput);
+            continue;
+        }
+        const crop = new PNG({ width: x1 - x0, height: y1 - y0 });
+        PNG.bitblt(page, crop, x0, y0, x1 - x0, y1 - y0, 0, 0);
+        const out = resolveElementOutput(pageRoot, shot.relOutput);
+        fs.mkdirSync(path.dirname(out), { recursive: true });
+        fs.writeFileSync(out, PNG.sync.write(crop));
+        produced.push(shot.relOutput);
+    }
+    return { produced, missing };
 }

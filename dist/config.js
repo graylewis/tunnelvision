@@ -6,6 +6,7 @@ export const DEFAULT_CONFIG = {
     wait: 1000,
     retina: false,
     authFile: ".tunnelvision/auth.json",
+    concurrency: 4,
     diff: {
         threshold: 0.1,
         includeAA: false,
@@ -72,6 +73,8 @@ export function applyOverrides(config, o) {
         next.diff.maxDiffPercent = o.maxDiffPercent;
     if (o.auth !== undefined)
         next.authFile = o.auth;
+    if (o.concurrency !== undefined)
+        next.concurrency = o.concurrency;
     return next;
 }
 export { resolvePaths };

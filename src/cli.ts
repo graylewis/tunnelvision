@@ -9,6 +9,7 @@ import { auth } from "./commands/auth.js";
 import { doctor } from "./commands/doctor.js";
 import { clean } from "./commands/clean.js";
 import { installHook } from "./commands/installHook.js";
+import { inspector } from "./commands/inspector.js";
 
 const ROOT = process.cwd();
 
@@ -28,6 +29,7 @@ function withCaptureOptions(cmd: Command): Command {
 		.option("--retina", "capture at 2x (retina); doubles image dimensions")
 		.option("--scale-factor <n>", "capture at a specific device pixel scale factor", num)
 		.option("--auth <file>", "path to a shot-scraper auth context file")
+		.option("--concurrency <n>", "pages captured at once with --by-element", num)
 		.option(
 			"--by-element",
 			"capture every visible block-level element individually into a hierarchy mirroring the page",
@@ -83,6 +85,7 @@ withCaptureOptions(
 			retina: opts.retina,
 			scaleFactor: opts.scaleFactor,
 			auth: opts.auth,
+			concurrency: opts.concurrency,
 			byElement: opts.byElement,
 		}),
 	),
@@ -128,6 +131,7 @@ withDiffOptions(
 			retina: opts.retina,
 			scaleFactor: opts.scaleFactor,
 			auth: opts.auth,
+			concurrency: opts.concurrency,
 			byElement: opts.byElement,
 			threshold: opts.threshold,
 			maxDiffPercent: opts.maxDiffPercent,
@@ -162,5 +166,26 @@ program
 	.description("Install an opt-in git post-commit hook that runs `review`")
 	.option("--force", "append to an existing post-commit hook")
 	.action((opts) => run(() => installHook({ root: ROOT, force: opts.force })));
+
+program
+	.command("inspector")
+	.description("Start a local web UI for exploring per-element diffs as a visual tree")
+	.option("--port <n>", "port to listen on", num, 4173)
+	.option("--host <host>", "interface to bind", "127.0.0.1")
+	.option("--open", "open the inspector in your browser")
+	.option("--threshold <n>", "pixelmatch colour threshold (0-1)", num)
+	.option("--max-diff-percent <n>", "element mismatch % cutoff for changed", num)
+	.action((opts) =>
+		run(() =>
+			inspector({
+				root: ROOT,
+				port: opts.port,
+				host: opts.host,
+				open: opts.open,
+				threshold: opts.threshold,
+				maxDiffPercent: opts.maxDiffPercent,
+			}),
+		),
+	);
 
 program.parseAsync(process.argv);

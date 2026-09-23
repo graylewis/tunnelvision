@@ -44,8 +44,6 @@ export interface ShotEntry {
 	height: number;
 	wait?: number;
 	wait_for?: string;
-	/** When set, capture only this element instead of the full page. */
-	selector?: string;
 }
 
 /** Serialize shot-scraper `multi` entries to YAML. */

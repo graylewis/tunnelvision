@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>tunnelvision inspector</title>
+<style>
+	:root {
+		--bg: #f7f7f8; --panel: #fff; --border: #e3e3e8; --text: #1d1d22; --muted: #6b6b76;
+		--hover: #f0f0f4; --sel: #e6eeff; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+		--changed: #d97706; --added: #16a34a; --removed: #dc2626; --size: #a21caf; --error: #dc2626;
+		--unchanged: #b4b4bd; --missing: #d4d4da; --accent: #2563eb;
+	}
+	@media (prefers-color-scheme: dark) {
+		:root {
+			--bg: #141417; --panel: #1c1c20; --border: #2e2e35; --text: #e8e8ec; --muted: #8d8d99;
+			--hover: #25252b; --sel: #1f2d4d; --unchanged: #55555f; --missing: #3a3a42; --accent: #6b9bff;
+		}
+	}
+	* { box-sizing: border-box; }
+	html, body { margin: 0; height: 100%; }
+	body { font: 13px/1.4 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); display: flex; flex-direction: column; }
+	header { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
+	header h1 { font-size: 14px; margin: 0 8px 0 0; }
+	header label { color: var(--muted); display: flex; align-items: center; gap: 6px; }
+	select, input[type=search], button { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 3px 6px; }
+	button { cursor: pointer; }
+	.summary { margin-left: auto; display: flex; gap: 10px; color: var(--muted); }
+	.summary b { color: var(--text); }
+	main { flex: 1; display: flex; min-height: 0; }
+	#tree { width: 460px; min-width: 280px; resize: horizontal; overflow: auto; border-right: 1px solid var(--border); background: var(--panel); padding: 6px 0; }
+	#detail { flex: 1; overflow: auto; padding: 16px 20px; }
+	.row { display: flex; align-items: center; gap: 6px; padding: 2px 8px 2px 0; cursor: pointer; white-space: nowrap; }
+	.row:hover { background: var(--hover); }
+	.row.selected { background: var(--sel); }
+	.caret { width: 14px; text-align: center; color: var(--muted); flex: none; font-size: 13px; }
+	.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+	.label { font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+	.label .id { color: var(--accent); }
+	.label .cls { color: var(--muted); }
+	.page-row .label { font-family: inherit; font-weight: 600; font-size: 13px; }
+	.meta { margin-left: auto; display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 11px; flex: none; padding-left: 8px; }
+	.badge { border-radius: 8px; padding: 0 6px; font-size: 11px; color: #fff; background: var(--changed); }
+	.src { font-family: var(--mono); font-size: 11px; color: var(--muted); max-width: 170px; overflow: hidden; text-overflow: ellipsis; }
+	.s-changed { background: var(--changed); } .s-added { background: var(--added); } .s-removed { background: var(--removed); }
+	.s-size-mismatch { background: var(--size); } .s-error { background: var(--error); }
+	.s-unchanged { background: var(--unchanged); } .s-missing { background: transparent; border: 1px solid var(--unchanged); }
+	.empty { color: var(--muted); padding: 40px; text-align: center; }
+	h2 { font-size: 16px; margin: 0 0 4px; font-family: var(--mono); word-break: break-all; }
+	.status-pill { display: inline-block; color: #fff; border-radius: 10px; padding: 1px 8px; font-size: 11px; font-family: system-ui, sans-serif; vertical-align: middle; margin-left: 6px; }
+	.status-pill.s-missing, .status-pill.s-unchanged { color: var(--text); }
+	dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 12px 0 18px; }
+	dt { color: var(--muted); }
+	dd { margin: 0; font-family: var(--mono); font-size: 12px; word-break: break-all; }
+	dd a { color: var(--accent); text-decoration: none; }
+	dd a:hover { text-decoration: underline; }
+	.chain { list-style: none; margin: 0; padding: 0; }
+	.chain li { padding: 1px 0; }
+	.chain .name { color: var(--text); }
+	.chain .loc { color: var(--muted); margin-left: 8px; }
+	.images { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-bottom: 22px; }
+	figure { margin: 0; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
+	figcaption { color: var(--muted); font-size: 11px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+	figure img { max-width: 100%; display: block; background: repeating-conic-gradient(#8881 0 25%, transparent 0 50%) 0 0 / 16px 16px; }
+	.noimg { color: var(--muted); font-style: italic; padding: 30px 0; text-align: center; }
+	.context { position: relative; display: inline-block; max-width: 100%; }
+	.context img { max-width: 100%; display: block; }
+	.overlay { position: absolute; border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 15%, transparent); pointer-events: none; }
+	.overlay.from { border-style: dashed; border-color: var(--removed); background: transparent; }
+	.hint { color: var(--muted); font-size: 11px; }
+	kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+</style>
+</head>
+<body>
+<header>
+	<h1>tunnelvision inspector</h1>
+	<label>from <select id="from"></select></label>
+	<label>to <select id="to"></select></label>
+	<label><input type="checkbox" id="changedOnly" checked /> changed only</label>
+	<input type="search" id="filter" placeholder="filter tag, id, class, source…" />
+	<button id="refresh" title="Re-run the diff">↻ Re-diff</button>
+	<div class="summary" id="summary"></div>
+</header>
+<main>
+	<div id="tree"><div class="empty">Loading…</div></div>
+	<div id="detail"><div class="empty">Select a page or element.<br /><span class="hint"><kbd>↑</kbd> <kbd>↓</kbd> move · <kbd>←</kbd> <kbd>→</kbd> collapse / expand</span></div></div>
+</main>
+<script>
+const CHANGE = new Set(["changed", "added", "removed", "size-mismatch", "error"]);
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const enc = (p) => p.split("/").map(encodeURIComponent).join("/");
+
+let state = { root: "", data: null, expanded: new Set(), selected: null, rows: [] };
+
+async function getJson(url) {
+	const res = await fetch(url);
+	const body = await res.json();
+	if (!res.ok) throw new Error(body.error || res.statusText);
+	return body;
+}
+
+async function init() {
+	const { root, versions } = await getJson("/api/versions");
+	state.root = root;
+	if (versions.length < 2) {
+		$("tree").innerHTML = '<div class="empty">Need at least two captured versions to diff.</div>';
+		return;
+	}
+	const opt = (v) => `<option value="${esc(v.key)}">${esc(v.key)}${v.byElement ? " · by-element" : ""} — ${esc(new Date(v.capturedAt).toLocaleString())}</option>`;
+	const html = versions.map(opt).reverse().join("");
+	$("from").innerHTML = html;
+	$("to").innerHTML = html;
+
+	// Default: newest two versions, preferring by-element captures.
+	const params = new URLSearchParams(location.search);
+	const pool = versions.filter((v) => v.byElement).length >= 2 ? versions.filter((v) => v.byElement) : versions;
+	$("to").value = params.get("to") || pool[pool.length - 1].key;
+	$("from").value = params.get("from") || pool[pool.length - 2].key;
+
+	$("from").onchange = $("to").onchange = () => load();
+	$("refresh").onclick = () => load(true);
+	$("changedOnly").onchange = () => renderTree();
+	$("filter").oninput = () => renderTree();
+	load();
+}
+
+async function load(refresh) {
+	const from = $("from").value, to = $("to").value;
+	history.replaceState(null, "", `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+	$("tree").innerHTML = '<div class="empty">Diffing…</div>';
+	$("summary").innerHTML = "";
+	try {
+		state.data = await getJson(`/api/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${refresh ? "&refresh=1" : ""}`);
+	} catch (err) {
+		$("tree").innerHTML = `<div class="empty">${esc(err.message)}</div>`;
+		return;
+	}
+	indexData();
+	const s = state.data.summary;
+	$("summary").innerHTML = `<span><b>${state.data.pages.length}</b> pages</span><span><b>${s.changedCount}</b> changed</span><span><b>${s.addedCount}</b> added</span><span><b>${s.removedCount}</b> removed</span>`;
+	// Expand everything that contains a change so the interesting paths are visible.
+	state.expanded = new Set();
+	for (const item of state.items.values()) {
+		if (item.page ? item.page.changedElements > 0 : item.node.changedDescendants > 0) state.expanded.add(item.key);
+	}
+	if (!state.items.has(state.selected)) state.selected = null;
+	renderTree();
+	renderDetail();
+}
+
+/** Flatten pages + nodes into a key -> item map for selection and lookup. */
+function indexData() {
+	state.items = new Map();
+	for (const page of state.data.pages) {
+		const pkey = "p:" + page.slug;
+		state.items.set(pkey, { key: pkey, page, depth: 0, parent: null });
+		const visit = (nodes, depth, parent) => {
+			for (const node of nodes) {
+				const key = pkey + "/" + node.dir;
+				state.items.set(key, { key, node, pageRef: page, depth, parent });
+				visit(node.children, depth + 1, key);
+			}
+		};
+		visit(page.elements, 1, pkey);
+	}
+}
+
+/**
+ * Normalise a source location from component.json. Accepts `{ path }`,
+ * `{ fileName, lineNumber, columnNumber }` or `{ file|url, line, column }`.
+ */
+function loc(src) {
+	if (!src) return null;
+	const file = src.fileName ?? src.file ?? src.url ?? "";
+	const line = src.lineNumber ?? src.line, col = src.columnNumber ?? src.column;
+	const path = src.path ?? (file ? [file, line, col].filter((x) => x != null).join(":") : "");
+	return path ? { file, line, col, path, generated: Boolean(src.generated) } : null;
+}
+function srcPath(src) { return loc(src)?.path ?? ""; }
+
+function matchesFilter(node, q) {
+	if (!q) return true;
+	const c = node.component;
+	const hay = [node.tag, node.id, node.className, node.selector, c && srcPath(c.source), ...(c ? c.components.map((x) => x.name + " " + srcPath(x.source)) : [])].join(" ").toLowerCase();
+	return hay.includes(q);
+}
+
+/** Whether a node (or any descendant) should be shown under the current filters. */
+function visible(node, changedOnly, q) {
+	const self = (!changedOnly || CHANGE.has(node.status)) && matchesFilter(node, q);
+	return self || node.children.some((c) => visible(c, changedOnly, q));
+}
+
+function label(node) {
+	let s = `<span class="tag">${esc(node.tag)}</span>`;
+	if (node.id) s += `<span class="id">#${esc(node.id)}</span>`;
+	if (node.className) s += `<span class="cls">.${esc(node.className.split(/\s+/).slice(0, 2).join("."))}${node.className.split(/\s+/).length > 2 ? "…" : ""}</span>`;
+	return s;
+}
+
+function renderTree() {
+	if (!state.data) return;
+	const changedOnly = $("changedOnly").checked;
+	const q = $("filter").value.trim().toLowerCase();
+	const filtering = changedOnly || q;
+	const out = [];
+	state.rows = [];
+
+	const row = (key, depth, hasKids, dotStatus, labelHtml, metaHtml, cls = "") => {
+		state.rows.push(key);
+		const open = state.expanded.has(key);
+		out.push(`<div class="row ${cls} ${state.selected === key ? "selected" : ""}" data-key="${esc(key)}" style="padding-left:${6 + depth * 14}px">` +
+			`<span class="caret" data-toggle="1">${hasKids ? (open ? "▾" : "▸") : ""}</span>` +
+			`<span class="dot s-${dotStatus}" title="${esc(dotStatus)}"></span>` +
+			`<span class="label">${labelHtml}</span><span class="meta">${metaHtml}</span></div>`);
+		return open;
+	};
+
+	const walk = (nodes, pkey, depth) => {
+		for (const node of nodes) {
+			if (filtering && !visible(node, changedOnly, q)) continue;
+			const key = pkey + "/" + node.dir;
+			const kids = filtering ? node.children.filter((c) => visible(c, changedOnly, q)) : node.children;
+			let meta = "";
+			const src = node.component && srcPath(node.component.source);
+			if (src) meta += `<span class="src" title="${esc(src)}">${esc(src.split("/").pop())}</span>`;
+			if (node.diffPercent !== undefined && CHANGE.has(node.status)) meta += `<span>${node.diffPercent.toFixed(2)}%</span>`;
+			if (node.changedDescendants) meta += `<span class="badge" title="changed descendants">${node.changedDescendants}</span>`;
+			if (row(key, depth, kids.length > 0, node.status, label(node), meta)) walk(kids, pkey, depth + 1);
+		}
+	};
+
+	for (const page of state.data.pages) {
+		const pageChanged = CHANGE.has(page.status) || page.changedElements > 0;
+		const pageMatches = !q || page.slug.toLowerCase().includes(q);
+		const kids = filtering ? page.elements.filter((c) => visible(c, changedOnly, q)) : page.elements;
+		if (changedOnly && !pageChanged) continue;
+		if (q && !pageMatches && kids.length === 0) continue;
+		const key = "p:" + page.slug;
+		let meta = page.byElement ? "" : "<span>full page</span>";
+		if (page.changedElements) meta += `<span class="badge" title="changed elements">${page.changedElements}</span>`;
+		if (row(key, 0, kids.length > 0, page.status, esc(page.slug), meta, "page-row")) walk(kids, key, 1);
+	}
+
+	$("tree").innerHTML = out.length ? out.join("") : `<div class="empty">${changedOnly ? "No changes between these versions." : "Nothing matches."}</div>`;
+	const sel = $("tree").querySelector(".selected");
+	if (sel) sel.scrollIntoView({ block: "nearest" });
+}
+
+$("tree").addEventListener("click", (e) => {
+	const rowEl = e.target.closest(".row");
+	if (!rowEl) return;
+	const key = rowEl.dataset.key;
+	if (e.target.dataset.toggle || state.selected === key) toggle(key);
+	select(key);
+});
+
+function toggle(key, force) {
+	const open = force ?? !state.expanded.has(key);
+	if (open) state.expanded.add(key); else state.expanded.delete(key);
+	renderTree();
+}
+
+function select(key) {
+	state.selected = key;
+	renderTree();
+	renderDetail();
+}
+
+document.addEventListener("keydown", (e) => {
+	if (e.target.matches("input, select") || !state.rows.length) return;
+	const i = state.rows.indexOf(state.selected);
+	if (e.key === "ArrowDown" || e.key === "j") select(state.rows[Math.min(state.rows.length - 1, i + 1)]);
+	else if (e.key === "ArrowUp" || e.key === "k") select(state.rows[Math.max(0, i - 1)]);
+	else if (e.key === "ArrowRight" && state.selected) toggle(state.selected, true);
+	else if (e.key === "ArrowLeft" && state.selected) {
+		const item = state.items.get(state.selected);
+		if (state.expanded.has(state.selected)) toggle(state.selected, false);
+		else if (item.parent) select(item.parent);
+	} else return;
+	e.preventDefault();
+});
+
+function imgUrl(kind, rel) {
+	const d = state.data;
+	return kind === "diff" ? `/img/diff/${encodeURIComponent(d.from + "__" + d.to)}/${enc(rel)}` : `/img/version/${encodeURIComponent(kind === "from" ? d.from : d.to)}/${enc(rel)}`;
+}
+
+function figure(title, kind, rel, present, why) {
+	return `<figure><figcaption>${esc(title)}</figcaption>${present ? `<img src="${imgUrl(kind, rel)}" loading="lazy" />` : `<div class="noimg">${esc(why)}</div>`}</figure>`;
+}
+
+function imageGrid(rel, item) {
+	const d = state.data;
+	const diffWhy = item.status === "unchanged" ? "no visible change" : item.status === "size-mismatch" ? "sizes differ — compare side by side" : "no diff image";
+	return `<div class="images">` +
+		figure(`before · ${d.from}`, "from", rel, item.images.from, "not captured") +
+		figure(`after · ${d.to}`, "to", rel, item.images.to, "not captured") +
+		figure("diff", "diff", rel, item.images.diff, diffWhy) + `</div>`;
+}
+
+/** A link that opens `file:line:col` in VS Code, plus the path itself. */
+function sourceLink(src) {
+	const l = loc(src);
+	if (!l) return '<span class="hint">no source location</span>';
+	const note = l.generated ? ' <span class="hint" title="no source map; location is in the served script">(generated)</span>' : "";
+	if (!l.file || /^[a-z]+:\/\//i.test(l.file)) return esc(l.path) + note;
+	const abs = l.file.startsWith("/") ? l.file : state.root.replace(/\/$/, "") + "/" + l.file;
+	return `<a href="vscode://file${enc(abs)}:${l.line ?? 1}:${l.col ?? 1}" title="open in VS Code">${esc(l.path)}</a>${note}`;
+}
+
+function rectText(r) { return r ? `${r.width}×${r.height} @ ${r.x},${r.y}` : "—"; }
+
+function renderDetail() {
+	const item = state.selected && state.items.get(state.selected);
+	if (!item) {
+		$("detail").innerHTML = '<div class="empty">Select a page or element.</div>';
+		return;
+	}
+	const pill = (s) => `<span class="status-pill s-${s}">${esc(s)}</span>`;
+
+	if (item.page) {
+		const p = item.page;
+		$("detail").innerHTML = `<h2>${esc(p.slug)}${pill(p.status)}</h2>` +
+			`<dl>${p.url ? `<dt>url</dt><dd><a href="${esc(p.url)}" target="_blank" rel="noreferrer">${esc(p.url)}</a></dd>` : ""}` +
+			(p.diffPercent !== undefined ? `<dt>mismatch</dt><dd>${p.diffPercent.toFixed(3)}%</dd>` : "") +
+			(p.message ? `<dt>note</dt><dd>${esc(p.message)}</dd>` : "") +
+			(p.byElement ? `<dt>elements</dt><dd>${p.changedElements} changed</dd>` : "") + `</dl>` +
+			imageGrid(p.image, p);
+		return;
+	}
+
+	const n = item.node, page = item.pageRef, c = n.component;
+	let dl = `<dt>selector</dt><dd>${esc(n.selector)}</dd>`;
+	if (n.className) dl += `<dt>class</dt><dd>${esc(n.className)}</dd>`;
+	dl += `<dt>path</dt><dd>${esc(page.slug + "/" + n.dir)}</dd>`;
+	if (n.diffPercent !== undefined) dl += `<dt>mismatch</dt><dd>${n.diffPercent.toFixed(3)}%</dd>`;
+	if (n.message) dl += `<dt>note</dt><dd>${esc(n.message)}</dd>`;
+	dl += `<dt>rect</dt><dd>before ${rectText(n.rect.from)}<br />after&nbsp; ${rectText(n.rect.to)}</dd>`;
+	if (c) {
+		dl += `<dt>source</dt><dd>${sourceLink(c.source)}</dd>`;
+		if (c.components.length) {
+			dl += `<dt>rendered by</dt><dd><ol class="chain">` +
+				c.components.map((x) => `<li><span class="name">&lt;${esc(x.name)}&gt;</span><span class="loc">${x.source ? sourceLink(x.source) : ""}</span></li>`).join("") +
+				`</ol></dd>`;
+		}
+	} else {
+		dl += `<dt>source</dt><dd><span class="hint">not rendered by React (no component.json)</span></dd>`;
+	}
+
+	let html = `<h2>${label(n)}${pill(n.status)}</h2><dl>${dl}</dl>` + imageGrid(`${page.slug}/${n.dir}/element.png`, n);
+
+	// Where the element sits on the full page (after, falling back to before).
+	const side = page.images.to ? "to" : page.images.from ? "from" : null;
+	if (side) {
+		html += `<figure><figcaption>on page · ${esc(side === "to" ? state.data.to : state.data.from)} <span class="hint">(solid: after, dashed: before)</span></figcaption>` +
+			`<div class="context"><img id="ctx" src="${imgUrl(side, page.image)}" /></div></figure>`;
+	}
+	$("detail").innerHTML = html;
+
+	const ctx = $("ctx");
+	if (ctx) {
+		// Ask the server where each version's element really sits in its page
+		// screenshot (image px); recorded rects can be offset by viewport height.
+		const key = state.selected;
+		const boxes = ["from", "to"].filter((w) => n.rect[w] && page.images[w]).map((w) =>
+			getJson(`/api/locate?version=${encodeURIComponent(state.data[w])}&page=${encodeURIComponent(page.slug)}&dir=${encodeURIComponent(n.dir)}`)
+				.then((box) => [w, box]).catch(() => [w, null]));
+		const loaded = new Promise((r) => (ctx.complete ? r() : (ctx.onload = r)));
+		Promise.all([loaded, ...boxes]).then(([, ...found]) => {
+			if (state.selected !== key || !ctx.isConnected) return;
+			const k = ctx.clientWidth / ctx.naturalWidth;
+			for (const [which, b] of found) {
+				if (!b) continue;
+				const o = document.createElement("div");
+				o.className = "overlay " + which;
+				if (!b.matched) o.title = "approximate: could not match the element screenshot";
+				Object.assign(o.style, { left: b.x * k + "px", top: b.y * k + "px", width: b.width * k + "px", height: b.height * k + "px" });
+				ctx.parentElement.appendChild(o);
+			}
+		});
+	}
+}
+
+init().catch((err) => { $("tree").innerHTML = `<div class="empty">${esc(err.message)}</div>`; });
+</script>
+</body>
+</html>

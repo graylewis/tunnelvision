@@ -4,6 +4,7 @@ import { resolvePaths } from "../paths.js";
 import { isGitRepo } from "../git.js";
 import { checkShotScraper } from "../shotscraper.js";
 import { findSitemaps } from "../sitemap.js";
+import { findPlaywrightPython } from "../playwright.js";
 import path from "node:path";
 
 export interface DoctorOptions {
@@ -29,6 +30,15 @@ export async function doctor(opts: DoctorOptions): Promise<number> {
 	if (!ss.installed) {
 		console.log(pc.dim("      pip install shot-scraper && shot-scraper install"));
 	}
+
+	// Playwright (used directly for --by-element captures)
+	let python: string | null = null;
+	try {
+		python = findPlaywrightPython();
+	} catch {
+		// reported below
+	}
+	line(Boolean(python), "playwright (for --by-element)", python ?? "not found next to shot-scraper");
 
 	// config
 	line(configExists(paths), "config", configExists(paths) ? paths.config : "run `tunnelvision init`");

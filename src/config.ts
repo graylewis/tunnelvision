@@ -34,6 +34,8 @@ export interface Config {
 	/** Capture at a specific device-pixel scale factor (e.g. 3). Overrides retina when > 0. */
 	scaleFactor?: number;
 	authFile: string;
+	/** Pages captured at once in `--by-element` mode. */
+	concurrency: number;
 	diff: DiffConfig;
 	/** Optional per-page overrides keyed by URL path (e.g. "/pricing"). */
 	pages?: Record<string, PageOverride>;
@@ -45,6 +47,7 @@ export const DEFAULT_CONFIG: Config = {
 	wait: 1000,
 	retina: false,
 	authFile: ".tunnelvision/auth.json",
+	concurrency: 4,
 	diff: {
 		threshold: 0.1,
 		includeAA: false,
@@ -106,6 +109,7 @@ export interface Overrides {
 	retina?: boolean;
 	scaleFactor?: number;
 	auth?: string;
+	concurrency?: number;
 	/** Capture/diff every visible block-level element individually. */
 	byElement?: boolean;
 }
@@ -125,6 +129,7 @@ export function applyOverrides(config: Config, o: Overrides): Config {
 	if (o.threshold !== undefined) next.diff.threshold = o.threshold;
 	if (o.maxDiffPercent !== undefined) next.diff.maxDiffPercent = o.maxDiffPercent;
 	if (o.auth !== undefined) next.authFile = o.auth;
+	if (o.concurrency !== undefined) next.concurrency = o.concurrency;
 	return next;
 }
 

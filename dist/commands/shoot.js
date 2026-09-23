@@ -6,9 +6,11 @@ import { resolvePaths, versionDir } from "../paths.js";
 import { resolveVersion } from "../git.js";
 import { findSitemaps, parseSitemap } from "../sitemap.js";
 import { resolvePages } from "../pages.js";
-import { buildShotsYaml, buildYaml, requireShotScraper, runEntries, runMulti, } from "../shotscraper.js";
-import { assignDirs, collectShots, extractElementTree, resolveElementOutput, ELEMENT_MANIFEST, PAGE_IMAGE, } from "../elements.js";
+import { buildShotsYaml, requireShotScraper, runMulti } from "../shotscraper.js";
+import { capturePages } from "../playwright.js";
+import { assignDirs, collectShots, cropElements, EXTRACT_JS, ELEMENT_MANIFEST, PAGE_IMAGE, } from "../elements.js";
 import { metaFromInfo, writeMeta } from "../versions.js";
+import { SourceResolver, writeComponentFiles } from "../reactsource.js";
 /** Load config + sitemap + resolve pages and the version key. Throws on fatal problems. */
 export async function prepareCapture(opts) {
     const paths = resolvePaths(opts.root);
@@ -45,7 +47,7 @@ async function assertReachable(baseUrl) {
     }
 }
 /** Run the actual capture given a prepared context. */
-export function runCapture(ctx) {
+export async function runCapture(ctx) {
     requireShotScraper();
     const authFile = path.isAbsolute(ctx.config.authFile)
         ? ctx.config.authFile
@@ -69,81 +71,78 @@ export function runCapture(ctx) {
 /**
  * Capture each page as a hierarchy of per-element screenshots.
  *
- * For every page we ask the browser for its visible block-level element tree,
- * lay that tree out as nested directories under the page's slug, and enqueue one
- * `selector` shot per element (plus one full-page shot for context). All shots
- * across all pages run in a single `shot-scraper multi` invocation.
+ * Each page is loaded once (several pages at a time): the driver waits, reads
+ * the visible block-level element tree, and takes a full-page screenshot from
+ * the same load. We then lay the tree out as nested directories under the
+ * page's slug and crop every element's box out of that screenshot.
  */
-function runElementCapture(ctx, auth) {
-    const entries = [];
-    const failedPages = [];
-    for (const page of ctx.pages) {
-        const pageSlug = page.filename.replace(/\.png$/i, "");
-        const pageRoot = path.join(ctx.outputDir, pageSlug);
-        let tree;
-        try {
-            const raw = extractElementTree(page.url, {
-                authFile: auth,
-                wait: ctx.config.pages?.[page.pathAndQuery]?.wait ?? ctx.config.wait,
-                cwd: ctx.paths.root,
-            });
-            tree = assignDirs(raw);
+async function runElementCapture(ctx, auth) {
+    const { config } = ctx;
+    const scale = config.scaleFactor && config.scaleFactor > 0 ? config.scaleFactor : config.retina ? 2 : 1;
+    const resolver = new SourceResolver(ctx.paths.root);
+    const produced = [];
+    const missing = [];
+    const noReactSource = [];
+    const slugs = ctx.pages.map((page) => page.filename.replace(/\.png$/i, ""));
+    const jobs = ctx.pages.map((page, i) => ({
+        url: page.url,
+        output: path.join(ctx.outputDir, slugs[i], PAGE_IMAGE),
+        ...pageWait(ctx, page),
+    }));
+    const processPage = async (i, capture) => {
+        const slug = slugs[i];
+        const pageRoot = path.join(ctx.outputDir, slug);
+        if (!capture.ok || !fs.existsSync(jobs[i].output)) {
+            missing.push(`${slug} (${capture.error ?? "no screenshot"})`);
+            return;
         }
-        catch (err) {
-            failedPages.push(`${pageSlug} (${err.message.split("\n")[0]})`);
-            continue;
-        }
-        fs.mkdirSync(pageRoot, { recursive: true });
+        const tree = assignDirs(capture.tree ?? []);
         const manifest = {
-            url: page.url,
+            url: ctx.pages[i].url,
             extractedAt: new Date().toISOString(),
             elements: tree,
         };
         fs.writeFileSync(path.join(pageRoot, ELEMENT_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-        // Full-page shot for context at the page root.
-        entries.push({
-            url: page.url,
-            output: path.join(pageRoot, PAGE_IMAGE),
-            width: ctx.config.viewport.width,
-            height: ctx.config.viewport.height,
-            ...waitFields(ctx, page),
-        });
-        // One shot per element, nested to mirror the DOM.
-        for (const shot of collectShots(tree)) {
-            entries.push({
-                url: page.url,
-                output: resolveElementOutput(pageRoot, shot.relOutput),
-                width: ctx.config.viewport.width,
-                height: ctx.config.viewport.height,
-                selector: shot.selector,
-                ...waitFields(ctx, page),
-            });
-        }
+        // React source locations alongside each element, when the page uses React.
+        const react = await writeComponentFiles(pageRoot, tree, resolver);
+        if (react.written > 0 && react.withSource === 0)
+            noReactSource.push(slug);
+        // One crop per element, nested to mirror the DOM.
+        const crops = cropElements(jobs[i].output, pageRoot, collectShots(tree), scale);
+        produced.push(`${slug}/${PAGE_IMAGE}`, ...crops.produced.map((rel) => `${slug}/${rel}`));
+        missing.push(...crops.missing.map((rel) => `${slug}/${rel} (outside the page)`));
+    };
+    const pending = [];
+    let done = 0;
+    await capturePages(jobs, {
+        viewport: config.viewport,
+        scaleFactor: scale,
+        authFile: auth,
+        concurrency: Math.max(1, Math.floor(config.concurrency)),
+        extractJs: EXTRACT_JS,
+    }, (i, capture) => {
+        done++;
+        const status = capture.ok ? "" : pc.red(` failed: ${capture.error}`);
+        console.log(pc.dim(`  [${done}/${jobs.length}] ${ctx.pages[i].url}`) + status);
+        pending.push(processPage(i, capture));
+    });
+    await Promise.all(pending);
+    if (noReactSource.length > 0) {
+        console.log(pc.yellow(`  React detected but no source locations on ${noReactSource.length} page(s); ` +
+            "line numbers need a React 19+ development build."));
     }
-    let result = { produced: [], missing: [], exitCode: 0 };
-    if (entries.length > 0) {
-        result = runEntries(entries, {
-            root: ctx.paths.root,
-            authFile: auth,
-            shotsYamlPath: path.join(ctx.outputDir, "shots.yml"),
-            yaml: buildYaml(entries),
-            retina: ctx.config.retina,
-            scaleFactor: ctx.config.scaleFactor,
-        }, (output) => path.relative(ctx.outputDir, output));
-    }
-    result.missing.push(...failedPages);
-    writeMeta(ctx.paths, metaFromInfo(ctx.version, ctx.config.baseUrl, ctx.pages.length));
-    return result;
+    writeMeta(ctx.paths, metaFromInfo(ctx.version, config.baseUrl, ctx.pages.length));
+    return { produced, missing, exitCode: 0 };
 }
-/** Resolve wait / wait_for fields for a page from config. */
-function waitFields(ctx, page) {
+/** Resolve wait / waitFor for a page from config. */
+function pageWait(ctx, page) {
     const override = ctx.config.pages?.[page.pathAndQuery];
     const out = {};
     const wait = override?.wait ?? ctx.config.wait;
     if (wait && wait > 0)
         out.wait = wait;
     if (override?.waitFor)
-        out.wait_for = override.waitFor;
+        out.waitFor = override.waitFor;
     return out;
 }
 export async function shoot(opts) {
@@ -153,7 +152,7 @@ export async function shoot(opts) {
     if (ctx.version.dirty) {
         console.log(pc.yellow("  working tree is dirty; stored under a -dirty key"));
     }
-    const result = runCapture(ctx);
+    const result = await runCapture(ctx);
     console.log("");
     console.log(pc.green(`  ✓ ${result.produced.length} captured`));
     if (result.missing.length > 0) {

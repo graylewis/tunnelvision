@@ -7,7 +7,8 @@
     "tunnelvision": "dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "assets"
   ],
   "engines": {
     "node": ">=18"
@@ -27,6 +28,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@jridgewell/trace-mapping": "^0.3.31",
     "commander": "^12.1.0",
     "fast-xml-parser": "^4.5.0",
     "picocolors": "^1.1.1",

@@ -212,8 +212,8 @@ Starts a local server with a single-page UI for browsing `--by-element` diffs:
   counting changed descendants; "changed only" and a text filter narrow it down;
 - selecting an element shows its before / after / diff screenshots, selector,
   rect in both versions, an outline of where it sits on the full page, and the
-  React source location and owner chain from `component.json`, with `file:line`
-  links that open in VS Code.
+  React source location and owner chain from `component.json`, with buttons
+  that open each `file:line` in Zed or VS Code.
 
 Diffs are computed when you pick a pair and diff images are written to
 `diffs/<from>__<to>/`, the same as `tunnelvision diff`. `--threshold` and

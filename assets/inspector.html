@@ -54,6 +54,13 @@
 	dd { margin: 0; font-family: var(--mono); font-size: 12px; word-break: break-all; }
 	dd a { color: var(--accent); text-decoration: none; }
 	dd a:hover { text-decoration: underline; }
+	.open-in { display: inline-flex; gap: 4px; margin-left: 8px; vertical-align: 1px; }
+	.open-btn { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px 2px 6px; border-radius: 4px; background: var(--brand); color: #fff; font: 600 11px/16px system-ui, sans-serif; white-space: nowrap; transition: background .12s; }
+	.open-btn svg { width: 12px; height: 12px; fill: currentColor; flex: none; }
+	.open-btn:hover { text-decoration: none; background: var(--brand-hover); }
+	.open-btn.zed { --brand: #084ccf; --brand-hover: #063ea8; }
+	.open-btn.vscode { --brand: #007acc; --brand-hover: #0062a3; }
+	dd a.open-btn, dd a.open-btn:hover { color: #fff; text-decoration: none; }
 	.chain { list-style: none; margin: 0; padding: 0; }
 	.chain li { padding: 1px 0; }
 	.chain .name { color: var(--text); }
@@ -301,13 +308,21 @@ function imageGrid(rel, item) {
 }
 
 /** A link that opens `file:line:col` in VS Code, plus the path itself. */
+/** Official editor marks (24×24, via Simple Icons). */
+const ZED_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.25 1.5a.75.75 0 0 0-.75.75v16.5H0V2.25A2.25 2.25 0 0 1 2.25 0h20.095c1.002 0 1.504 1.212.795 1.92L10.764 14.298h3.486V12.75h1.5v1.922a1.125 1.125 0 0 1-1.125 1.125H9.264l-2.578 2.578h11.689V9h1.5v9.375a1.5 1.5 0 0 1-1.5 1.5H5.185L2.562 22.5H21.75a.75.75 0 0 0 .75-.75V5.25H24v16.5A2.25 2.25 0 0 1 21.75 24H1.655C.653 24 .151 22.788.86 22.08L13.19 9.75H9.75v1.5h-1.5V9.375A1.125 1.125 0 0 1 9.375 8.25h5.314l2.625-2.625H5.625V15h-1.5V5.625a1.5 1.5 0 0 1 1.5-1.5h13.19L21.438 1.5z"/></svg>';
+const VSCODE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M23.15 2.587L18.21.21a1.494 1.494 0 0 0-1.705.29l-9.46 8.63-4.12-3.128a.999.999 0 0 0-1.276.057L.327 7.261A1 1 0 0 0 .326 8.74L3.899 12 .326 15.26a1 1 0 0 0 .001 1.479L1.65 17.94a.999.999 0 0 0 1.276.057l4.12-3.128 9.46 8.63a1.492 1.492 0 0 0 1.704.29l4.942-2.377A1.5 1.5 0 0 0 24 20.06V3.939a1.5 1.5 0 0 0-.85-1.352zm-5.146 14.861L10.826 12l7.178-5.448v10.896z"/></svg>';
+
+/** The location as text, plus buttons that open `file:line:col` in Zed or VS Code. */
 function sourceLink(src) {
 	const l = loc(src);
 	if (!l) return '<span class="hint">no source location</span>';
 	const note = l.generated ? ' <span class="hint" title="no source map; location is in the served script">(generated)</span>' : "";
 	if (!l.file || /^[a-z]+:\/\//i.test(l.file)) return esc(l.path) + note;
 	const abs = l.file.startsWith("/") ? l.file : state.root.replace(/\/$/, "") + "/" + l.file;
-	return `<a href="vscode://file${enc(abs)}:${l.line ?? 1}:${l.col ?? 1}" title="open in VS Code">${esc(l.path)}</a>${note}`;
+	const target = `${enc(abs)}:${l.line ?? 1}:${l.col ?? 1}`;
+	return `<span class="path">${esc(l.path)}</span>${note}` +
+		`<span class="open-in"><a class="open-btn zed" href="zed://file${target}" title="Open in Zed">${ZED_ICON}Zed</a>` +
+		`<a class="open-btn vscode" href="vscode://file${target}" title="Open in VS Code">${VSCODE_ICON}VS Code</a></span>`;
 }
 
 function rectText(r) { return r ? `${r.width}×${r.height} @ ${r.x},${r.y}` : "—"; }

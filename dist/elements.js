@@ -239,12 +239,16 @@ export function cropElements(pageFile, pageRoot, shots, scale) {
     const produced = [];
     const missing = [];
     for (const shot of shots) {
-        // Round outwards, as Playwright does for element screenshots.
+        // Size comes from the element's own dimensions, not its rounded edges, so
+        // an unchanged element keeps the same crop size when a parent shifts it
+        // by a sub-pixel amount (edge rounding would flip between e.g. 127/128).
         const { box } = shot;
-        const x0 = Math.max(0, Math.floor(box.x * scale));
-        const y0 = Math.max(0, Math.floor(box.y * scale));
-        const x1 = Math.min(page.width, Math.ceil((box.x + box.width) * scale));
-        const y1 = Math.min(page.height, Math.ceil((box.y + box.height) * scale));
+        const left = Math.round(box.x * scale);
+        const top = Math.round(box.y * scale);
+        const x0 = Math.max(0, left);
+        const y0 = Math.max(0, top);
+        const x1 = Math.min(page.width, left + Math.round(box.width * scale));
+        const y1 = Math.min(page.height, top + Math.round(box.height * scale));
         if (x1 <= x0 || y1 <= y0) {
             missing.push(shot.relOutput);
             continue;

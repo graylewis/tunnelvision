@@ -222,6 +222,7 @@ function buildDiff(paths, overrides, from, to) {
             removedCount: report.removedCount,
             hasChanges: report.hasChanges,
         },
+        threshold: config.diff.threshold,
         pages,
     };
 }
@@ -303,7 +304,9 @@ export async function inspector(opts) {
                     ...v,
                     byElement: [...listPages(versionDir(paths, v.key)).values()].some((p) => p.byElement),
                 }));
-                return sendJson(res, 200, { root: paths.root, versions });
+                const base = configExists(paths) ? loadConfig(paths) : DEFAULT_CONFIG;
+                const threshold = applyOverrides(base, opts).diff.threshold;
+                return sendJson(res, 200, { root: paths.root, versions, threshold });
             }
             if (url.pathname === "/api/locate") {
                 // ?version=<key>&page=<slug>&dir=<element dir>
@@ -328,12 +331,24 @@ export async function inspector(opts) {
                         return sendJson(res, 404, { error: `Unknown version "${key}"` });
                     }
                 }
+                const base = configExists(paths) ? loadConfig(paths) : DEFAULT_CONFIG;
+                const overrides = { ...opts, threshold: applyOverrides(base, opts).diff.threshold };
+                const t = url.searchParams.get("threshold");
+                if (t !== null && t !== "") {
+                    const threshold = Number(t);
+                    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+                        return sendJson(res, 400, { error: "threshold must be a number between 0 and 1" });
+                    }
+                    overrides.threshold = threshold;
+                }
+                // One result per pair: diff images share a directory, so a cached result
+                // from another threshold would point at images this run overwrote.
                 const cacheKey = `${from}__${to}`;
-                if (url.searchParams.has("refresh"))
-                    cache.delete(cacheKey);
                 let result = cache.get(cacheKey);
-                if (!result) {
-                    result = buildDiff(paths, opts, from, to);
+                if (!result ||
+                    url.searchParams.has("refresh") ||
+                    overrides.threshold !== result.threshold) {
+                    result = buildDiff(paths, overrides, from, to);
                     cache.set(cacheKey, result);
                 }
                 return sendJson(res, 200, result);

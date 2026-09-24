@@ -23,7 +23,8 @@
 	header { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--panel); flex-wrap: wrap; }
 	header h1 { font-size: 14px; margin: 0 8px 0 0; }
 	header label { color: var(--muted); display: flex; align-items: center; gap: 6px; }
-	select, input[type=search], button { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 3px 6px; }
+	#threshold { width: 64px; }
+	select, input[type=search], input[type=number], button { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--border); border-radius: 5px; padding: 3px 6px; }
 	button { cursor: pointer; }
 	.summary { margin-left: auto; display: flex; gap: 10px; color: var(--muted); }
 	.summary b { color: var(--text); }
@@ -83,6 +84,7 @@
 	<h1>tunnelvision inspector</h1>
 	<label>from <select id="from"></select></label>
 	<label>to <select id="to"></select></label>
+	<label title="pixelmatch colour threshold (0–1); lower catches subtler colour changes">threshold <input type="number" id="threshold" min="0" max="1" step="0.01" /></label>
 	<label><input type="checkbox" id="changedOnly" checked /> changed only</label>
 	<input type="search" id="filter" placeholder="filter tag, id, class, source…" />
 	<button id="refresh" title="Re-run the diff">↻ Re-diff</button>
@@ -108,8 +110,9 @@ async function getJson(url) {
 }
 
 async function init() {
-	const { root, versions } = await getJson("/api/versions");
+	const { root, versions, threshold } = await getJson("/api/versions");
 	state.root = root;
+	state.defaultThreshold = threshold;
 	if (versions.length < 2) {
 		$("tree").innerHTML = '<div class="empty">Need at least two captured versions to diff.</div>';
 		return;
@@ -124,21 +127,28 @@ async function init() {
 	const pool = versions.filter((v) => v.byElement).length >= 2 ? versions.filter((v) => v.byElement) : versions;
 	$("to").value = params.get("to") || pool[pool.length - 1].key;
 	$("from").value = params.get("from") || pool[pool.length - 2].key;
+	$("threshold").value = params.get("threshold") ?? threshold;
 
 	$("from").onchange = $("to").onchange = () => load();
 	$("refresh").onclick = () => load(true);
+	$("threshold").onchange = () => {
+		const t = Number($("threshold").value);
+		if ($("threshold").value === "" || !(t >= 0 && t <= 1)) $("threshold").value = state.data?.threshold ?? state.defaultThreshold;
+		load();
+	};
 	$("changedOnly").onchange = () => renderTree();
 	$("filter").oninput = () => renderTree();
 	load();
 }
 
 async function load(refresh) {
-	const from = $("from").value, to = $("to").value;
-	history.replaceState(null, "", `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+	const from = $("from").value, to = $("to").value, threshold = Number($("threshold").value);
+	const custom = threshold !== state.defaultThreshold ? `&threshold=${threshold}` : "";
+	history.replaceState(null, "", `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${custom}`);
 	$("tree").innerHTML = '<div class="empty">Diffing…</div>';
 	$("summary").innerHTML = "";
 	try {
-		state.data = await getJson(`/api/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${refresh ? "&refresh=1" : ""}`);
+		state.data = await getJson(`/api/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&threshold=${threshold}${refresh ? "&refresh=1" : ""}`);
 	} catch (err) {
 		$("tree").innerHTML = `<div class="empty">${esc(err.message)}</div>`;
 		return;
@@ -291,7 +301,8 @@ document.addEventListener("keydown", (e) => {
 
 function imgUrl(kind, rel) {
 	const d = state.data;
-	return kind === "diff" ? `/img/diff/${encodeURIComponent(d.from + "__" + d.to)}/${enc(rel)}` : `/img/version/${encodeURIComponent(kind === "from" ? d.from : d.to)}/${enc(rel)}`;
+	// Diff images are rewritten per threshold, so key them by it to dodge the browser's image cache.
+	return kind === "diff" ? `/img/diff/${encodeURIComponent(d.from + "__" + d.to)}/${enc(rel)}?t=${d.threshold}` :`/img/version/${encodeURIComponent(kind === "from" ? d.from : d.to)}/${enc(rel)}`;
 }
 
 function figure(title, kind, rel, present, why) {

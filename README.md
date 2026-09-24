@@ -118,9 +118,11 @@ How it works:
   text nodes are flattened away so their block descendants bubble up to the
   nearest block ancestor.
 - **Cropped elements** — each element's box is cropped out of the full-page
-  screenshot, rounding outwards the same way Playwright element screenshots do.
-  The crops are pixel-identical to isolated element screenshots taken from the
-  same layout.
+  screenshot. The crop size comes from the element's own width and height
+  (rounded to whole device pixels), not from its rounded edges. That way an
+  element that didn't change keeps exactly the same image size when a parent
+  shifts it by a fraction of a pixel, instead of flipping between e.g. 127 and
+  128px and being reported as `size-mismatch`.
 - **Parallel pages** — several pages are captured at once, each in its own
   browser context (default 4; set `concurrency` in config or pass
   `--concurrency <n>`).
@@ -217,7 +219,10 @@ Starts a local server with a single-page UI for browsing `--by-element` diffs:
 
 Diffs are computed when you pick a pair and diff images are written to
 `diffs/<from>__<to>/`, the same as `tunnelvision diff`. `--threshold` and
-`--max-diff-percent` apply as they do there. Use ↑/↓ to move and ←/→ to
+`--max-diff-percent` apply as they do there. The **threshold** field in the
+header re-runs the diff at a different pixelmatch colour threshold, which is
+useful when subtle, low-contrast changes (like white corners on a light grey
+background) aren't being caught. Use ↑/↓ to move and ←/→ to
 collapse or expand.
 
 ## Authenticated apps

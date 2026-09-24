@@ -60,7 +60,7 @@ export interface RawElement {
 	className: string | null;
 	selector: string;
 	rect: ElementRect;
-	/** `rect` without rounding, used to crop exactly like an element screenshot. */
+	/** `rect` without rounding, used to crop the element out of the page screenshot. */
 	box: ElementRect;
 	/** Null when the element isn't rendered by React. */
 	react: ReactInfo | null;
@@ -86,7 +86,7 @@ export interface ElementNode {
 
 /** A single element screenshot, cropped out of the page screenshot. */
 export interface ElementShot {
-	/** The element's exact box in CSS pixels, in page coordinates. */
+	/** The element's unrounded box in CSS pixels, in page coordinates. */
 	box: ElementRect;
 	/** POSIX path (relative to the page element root) of the output PNG. */
 	relOutput: string;
@@ -348,12 +348,16 @@ export function cropElements(
 	const produced: string[] = [];
 	const missing: string[] = [];
 	for (const shot of shots) {
-		// Round outwards, as Playwright does for element screenshots.
+		// Size comes from the element's own dimensions, not its rounded edges, so
+		// an unchanged element keeps the same crop size when a parent shifts it
+		// by a sub-pixel amount (edge rounding would flip between e.g. 127/128).
 		const { box } = shot;
-		const x0 = Math.max(0, Math.floor(box.x * scale));
-		const y0 = Math.max(0, Math.floor(box.y * scale));
-		const x1 = Math.min(page.width, Math.ceil((box.x + box.width) * scale));
-		const y1 = Math.min(page.height, Math.ceil((box.y + box.height) * scale));
+		const left = Math.round(box.x * scale);
+		const top = Math.round(box.y * scale);
+		const x0 = Math.max(0, left);
+		const y0 = Math.max(0, top);
+		const x1 = Math.min(page.width, left + Math.round(box.width * scale));
+		const y1 = Math.min(page.height, top + Math.round(box.height * scale));
 		if (x1 <= x0 || y1 <= y0) {
 			missing.push(shot.relOutput);
 			continue;

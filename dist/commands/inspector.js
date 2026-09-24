@@ -8,6 +8,7 @@ import { applyOverrides, configExists, DEFAULT_CONFIG, loadConfig } from "../con
 import { diffDir, resolvePaths, versionDir } from "../paths.js";
 import { diffVersions } from "../diffengine.js";
 import { listVersions, versionExists } from "../versions.js";
+import { matchElements, matchOptions } from "../matching.js";
 import { COMPONENT_FILE, ELEMENT_IMAGE, ELEMENT_MANIFEST, PAGE_IMAGE, } from "../elements.js";
 /** The single-page UI, shipped alongside `dist/` (see `files` in package.json). */
 const PAGE_FILE = new URL("../../assets/inspector.html", import.meta.url);
@@ -136,15 +137,6 @@ function listPages(dir) {
     }
     return out;
 }
-/** Merge two sibling lists by `dir`, keeping target order and appending baseline-only nodes. */
-function mergeSiblings(from, to) {
-    const fromByDir = new Map(from.map((n) => [n.dir, n]));
-    const toDirs = new Set(to.map((n) => n.dir));
-    return [
-        ...to.map((n) => ({ dir: n.dir, from: fromByDir.get(n.dir) ?? null, to: n })),
-        ...from.filter((n) => !toDirs.has(n.dir)).map((n) => ({ dir: n.dir, from: n, to: null })),
-    ];
-}
 function buildDiff(paths, overrides, from, to) {
     const base = configExists(paths) ? loadConfig(paths) : DEFAULT_CONFIG;
     const config = applyOverrides(base, overrides);
@@ -152,9 +144,14 @@ function buildDiff(paths, overrides, from, to) {
     const toDir = versionDir(paths, to);
     const outDir = diffDir(paths, from, to);
     const report = diffVersions(fromDir, toDir, outDir, config, { from, to });
-    const byFile = new Map(report.pages.map((p) => [p.filename, p]));
-    const statusOf = (file, inFrom, inTo) => {
-        const d = byFile.get(file);
+    // A removed element can share its path with a different element in the
+    // target, so removals are looked up separately.
+    const byFile = new Map();
+    const removedByFile = new Map();
+    for (const p of report.pages)
+        (p.status === "removed" ? removedByFile : byFile).set(p.filename, p);
+    const statusOf = (file, inFrom, inTo, removed = false) => {
+        const d = removed ? removedByFile.get(file) : byFile.get(file);
         return {
             status: (d?.status ?? "missing"),
             diffPercent: d?.diffPercent,
@@ -176,33 +173,52 @@ function buildDiff(paths, overrides, from, to) {
         }
         const fromManifest = readJson(path.join(fromRoot, ELEMENT_MANIFEST));
         const toManifest = readJson(path.join(toRoot, ELEMENT_MANIFEST));
-        const build = (from, to) => mergeSiblings(from, to).map(({ dir, from: a, to: b }) => {
+        // Pair elements the same way the diff did, then lay the tree out in the
+        // target's shape, with removed elements under their old parent's partner.
+        const fromTree = fromManifest?.elements ?? [];
+        const toTree = toManifest?.elements ?? [];
+        const match = matchElements(fromTree, toTree, matchOptions(config.match));
+        const countChanged = (children) => children.reduce((sum, c) => sum + c.changedDescendants + (CHANGE_STATUSES.has(c.status) ? 1 : 0), 0);
+        const make = (a, b, children) => {
             const node = (b ?? a);
-            const rel = `${dir}/${ELEMENT_IMAGE}`;
-            const children = build(a?.children ?? [], b?.children ?? []);
-            const component = readJson(path.join(toRoot, ...dir.split("/"), COMPONENT_FILE)) ??
-                readJson(path.join(fromRoot, ...dir.split("/"), COMPONENT_FILE));
-            const s = statusOf(`${slug}/${rel}`, fs.existsSync(path.join(fromRoot, ...rel.split("/"))), fs.existsSync(path.join(toRoot, ...rel.split("/"))));
+            const dir = node.dir;
+            const img = (root, n) => Boolean(n) && fs.existsSync(path.join(root, ...n.dir.split("/"), ELEMENT_IMAGE));
+            const s = statusOf(`${slug}/${dir}/${ELEMENT_IMAGE}`, img(fromRoot, a), img(toRoot, b), !b);
             // A node missing from one tree is added/removed even if its capture failed.
             if (s.status === "missing" && (!a || !b))
                 s.status = a ? "removed" : "added";
+            const component = (b && readJson(path.join(toRoot, ...b.dir.split("/"), COMPONENT_FILE))) ??
+                (a && readJson(path.join(fromRoot, ...a.dir.split("/"), COMPONENT_FILE)));
             return {
                 tag: node.tag,
                 id: node.id,
                 className: node.className,
                 dir,
+                uid: b ? b.dir : `removed:${a.dir}`,
+                fromDir: a?.dir ?? null,
+                matchedBy: (b && match.matchedBy.get(b)) ?? null,
+                moved: Boolean(b && match.moved.has(b)),
                 selector: node.selector,
                 rect: { from: a?.rect ?? null, to: b?.rect ?? null },
                 ...s,
-                component,
-                changedDescendants: children.reduce((sum, c) => sum + c.changedDescendants + (CHANGE_STATUSES.has(c.status) ? 1 : 0), 0),
+                component: component ?? null,
+                changedDescendants: countChanged(children),
                 children,
             };
-        });
-        const elements = build(fromManifest?.elements ?? [], toManifest?.elements ?? []);
+        };
+        // Unmatched baseline elements; matched descendants appear under their partners.
+        const removed = (nodes) => nodes.filter((a) => !match.fromTo.has(a)).map((a) => make(a, null, removed(a.children)));
+        const build = (to, fromSiblings) => [
+            ...to.map((b) => {
+                const a = match.toFrom.get(b) ?? null;
+                return make(a, b, build(b.children, a?.children ?? []));
+            }),
+            ...removed(fromSiblings),
+        ];
+        const elements = build(toTree, fromTree);
         const image = `${slug}/${PAGE_IMAGE}`;
         const s = statusOf(image, fs.existsSync(path.join(fromRoot, PAGE_IMAGE)), fs.existsSync(path.join(toRoot, PAGE_IMAGE)));
-        const changedElements = elements.reduce((sum, c) => sum + c.changedDescendants + (CHANGE_STATUSES.has(c.status) ? 1 : 0), 0);
+        const changedElements = countChanged(elements);
         return {
             slug,
             url: toManifest?.url ?? fromManifest?.url ?? null,

@@ -39,6 +39,10 @@ export function printReport(report) {
             console.log(`  ${label} ${p.filename}  ${detail}`);
             if (p.diffImage)
                 console.log(pc.dim(`            diff: ${p.diffImage}`));
+            if (p.fromFilename) {
+                const how = p.matchedBy ? ` by ${p.matchedBy.replace(/^attr:/, "")}` : "";
+                console.log(pc.dim(`            ${p.moved ? "moved from" : "was"} ${p.fromFilename} (matched${how})`));
+            }
         }
     }
     const unchanged = report.pages.filter((p) => p.status === "unchanged").length;

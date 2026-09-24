@@ -53,11 +53,34 @@ export interface ReactInfo {
 	components: ReactComponent[];
 }
 
+/**
+ * What identifies an element across captures, used to pair elements between
+ * snapshots (see `matching.ts`). Content is deliberately absent.
+ */
+export interface ElementIdentity {
+	/** Configured match attributes present on the element, e.g. `{ "data-testid": "orders" }`. */
+	attributes: Record<string, string>;
+	/** The `name` attribute (form controls). */
+	name: string | null;
+	/** React `key` of the element, or of the component that rendered it as its root. */
+	key: string | null;
+	/** The component whose render produced the element (its nearest owner). */
+	component: string | null;
+	/** Source file of the element's JSX, relative to the project root, without line/column. */
+	file: string | null;
+	/** `file:line:col` of the element's JSX. A tie-breaker only: lines shift with edits. */
+	source: string | null;
+}
+
 /** A node as returned by the in-page extraction script. */
 export interface RawElement {
 	tag: string;
 	id: string | null;
 	className: string | null;
+	/** Configured match attributes present on the element. */
+	attributes?: Record<string, string>;
+	name?: string | null;
+	reactKey?: string | null;
 	selector: string;
 	rect: ElementRect;
 	/** `rect` without rounding, used to crop the element out of the page screenshot. */
@@ -81,6 +104,8 @@ export interface ElementNode {
 	rect: ElementRect;
 	box: ElementRect;
 	react: ReactInfo | null;
+	/** Missing in captures made before identity matching existed. */
+	identity?: ElementIdentity;
 	children: ElementNode[];
 }
 
@@ -94,6 +119,8 @@ export interface ElementShot {
 
 /** The file written per page so the tree can be inspected/rebuilt. */
 export interface ElementManifest {
+	/** 2 once elements carry `identity`; absent in older captures. */
+	version?: number;
 	url: string;
 	extractedAt: string;
 	elements: ElementNode[];
@@ -108,12 +135,19 @@ export const ELEMENT_MANIFEST = "elements.json";
 /** React source info placed alongside `element.png` when the page uses React. */
 export const COMPONENT_FILE = "component.json";
 
+export const MANIFEST_VERSION = 2;
+
 /**
- * In-page script, evaluated by the capture driver after the page has loaded and
- * settled. Returns an array of top-level block elements (children of <body>),
- * each with nested `children`.
+ * The in-page extraction script, evaluated by the capture driver after the page
+ * has loaded and settled. Returns an array of top-level block elements
+ * (children of <body>), each with nested `children`. `attributes` are the
+ * configured match attributes to record on each element.
  */
-export const EXTRACT_JS = `
+export function extractScript(attributes: string[]): string {
+	return EXTRACT_JS.replace("__MATCH_ATTRIBUTES__", JSON.stringify(attributes));
+}
+
+const EXTRACT_JS = `
 new Promise((resolve) => {
   {
     const BLOCK = new Set([
@@ -121,6 +155,7 @@ new Promise((resolve) => {
       "table", "table-row", "table-row-group", "table-header-group",
       "table-footer-group", "table-cell", "table-caption"
     ]);
+    const MATCH_ATTRIBUTES = __MATCH_ATTRIBUTES__;
     const SKIP = new Set([
       "SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "LINK", "META",
       "HEAD", "BR", "HR", "SVG", "CANVAS"
@@ -227,6 +262,26 @@ new Promise((resolve) => {
       }
       return { frame, components };
     }
+    // The element's own key, or the key of the component that rendered it as
+    // its root (e.g. \`<StatCard key="revenue">\` for StatCard's outer div).
+    // Stops at the nearest host (DOM) ancestor, whose key belongs to it instead.
+    const HOST_TAGS = new Set([3, 5, 26, 27]);
+    function reactKey(el) {
+      const fiber = reactFiber(el);
+      for (let f = fiber; f; f = f.return) {
+        if (f !== fiber && HOST_TAGS.has(f.tag)) break;
+        if (f.key != null) return String(f.key);
+      }
+      return null;
+    }
+    function matchAttributes(el) {
+      const out = {};
+      for (const name of MATCH_ATTRIBUTES) {
+        const v = el.getAttribute(name);
+        if (v !== null && v !== "") out[name] = v;
+      }
+      return out;
+    }
     function walk(el, parentSel) {
       const out = [];
       for (const child of el.children) {
@@ -240,6 +295,9 @@ new Promise((resolve) => {
             tag: child.tagName.toLowerCase(),
             id: child.id || null,
             className: (typeof child.className === "string" ? child.className.trim() : "") || null,
+            attributes: matchAttributes(child),
+            name: child.getAttribute("name") || null,
+            reactKey: reactKey(child),
             selector: sel,
             rect: {
               x: Math.round(r.x + window.scrollX),
@@ -309,6 +367,15 @@ export function assignDirs(nodes: RawElement[], parentDir = ""): ElementNode[] {
 			rect: node.rect,
 			box: node.box ?? node.rect,
 			react: node.react ?? null,
+			// Source-derived fields are filled in once frames are resolved (see shoot).
+			identity: {
+				attributes: node.attributes ?? {},
+				name: node.name ?? null,
+				key: node.reactKey ?? null,
+				component: node.react?.components[0]?.name ?? null,
+				file: null,
+				source: null,
+			},
 			children: assignDirs(node.children, dir),
 		};
 	});

@@ -153,6 +153,41 @@ How it works:
   `--by-element` on `diff` is optional as long as both versions were captured
   that way.
 
+### How elements are matched between versions
+
+Each element's folder path mirrors the DOM, but paths are *not* how elements
+are paired. Inserting one `<div>` would renumber every later `div` sibling and
+compare each with its neighbour. Instead, every element records the identifiers
+it carries in `elements.json` (`identity`), and elements are paired by those,
+strongest first. Each step runs across all elements before the next one starts:
+
+| # | Identifier | Scope |
+| --- | --- | --- |
+| 1 | Configured attributes (`match.attributes`, e.g. `data-testid`), in config order | whole page |
+| 2 | `id`, ignoring generated ones (React `useId`, Radix, MUI, … and `match.ignoreIds`) | whole page |
+| 3 | React `key`, including the key on the component that rendered it (`<StatCard key="revenue">`) | within matched parents |
+| 4 | Owning component + source file | within matched parents |
+| 5 | `name` attribute (form controls) | within matched parents |
+| 6 | Source `file:line:col`, a tie-breaker only (lines shift when a file is edited) | within matched parents |
+| 7 | Order among siblings with the same tag, component and file | within matched parents |
+| 8 | Order among siblings with the same tag | within matched parents |
+
+- **Only unique values pair.** If a value appears more than once on either
+  side (all twelve chart bars share a source line), that step skips it and a
+  later one decides.
+- **Deliberate identifiers veto.** If both elements carry the same configured
+  attribute, or a real `id`, with *different* values, they're never paired, even
+  if the React key and component agree. They show as removed + added.
+- **Elements can move.** Steps 1–2 work across the whole page, so an element with
+  a test id or real id is still matched after moving to another container.
+  Reports say `moved from …`, and the inspector marks it *moved*.
+- **Content is never used.** Text and images can move between containers, and
+  they're what's being diffed.
+
+`diff` output and the inspector show which identifier made each pair (`matched
+by data-testid`, `React key`, …). Captures made before identity matching fall
+back to sibling order, which pairs elements the same way path matching did.
+
 ### React source locations
 
 If the page is rendered by React, a `component.json` is written next to each
@@ -246,11 +281,22 @@ git-ignored.
   "authFile": ".tunnelvision/auth.json",
   "concurrency": 4,
   "diff": { "threshold": 0.1, "includeAA": false, "maxDiffPercent": 0.1 },
+  "match": {
+    "attributes": ["data-testid", "data-test", "data-cy", "data-qa"],
+    "ignoreIds": ["^tmp-"]
+  },
   "pages": {
     "/pricing": { "waitFor": "document.querySelector('.loaded')", "wait": 2000 }
   }
 }
 ```
+
+`match` controls how `--by-element` diffs pair elements between versions (see
+[How elements are matched](#how-elements-are-matched-between-versions)).
+`attributes` lists deliberate identifiers, strongest first; they're recorded at
+capture time, so re-shoot after changing this list. `ignoreIds` adds regular
+expressions for generated ids to ignore, on top of the built-in list. It applies
+at diff time, so it also affects existing captures.
 
 Precedence: **CLI flags > `config.json` > built-in defaults**.
 

@@ -10,6 +10,22 @@ export interface DiffConfig {
 	maxDiffPercent: number;
 }
 
+/** How `--by-element` diffs decide which elements correspond between snapshots. */
+export interface MatchConfig {
+	/**
+	 * Attributes that deliberately identify an element (test ids and the like),
+	 * strongest first. Matched across the whole page, and a pair whose values
+	 * differ is never matched, however much else agrees.
+	 */
+	attributes: string[];
+	/**
+	 * Extra regular expressions for generated `id`s to ignore, on top of the
+	 * built-in list (React `useId`, Radix, MUI, ...). Generated ids change
+	 * between renders, so they can't identify an element.
+	 */
+	ignoreIds: string[];
+}
+
 export interface Viewport {
 	width: number;
 	height: number;
@@ -37,6 +53,7 @@ export interface Config {
 	/** Pages captured at once in `--by-element` mode. */
 	concurrency: number;
 	diff: DiffConfig;
+	match: MatchConfig;
 	/** Optional per-page overrides keyed by URL path (e.g. "/pricing"). */
 	pages?: Record<string, PageOverride>;
 }
@@ -53,6 +70,10 @@ export const DEFAULT_CONFIG: Config = {
 		includeAA: false,
 		maxDiffPercent: 0.1,
 	},
+	match: {
+		attributes: ["data-testid", "data-test", "data-cy", "data-qa"],
+		ignoreIds: [],
+	},
 };
 
 /** Deep-merge a partial config on top of defaults. */
@@ -62,6 +83,7 @@ function withDefaults(partial: Partial<Config>): Config {
 		...partial,
 		viewport: { ...DEFAULT_CONFIG.viewport, ...(partial.viewport ?? {}) },
 		diff: { ...DEFAULT_CONFIG.diff, ...(partial.diff ?? {}) },
+		match: { ...DEFAULT_CONFIG.match, ...(partial.match ?? {}) },
 	};
 }
 
@@ -119,6 +141,7 @@ export function applyOverrides(config: Config, o: Overrides): Config {
 		...config,
 		viewport: { ...config.viewport },
 		diff: { ...config.diff },
+		match: { ...config.match },
 	};
 	if (o.baseUrl !== undefined) next.baseUrl = o.baseUrl;
 	if (o.width !== undefined) next.viewport.width = o.width;

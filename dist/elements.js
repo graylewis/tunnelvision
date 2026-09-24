@@ -9,12 +9,17 @@ export const PAGE_IMAGE = "page.png";
 export const ELEMENT_MANIFEST = "elements.json";
 /** React source info placed alongside `element.png` when the page uses React. */
 export const COMPONENT_FILE = "component.json";
+export const MANIFEST_VERSION = 2;
 /**
- * In-page script, evaluated by the capture driver after the page has loaded and
- * settled. Returns an array of top-level block elements (children of <body>),
- * each with nested `children`.
+ * The in-page extraction script, evaluated by the capture driver after the page
+ * has loaded and settled. Returns an array of top-level block elements
+ * (children of <body>), each with nested `children`. `attributes` are the
+ * configured match attributes to record on each element.
  */
-export const EXTRACT_JS = `
+export function extractScript(attributes) {
+    return EXTRACT_JS.replace("__MATCH_ATTRIBUTES__", JSON.stringify(attributes));
+}
+const EXTRACT_JS = `
 new Promise((resolve) => {
   {
     const BLOCK = new Set([
@@ -22,6 +27,7 @@ new Promise((resolve) => {
       "table", "table-row", "table-row-group", "table-header-group",
       "table-footer-group", "table-cell", "table-caption"
     ]);
+    const MATCH_ATTRIBUTES = __MATCH_ATTRIBUTES__;
     const SKIP = new Set([
       "SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "LINK", "META",
       "HEAD", "BR", "HR", "SVG", "CANVAS"
@@ -128,6 +134,26 @@ new Promise((resolve) => {
       }
       return { frame, components };
     }
+    // The element's own key, or the key of the component that rendered it as
+    // its root (e.g. \`<StatCard key="revenue">\` for StatCard's outer div).
+    // Stops at the nearest host (DOM) ancestor, whose key belongs to it instead.
+    const HOST_TAGS = new Set([3, 5, 26, 27]);
+    function reactKey(el) {
+      const fiber = reactFiber(el);
+      for (let f = fiber; f; f = f.return) {
+        if (f !== fiber && HOST_TAGS.has(f.tag)) break;
+        if (f.key != null) return String(f.key);
+      }
+      return null;
+    }
+    function matchAttributes(el) {
+      const out = {};
+      for (const name of MATCH_ATTRIBUTES) {
+        const v = el.getAttribute(name);
+        if (v !== null && v !== "") out[name] = v;
+      }
+      return out;
+    }
     function walk(el, parentSel) {
       const out = [];
       for (const child of el.children) {
@@ -141,6 +167,9 @@ new Promise((resolve) => {
             tag: child.tagName.toLowerCase(),
             id: child.id || null,
             className: (typeof child.className === "string" ? child.className.trim() : "") || null,
+            attributes: matchAttributes(child),
+            name: child.getAttribute("name") || null,
+            reactKey: reactKey(child),
             selector: sel,
             rect: {
               x: Math.round(r.x + window.scrollX),
@@ -208,6 +237,15 @@ export function assignDirs(nodes, parentDir = "") {
             rect: node.rect,
             box: node.box ?? node.rect,
             react: node.react ?? null,
+            // Source-derived fields are filled in once frames are resolved (see shoot).
+            identity: {
+                attributes: node.attributes ?? {},
+                name: node.name ?? null,
+                key: node.reactKey ?? null,
+                component: node.react?.components[0]?.name ?? null,
+                file: null,
+                source: null,
+            },
             children: assignDirs(node.children, dir),
         };
     });

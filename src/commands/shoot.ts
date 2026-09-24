@@ -12,13 +12,20 @@ import {
 	assignDirs,
 	collectShots,
 	cropElements,
-	EXTRACT_JS,
+	extractScript,
 	ELEMENT_MANIFEST,
+	MANIFEST_VERSION,
 	PAGE_IMAGE,
 	type ElementManifest,
+	type ElementNode,
 } from "../elements.js";
 import { metaFromInfo, writeMeta } from "../versions.js";
-import { SourceResolver, writeComponentFiles } from "../reactsource.js";
+import {
+	resolveComponents,
+	SourceResolver,
+	writeComponentFiles,
+	type ComponentFile,
+} from "../reactsource.js";
 
 export interface ShootOptions extends Overrides {
 	root: string;
@@ -143,7 +150,13 @@ async function runElementCapture(ctx: CaptureContext, auth?: string): Promise<Ru
 			return;
 		}
 		const tree = assignDirs(capture.tree ?? []);
+
+		// React source locations, which also feed each element's identity.
+		const components = await resolveComponents(tree, resolver);
+		addSourceIdentity(tree, components);
+
 		const manifest: ElementManifest = {
+			version: MANIFEST_VERSION,
 			url: ctx.pages[i].url,
 			extractedAt: new Date().toISOString(),
 			elements: tree,
@@ -155,7 +168,7 @@ async function runElementCapture(ctx: CaptureContext, auth?: string): Promise<Ru
 		);
 
 		// React source locations alongside each element, when the page uses React.
-		const react = await writeComponentFiles(pageRoot, tree, resolver);
+		const react = writeComponentFiles(pageRoot, components);
 		if (react.written > 0 && react.withSource === 0) noReactSource.push(slug);
 
 		// One crop per element, nested to mirror the DOM.
@@ -173,7 +186,7 @@ async function runElementCapture(ctx: CaptureContext, auth?: string): Promise<Ru
 			scaleFactor: scale,
 			authFile: auth,
 			concurrency: Math.max(1, Math.floor(config.concurrency)),
-			extractJs: EXTRACT_JS,
+			extractJs: extractScript(config.match.attributes),
 		},
 		(i, capture) => {
 			done++;
@@ -195,6 +208,18 @@ async function runElementCapture(ctx: CaptureContext, auth?: string): Promise<Ru
 
 	writeMeta(ctx.paths, metaFromInfo(ctx.version, config.baseUrl, ctx.pages.length));
 	return { produced, missing, exitCode: 0 };
+}
+
+/** Fill in each element's source file and location from its resolved component info. */
+function addSourceIdentity(nodes: ElementNode[], components: Map<ElementNode, ComponentFile>): void {
+	for (const node of nodes) {
+		const source = components.get(node)?.source;
+		if (node.identity && source) {
+			node.identity.source = source.path;
+			node.identity.file = source.path.replace(/:\d+:\d+$/, "");
+		}
+		addSourceIdentity(node.children, components);
+	}
 }
 
 /** Resolve wait / waitFor for a page from config. */

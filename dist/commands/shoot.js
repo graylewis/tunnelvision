@@ -8,9 +8,9 @@ import { findSitemaps, parseSitemap } from "../sitemap.js";
 import { resolvePages } from "../pages.js";
 import { buildShotsYaml, requireShotScraper, runMulti } from "../shotscraper.js";
 import { capturePages } from "../playwright.js";
-import { assignDirs, collectShots, cropElements, EXTRACT_JS, ELEMENT_MANIFEST, PAGE_IMAGE, } from "../elements.js";
+import { assignDirs, collectShots, cropElements, extractScript, ELEMENT_MANIFEST, MANIFEST_VERSION, PAGE_IMAGE, } from "../elements.js";
 import { metaFromInfo, writeMeta } from "../versions.js";
-import { SourceResolver, writeComponentFiles } from "../reactsource.js";
+import { resolveComponents, SourceResolver, writeComponentFiles, } from "../reactsource.js";
 /** Load config + sitemap + resolve pages and the version key. Throws on fatal problems. */
 export async function prepareCapture(opts) {
     const paths = resolvePaths(opts.root);
@@ -97,14 +97,18 @@ async function runElementCapture(ctx, auth) {
             return;
         }
         const tree = assignDirs(capture.tree ?? []);
+        // React source locations, which also feed each element's identity.
+        const components = await resolveComponents(tree, resolver);
+        addSourceIdentity(tree, components);
         const manifest = {
+            version: MANIFEST_VERSION,
             url: ctx.pages[i].url,
             extractedAt: new Date().toISOString(),
             elements: tree,
         };
         fs.writeFileSync(path.join(pageRoot, ELEMENT_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
         // React source locations alongside each element, when the page uses React.
-        const react = await writeComponentFiles(pageRoot, tree, resolver);
+        const react = writeComponentFiles(pageRoot, components);
         if (react.written > 0 && react.withSource === 0)
             noReactSource.push(slug);
         // One crop per element, nested to mirror the DOM.
@@ -119,7 +123,7 @@ async function runElementCapture(ctx, auth) {
         scaleFactor: scale,
         authFile: auth,
         concurrency: Math.max(1, Math.floor(config.concurrency)),
-        extractJs: EXTRACT_JS,
+        extractJs: extractScript(config.match.attributes),
     }, (i, capture) => {
         done++;
         const status = capture.ok ? "" : pc.red(` failed: ${capture.error}`);
@@ -133,6 +137,17 @@ async function runElementCapture(ctx, auth) {
     }
     writeMeta(ctx.paths, metaFromInfo(ctx.version, config.baseUrl, ctx.pages.length));
     return { produced, missing, exitCode: 0 };
+}
+/** Fill in each element's source file and location from its resolved component info. */
+function addSourceIdentity(nodes, components) {
+    for (const node of nodes) {
+        const source = components.get(node)?.source;
+        if (node.identity && source) {
+            node.identity.source = source.path;
+            node.identity.file = source.path.replace(/:\d+:\d+$/, "");
+        }
+        addSourceIdentity(node.children, components);
+    }
 }
 /** Resolve wait / waitFor for a page from config. */
 function pageWait(ctx, page) {

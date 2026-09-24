@@ -172,22 +172,16 @@ export class SourceResolver {
 	}
 }
 
-/**
- * Write a `component.json` into every element directory whose element was
- * rendered by React. Returns how many were written and how many carried a
- * source location (zero with React present usually means a production build).
- */
-export async function writeComponentFiles(
-	pageRoot: string,
+/** Resolve every React-rendered element's frames to original source locations. */
+export async function resolveComponents(
 	nodes: ElementNode[],
 	resolver: SourceResolver,
-): Promise<{ written: number; withSource: number }> {
-	let written = 0;
-	let withSource = 0;
+): Promise<Map<ElementNode, ComponentFile>> {
+	const files = new Map<ElementNode, ComponentFile>();
 	const visit = async (list: ElementNode[]): Promise<void> => {
 		for (const node of list) {
 			if (node.react) {
-				const file: ComponentFile = {
+				files.set(node, {
 					tag: node.tag,
 					selector: node.selector,
 					source: await resolver.resolve(node.react.frame),
@@ -197,16 +191,30 @@ export async function writeComponentFiles(
 							source: await resolver.resolve(c.frame),
 						})),
 					),
-				};
-				const out = resolveElementOutput(pageRoot, `${node.dir}/${COMPONENT_FILE}`);
-				fs.mkdirSync(path.dirname(out), { recursive: true });
-				fs.writeFileSync(out, `${JSON.stringify(file, null, 2)}\n`, "utf8");
-				written++;
-				if (file.source) withSource++;
+				});
 			}
 			await visit(node.children);
 		}
 	};
 	await visit(nodes);
-	return { written, withSource };
+	return files;
+}
+
+/**
+ * Write each resolved `component.json` into its element's directory. Returns
+ * how many were written and how many carried a source location (zero with
+ * React present usually means a production build).
+ */
+export function writeComponentFiles(
+	pageRoot: string,
+	files: Map<ElementNode, ComponentFile>,
+): { written: number; withSource: number } {
+	let withSource = 0;
+	for (const [node, file] of files) {
+		const out = resolveElementOutput(pageRoot, `${node.dir}/${COMPONENT_FILE}`);
+		fs.mkdirSync(path.dirname(out), { recursive: true });
+		fs.writeFileSync(out, `${JSON.stringify(file, null, 2)}\n`, "utf8");
+		if (file.source) withSource++;
+	}
+	return { written: files.size, withSource };
 }

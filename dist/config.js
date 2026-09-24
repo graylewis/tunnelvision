@@ -12,6 +12,10 @@ export const DEFAULT_CONFIG = {
         includeAA: false,
         maxDiffPercent: 0.1,
     },
+    match: {
+        attributes: ["data-testid", "data-test", "data-cy", "data-qa"],
+        ignoreIds: [],
+    },
 };
 /** Deep-merge a partial config on top of defaults. */
 function withDefaults(partial) {
@@ -20,6 +24,7 @@ function withDefaults(partial) {
         ...partial,
         viewport: { ...DEFAULT_CONFIG.viewport, ...(partial.viewport ?? {}) },
         diff: { ...DEFAULT_CONFIG.diff, ...(partial.diff ?? {}) },
+        match: { ...DEFAULT_CONFIG.match, ...(partial.match ?? {}) },
     };
 }
 export function configExists(paths) {
@@ -54,6 +59,7 @@ export function applyOverrides(config, o) {
         ...config,
         viewport: { ...config.viewport },
         diff: { ...config.diff },
+        match: { ...config.match },
     };
     if (o.baseUrl !== undefined)
         next.baseUrl = o.baseUrl;

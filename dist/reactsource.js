@@ -138,18 +138,13 @@ export class SourceResolver {
         return /^https?:\/\//.test(frame.url) ? { ...source, generated: true } : source;
     }
 }
-/**
- * Write a `component.json` into every element directory whose element was
- * rendered by React. Returns how many were written and how many carried a
- * source location (zero with React present usually means a production build).
- */
-export async function writeComponentFiles(pageRoot, nodes, resolver) {
-    let written = 0;
-    let withSource = 0;
+/** Resolve every React-rendered element's frames to original source locations. */
+export async function resolveComponents(nodes, resolver) {
+    const files = new Map();
     const visit = async (list) => {
         for (const node of list) {
             if (node.react) {
-                const file = {
+                files.set(node, {
                     tag: node.tag,
                     selector: node.selector,
                     source: await resolver.resolve(node.react.frame),
@@ -157,17 +152,27 @@ export async function writeComponentFiles(pageRoot, nodes, resolver) {
                         name: c.name,
                         source: await resolver.resolve(c.frame),
                     }))),
-                };
-                const out = resolveElementOutput(pageRoot, `${node.dir}/${COMPONENT_FILE}`);
-                fs.mkdirSync(path.dirname(out), { recursive: true });
-                fs.writeFileSync(out, `${JSON.stringify(file, null, 2)}\n`, "utf8");
-                written++;
-                if (file.source)
-                    withSource++;
+                });
             }
             await visit(node.children);
         }
     };
     await visit(nodes);
-    return { written, withSource };
+    return files;
+}
+/**
+ * Write each resolved `component.json` into its element's directory. Returns
+ * how many were written and how many carried a source location (zero with
+ * React present usually means a production build).
+ */
+export function writeComponentFiles(pageRoot, files) {
+    let withSource = 0;
+    for (const [node, file] of files) {
+        const out = resolveElementOutput(pageRoot, `${node.dir}/${COMPONENT_FILE}`);
+        fs.mkdirSync(path.dirname(out), { recursive: true });
+        fs.writeFileSync(out, `${JSON.stringify(file, null, 2)}\n`, "utf8");
+        if (file.source)
+            withSource++;
+    }
+    return { written: files.size, withSource };
 }

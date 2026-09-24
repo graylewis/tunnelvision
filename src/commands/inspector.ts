@@ -8,6 +8,7 @@ import { applyOverrides, configExists, DEFAULT_CONFIG, loadConfig, type Override
 import { diffDir, resolvePaths, versionDir, type Paths } from "../paths.js";
 import { diffVersions, type DiffReport, type PageDiff, type PageStatus } from "../diffengine.js";
 import { listVersions, versionExists } from "../versions.js";
+import { matchElements, matchOptions, type MatchedBy } from "../matching.js";
 import {
 	COMPONENT_FILE,
 	ELEMENT_IMAGE,
@@ -147,6 +148,14 @@ interface InspectorNode {
 	className: string | null;
 	dir: string;
 	selector: string;
+	/** Unique within the page: the target path, or `removed:<baseline path>`. */
+	uid: string;
+	/** The baseline element's path, when it has a partner there (it may differ from `dir`). */
+	fromDir: string | null;
+	/** Which identifier paired this element with its baseline. */
+	matchedBy: MatchedBy | null;
+	/** Set when the element moved: its parent's partner isn't its partner's parent. */
+	moved: boolean;
 	/** Rect in each version, when the element exists there. */
 	rect: { from: ElementRect | null; to: ElementRect | null };
 	status: NodeStatus;
@@ -214,19 +223,6 @@ function listPages(dir: string): Map<string, { byElement: boolean }> {
 	return out;
 }
 
-/** Merge two sibling lists by `dir`, keeping target order and appending baseline-only nodes. */
-function mergeSiblings(
-	from: ElementNode[],
-	to: ElementNode[],
-): { dir: string; from: ElementNode | null; to: ElementNode | null }[] {
-	const fromByDir = new Map(from.map((n) => [n.dir, n]));
-	const toDirs = new Set(to.map((n) => n.dir));
-	return [
-		...to.map((n) => ({ dir: n.dir, from: fromByDir.get(n.dir) ?? null, to: n })),
-		...from.filter((n) => !toDirs.has(n.dir)).map((n) => ({ dir: n.dir, from: n, to: null })),
-	];
-}
-
 function buildDiff(paths: Paths, overrides: Overrides, from: string, to: string): InspectorDiff {
 	const base = configExists(paths) ? loadConfig(paths) : DEFAULT_CONFIG;
 	const config = applyOverrides(base, overrides);
@@ -235,10 +231,14 @@ function buildDiff(paths: Paths, overrides: Overrides, from: string, to: string)
 	const outDir = diffDir(paths, from, to);
 
 	const report = diffVersions(fromDir, toDir, outDir, config, { from, to });
-	const byFile = new Map<string, PageDiff>(report.pages.map((p) => [p.filename, p]));
+	// A removed element can share its path with a different element in the
+	// target, so removals are looked up separately.
+	const byFile = new Map<string, PageDiff>();
+	const removedByFile = new Map<string, PageDiff>();
+	for (const p of report.pages) (p.status === "removed" ? removedByFile : byFile).set(p.filename, p);
 
-	const statusOf = (file: string, inFrom: boolean, inTo: boolean) => {
-		const d = byFile.get(file);
+	const statusOf = (file: string, inFrom: boolean, inTo: boolean, removed = false) => {
+		const d = removed ? removedByFile.get(file) : byFile.get(file);
 		return {
 			status: (d?.status ?? "missing") as NodeStatus,
 			diffPercent: d?.diffPercent,
@@ -265,49 +265,64 @@ function buildDiff(paths: Paths, overrides: Overrides, from: string, to: string)
 		const fromManifest = readJson<ElementManifest>(path.join(fromRoot, ELEMENT_MANIFEST));
 		const toManifest = readJson<ElementManifest>(path.join(toRoot, ELEMENT_MANIFEST));
 
-		const build = (from: ElementNode[], to: ElementNode[]): InspectorNode[] =>
-			mergeSiblings(from, to).map(({ dir, from: a, to: b }) => {
-				const node = (b ?? a)!;
-				const rel = `${dir}/${ELEMENT_IMAGE}`;
-				const children = build(a?.children ?? [], b?.children ?? []);
-				const component =
-					readJson<ComponentFile>(path.join(toRoot, ...dir.split("/"), COMPONENT_FILE)) ??
-					readJson<ComponentFile>(path.join(fromRoot, ...dir.split("/"), COMPONENT_FILE));
-				const s = statusOf(
-					`${slug}/${rel}`,
-					fs.existsSync(path.join(fromRoot, ...rel.split("/"))),
-					fs.existsSync(path.join(toRoot, ...rel.split("/"))),
-				);
-				// A node missing from one tree is added/removed even if its capture failed.
-				if (s.status === "missing" && (!a || !b)) s.status = a ? "removed" : "added";
-				return {
-					tag: node.tag,
-					id: node.id,
-					className: node.className,
-					dir,
-					selector: node.selector,
-					rect: { from: a?.rect ?? null, to: b?.rect ?? null },
-					...s,
-					component,
-					changedDescendants: children.reduce(
-						(sum, c) => sum + c.changedDescendants + (CHANGE_STATUSES.has(c.status) ? 1 : 0),
-						0,
-					),
-					children,
-				};
-			});
+		// Pair elements the same way the diff did, then lay the tree out in the
+		// target's shape, with removed elements under their old parent's partner.
+		const fromTree = fromManifest?.elements ?? [];
+		const toTree = toManifest?.elements ?? [];
+		const match = matchElements(fromTree, toTree, matchOptions(config.match));
 
-		const elements = build(fromManifest?.elements ?? [], toManifest?.elements ?? []);
+		const countChanged = (children: InspectorNode[]) =>
+			children.reduce((sum, c) => sum + c.changedDescendants + (CHANGE_STATUSES.has(c.status) ? 1 : 0), 0);
+
+		const make = (a: ElementNode | null, b: ElementNode | null, children: InspectorNode[]): InspectorNode => {
+			const node = (b ?? a)!;
+			const dir = node.dir;
+			const img = (root: string, n: ElementNode | null) =>
+				Boolean(n) && fs.existsSync(path.join(root, ...n!.dir.split("/"), ELEMENT_IMAGE));
+			const s = statusOf(`${slug}/${dir}/${ELEMENT_IMAGE}`, img(fromRoot, a), img(toRoot, b), !b);
+			// A node missing from one tree is added/removed even if its capture failed.
+			if (s.status === "missing" && (!a || !b)) s.status = a ? "removed" : "added";
+			const component =
+				(b && readJson<ComponentFile>(path.join(toRoot, ...b.dir.split("/"), COMPONENT_FILE))) ??
+				(a && readJson<ComponentFile>(path.join(fromRoot, ...a.dir.split("/"), COMPONENT_FILE)));
+			return {
+				tag: node.tag,
+				id: node.id,
+				className: node.className,
+				dir,
+				uid: b ? b.dir : `removed:${a!.dir}`,
+				fromDir: a?.dir ?? null,
+				matchedBy: (b && match.matchedBy.get(b)) ?? null,
+				moved: Boolean(b && match.moved.has(b)),
+				selector: node.selector,
+				rect: { from: a?.rect ?? null, to: b?.rect ?? null },
+				...s,
+				component: component ?? null,
+				changedDescendants: countChanged(children),
+				children,
+			};
+		};
+
+		// Unmatched baseline elements; matched descendants appear under their partners.
+		const removed = (nodes: ElementNode[]): InspectorNode[] =>
+			nodes.filter((a) => !match.fromTo.has(a)).map((a) => make(a, null, removed(a.children)));
+
+		const build = (to: ElementNode[], fromSiblings: ElementNode[]): InspectorNode[] => [
+			...to.map((b) => {
+				const a = match.toFrom.get(b) ?? null;
+				return make(a, b, build(b.children, a?.children ?? []));
+			}),
+			...removed(fromSiblings),
+		];
+
+		const elements = build(toTree, fromTree);
 		const image = `${slug}/${PAGE_IMAGE}`;
 		const s = statusOf(
 			image,
 			fs.existsSync(path.join(fromRoot, PAGE_IMAGE)),
 			fs.existsSync(path.join(toRoot, PAGE_IMAGE)),
 		);
-		const changedElements = elements.reduce(
-			(sum, c) => sum + c.changedDescendants + (CHANGE_STATUSES.has(c.status) ? 1 : 0),
-			0,
-		);
+		const changedElements = countChanged(elements);
 		return {
 			slug,
 			url: toManifest?.url ?? fromManifest?.url ?? null,

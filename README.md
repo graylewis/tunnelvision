@@ -77,6 +77,7 @@ tunnelvision review          # captures again and shows a visual diff
 | `tunnelvision clean` | Prune versions (`--keep <n>`), diffs (`--diffs`), or everything (`--all`). |
 | `tunnelvision install-hook` | Install an opt-in git `post-commit` hook that runs `review`. |
 | `tunnelvision inspector` | Open a local web UI to explore per-element diffs as a tree (see below). |
+| `tunnelvision update-pr` | Comment on a GitHub PR with per-element diffs, anchored at each element's source line (see below). |
 
 ### Common options
 
@@ -259,6 +260,40 @@ header re-runs the diff at a different pixelmatch colour threshold, which is
 useful when subtle, low-contrast changes (like white corners on a light grey
 background) aren't being caught. Use ↑/↓ to move and ←/→ to
 collapse or expand.
+
+## Pull request comments (`update-pr`)
+
+```bash
+tunnelvision update-pr --dry-run      # preview the comments
+tunnelvision update-pr                # push images + comment on the current branch's PR
+tunnelvision update-pr --pr 12 <from> <to>
+```
+
+Annotates a GitHub pull request with the `--by-element` diff. Each changed
+element whose React source line is part of the PR's diff gets an inline review
+comment on that line. The comment shows the essentials from the inspector
+(status, mismatch %, selector, path, where it moved from, how it was matched,
+its rect before and after, and the components that rendered it, linked to the
+PR's head) along with **before / after / diff** screenshots. Elements that share
+a source line, like list items or chart bars, are grouped into one comment.
+
+- **Versions**: `to` defaults to the current HEAD. `from` defaults to the
+  capture at the PR's merge base with its base branch, and falls back to the
+  previous capture. Line numbers come from `to`'s `component.json`, so capture
+  the PR's head commit.
+- **Images** are committed to a shared orphan branch (`tunnelvision-assets`,
+  override with `--branch`) under `pr-<n>/<from>__<to>/` and linked by commit
+  SHA, so they render in private repos too. This uses git plumbing only, so
+  your checkout and index are never touched.
+- **Skipped elements**: GitHub can only anchor comments on lines inside the
+  PR's diff, so changes whose source line isn't in it (such as a CSS tweak that
+  restyles an untouched component) are skipped and counted in the summary.
+- **Re-running** edits the existing comments (matched by a hidden marker)
+  instead of posting duplicates.
+- **Auth**: needs a token with pull request write access and push access, from
+  `GITHUB_TOKEN` or `GH_TOKEN`, or `gh auth token` if the
+  [GitHub CLI](https://cli.github.com/) is logged in. The repository is read
+  from `--remote` (default `origin`).
 
 ## Authenticated apps
 

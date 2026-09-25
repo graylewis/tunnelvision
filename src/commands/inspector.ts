@@ -140,9 +140,9 @@ function locateElement(page: PNG, element: PNG, ex: number, ey: number, dpr: num
 }
 
 /** Diff status of a node, plus `missing` when neither version has an image for it. */
-type NodeStatus = PageStatus | "missing";
+export type NodeStatus = PageStatus | "missing";
 
-interface InspectorNode {
+export interface InspectorNode {
 	tag: string;
 	id: string | null;
 	className: string | null;
@@ -170,7 +170,7 @@ interface InspectorNode {
 	children: InspectorNode[];
 }
 
-interface InspectorPage {
+export interface InspectorPage {
 	slug: string;
 	url: string | null;
 	byElement: boolean;
@@ -184,7 +184,7 @@ interface InspectorPage {
 	elements: InspectorNode[];
 }
 
-interface InspectorDiff {
+export interface InspectorDiff {
 	from: string;
 	to: string;
 	summary: Pick<DiffReport, "changedCount" | "addedCount" | "removedCount" | "hasChanges">;
@@ -193,7 +193,7 @@ interface InspectorDiff {
 	pages: InspectorPage[];
 }
 
-const CHANGE_STATUSES = new Set<NodeStatus>(["changed", "added", "removed", "size-mismatch", "error"]);
+export const CHANGE_STATUSES = new Set<NodeStatus>(["changed", "added", "removed", "size-mismatch", "error"]);
 
 function readJson<T>(file: string): T | null {
 	try {
@@ -223,7 +223,7 @@ function listPages(dir: string): Map<string, { byElement: boolean }> {
 	return out;
 }
 
-function buildDiff(paths: Paths, overrides: Overrides, from: string, to: string): InspectorDiff {
+export function buildDiff(paths: Paths, overrides: Overrides, from: string, to: string): InspectorDiff {
 	const base = configExists(paths) ? loadConfig(paths) : DEFAULT_CONFIG;
 	const config = applyOverrides(base, overrides);
 	const fromDir = versionDir(paths, from);

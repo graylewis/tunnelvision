@@ -4,6 +4,7 @@ import path from "node:path";
 import { stringify as yamlStringify } from "yaml";
 import type { Config } from "./config.js";
 import type { Page } from "./pages.js";
+import { STABILIZE_JS } from "./stabilize.js";
 
 export interface DoctorResult {
 	installed: boolean;
@@ -44,6 +45,8 @@ export interface ShotEntry {
 	height: number;
 	wait?: number;
 	wait_for?: string;
+	/** Evaluated after `wait`, before `wait_for` and the screenshot. */
+	javascript?: string;
 }
 
 /** Serialize shot-scraper `multi` entries to YAML. */
@@ -60,6 +63,7 @@ export function buildShotsYaml(pages: Page[], config: Config, outputDir: string)
 			output: path.join(outputDir, page.filename),
 			width: config.viewport.width,
 			height: config.viewport.height,
+			javascript: STABILIZE_JS,
 		};
 		const wait = override?.wait ?? config.wait;
 		if (wait && wait > 0) entry.wait = wait;

@@ -106,7 +106,7 @@ function locateElement(page, element, ex, ey, dpr) {
         return null;
     return { x: best.x, y: best.y, width: w, height: h, matched: true };
 }
-const CHANGE_STATUSES = new Set(["changed", "added", "removed", "size-mismatch", "error"]);
+export const CHANGE_STATUSES = new Set(["changed", "added", "removed", "size-mismatch", "error"]);
 function readJson(file) {
     try {
         return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -137,7 +137,7 @@ function listPages(dir) {
     }
     return out;
 }
-function buildDiff(paths, overrides, from, to) {
+export function buildDiff(paths, overrides, from, to) {
     const base = configExists(paths) ? loadConfig(paths) : DEFAULT_CONFIG;
     const config = applyOverrides(base, overrides);
     const fromDir = versionDir(paths, from);

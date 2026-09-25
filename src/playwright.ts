@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Viewport } from "./config.js";
 import type { RawElement } from "./elements.js";
+import { STABILIZE_JS } from "./stabilize.js";
 
 /**
  * Drive Playwright directly for `--by-element` captures. shot-scraper can't
@@ -159,6 +160,7 @@ export function capturePages(
 				authFile: opts.authFile ?? null,
 				concurrency: opts.concurrency,
 				extractJs: opts.extractJs,
+				stabilizeJs: STABILIZE_JS,
 				pages,
 			}),
 		);

@@ -10,6 +10,7 @@ import { doctor } from "./commands/doctor.js";
 import { clean } from "./commands/clean.js";
 import { installHook } from "./commands/installHook.js";
 import { inspector } from "./commands/inspector.js";
+import { DEFAULT_IMAGE_BRANCH, updatePr } from "./commands/updatePr.js";
 
 const ROOT = process.cwd();
 
@@ -184,6 +185,33 @@ program
 				open: opts.open,
 				threshold: opts.threshold,
 				maxDiffPercent: opts.maxDiffPercent,
+			}),
+		),
+	);
+
+program
+	.command("update-pr")
+	.description("Comment on a GitHub PR with per-element visual diffs, anchored at each element's source line")
+	.argument("[from]", "baseline version key (defaults to the PR's merge base, else the previous capture)")
+	.argument("[to]", "target version key (defaults to the current HEAD)")
+	.option("--pr <n>", "pull request number (defaults to the open PR for the current branch)", num)
+	.option("--remote <name>", "git remote of the GitHub repository", "origin")
+	.option("--branch <name>", "orphan branch that hosts the images", DEFAULT_IMAGE_BRANCH)
+	.option("--threshold <n>", "pixelmatch colour threshold (0-1)", num)
+	.option("--max-diff-percent <n>", "element mismatch %% cutoff for changed", num)
+	.option("--dry-run", "print the comments without pushing images or posting")
+	.action((from, to, opts) =>
+		run(() =>
+			updatePr({
+				root: ROOT,
+				from,
+				to,
+				pr: opts.pr,
+				remote: opts.remote,
+				branch: opts.branch,
+				threshold: opts.threshold,
+				maxDiffPercent: opts.maxDiffPercent,
+				dryRun: opts.dryRun,
 			}),
 		),
 	);

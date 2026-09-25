@@ -6,7 +6,7 @@ import { diffVersions } from "../diffengine.js";
 import { listVersions, previousVersion, versionExists } from "../versions.js";
 import { printReport, writeJsonReport } from "../report.js";
 /** Resolve which two versions to compare. */
-function resolvePair(opts, paths) {
+export function resolvePair(opts, paths) {
     // Explicit override: diff <from> <to>
     if (opts.from && opts.to) {
         return { from: opts.from, to: opts.to };

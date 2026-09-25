@@ -50,3 +50,20 @@ export function resolveVersion(root) {
 export function parentSha(root) {
     return shortSha(root, "HEAD~1");
 }
+/** Absolute path of the repository's top-level directory, or null. */
+export function topLevel(root) {
+    return tryGit(root, ["rev-parse", "--show-toplevel"]);
+}
+/** The checked-out branch name, or null when detached. */
+export function currentBranch(root) {
+    const name = tryGit(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+    return name || null;
+}
+export function remoteUrl(root, remote) {
+    return tryGit(root, ["remote", "get-url", remote]);
+}
+/** Short SHA of the best common ancestor of two revisions, or null. */
+export function mergeBase(root, a, b) {
+    const sha = tryGit(root, ["merge-base", a, b]);
+    return sha ? shortSha(root, sha) : null;
+}

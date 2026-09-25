@@ -18,7 +18,7 @@ export interface DiffOptions extends Overrides {
 }
 
 /** Resolve which two versions to compare. */
-function resolvePair(
+export function resolvePair(
 	opts: DiffOptions,
 	paths: ReturnType<typeof resolvePaths>,
 ): { from: string; to: string } {

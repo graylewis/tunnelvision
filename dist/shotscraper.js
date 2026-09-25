@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { stringify as yamlStringify } from "yaml";
+import { STABILIZE_JS } from "./stabilize.js";
 const INSTALL_HINT = "Install it with:\n  pip install shot-scraper\n  shot-scraper install   # downloads the browser";
 /** Check whether shot-scraper is available on PATH. */
 export function checkShotScraper() {
@@ -38,6 +39,7 @@ export function buildShotsYaml(pages, config, outputDir) {
             output: path.join(outputDir, page.filename),
             width: config.viewport.width,
             height: config.viewport.height,
+            javascript: STABILIZE_JS,
         };
         const wait = override?.wait ?? config.wait;
         if (wait && wait > 0)

@@ -69,3 +69,24 @@ export function resolveVersion(root: string): VersionInfo {
 export function parentSha(root: string): string | null {
 	return shortSha(root, "HEAD~1");
 }
+
+/** Absolute path of the repository's top-level directory, or null. */
+export function topLevel(root: string): string | null {
+	return tryGit(root, ["rev-parse", "--show-toplevel"]);
+}
+
+/** The checked-out branch name, or null when detached. */
+export function currentBranch(root: string): string | null {
+	const name = tryGit(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+	return name || null;
+}
+
+export function remoteUrl(root: string, remote: string): string | null {
+	return tryGit(root, ["remote", "get-url", remote]);
+}
+
+/** Short SHA of the best common ancestor of two revisions, or null. */
+export function mergeBase(root: string, a: string, b: string): string | null {
+	const sha = tryGit(root, ["merge-base", a, b]);
+	return sha ? shortSha(root, sha) : null;
+}

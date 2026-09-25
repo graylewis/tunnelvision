@@ -36,6 +36,10 @@ async def capture(browser, job, index, page_job, sem):
             await page.goto(page_job["url"])
             if page_job.get("wait"):
                 await page.wait_for_timeout(page_job["wait"])
+            # Fire scroll-triggered reveals and freeze CSS animations (same
+            # ordering as shot-scraper: after `wait`, before `waitFor`).
+            if job.get("stabilizeJs"):
+                await page.evaluate(job["stabilizeJs"])
             if page_job.get("waitFor"):
                 await page.wait_for_function(page_job["waitFor"])
             # Chromium's first full-page capture can permanently nudge text

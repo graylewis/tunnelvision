@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import pc from "picocolors";
 import { PNG } from "pngjs";
+import { applyOverrides, configExists, DEFAULT_CONFIG, loadConfig } from "../config.js";
 import { ELEMENT_IMAGE, ElementImages } from "../elements.js";
 import { currentBranch, isGitRepo, mergeBase, remoteUrl, topLevel } from "../git.js";
 import { GitHub, parseRepo, resolveToken } from "../github.js";
@@ -81,13 +82,15 @@ function image(dest, alt, ctx) {
     const src = ctx.imageCommit ? ctx.gh.imageUrl(ctx.imageCommit, file) : ctx.local.get(file);
     return `<img src="${src}" alt="${alt}" />`;
 }
-function targetSection(t, ctx) {
+/** `extra` rows go after the element's path. */
+function targetSection(t, ctx, extra = []) {
     const { node: n, page } = t;
     const pct = n.diffPercent !== undefined ? ` · ${n.diffPercent.toFixed(3)}% mismatch` : "";
     const rows = [];
     rows.push(["page", page.url ? `[\`${cell(page.slug)}\`](${page.url})` : `\`${cell(page.slug)}\``]);
     rows.push(["selector", `\`${cell(n.selector)}\``]);
     rows.push(["path", `\`${cell(`${page.slug}/${n.dir}`)}\``]);
+    rows.push(...extra);
     if (n.fromDir && n.fromDir !== n.dir) {
         rows.push(["was at", `\`${cell(`${page.slug}/${n.fromDir}`)}\`${n.moved ? " (moved to a different parent)" : ""}`]);
     }
@@ -120,7 +123,63 @@ function targetSection(t, ctx) {
 function marker(a) {
     return `<!-- tunnelvision:${a.side}:${a.path}:${a.line} -->`;
 }
-function commentBody(a, ctx) {
+const VIA = {
+    direct: "set by this line",
+    inherited: "inherited from an ancestor this line styles",
+    var: "through a custom property this line sets",
+    jsx: "this is the element's JSX line",
+    "knock-on": "moved or resized by a change this line made",
+};
+const MAX_LISTED = 25;
+const MAX_PROPS = 6;
+/** A code-first comment: what the line changed, one representative screenshot, and the rest listed. */
+function causeBody(a, cause, data, ctx) {
+    const [t] = a.targets;
+    const rep = cause.representative;
+    const n = cause.effects.length;
+    // Only properties whose declaration changed; the rest are results of layout.
+    const own = rep.props.filter((p) => p.own);
+    const props = own.slice(0, MAX_PROPS).map((p) => `\`${cell(p.name)}\` ${cell(p.from ?? "—")} → ${cell(p.to ?? "—")}`);
+    const extra = [["how", VIA[rep.via]]];
+    if (props.length)
+        extra.push(["changed", props.join("<br>") + (own.length > MAX_PROPS ? "<br>…" : "")]);
+    if (rep.alsoCausedBy?.length)
+        extra.push(["also affected by", rep.alsoCausedBy.map((c) => `\`${cell(c)}\``).join(", ")]);
+    const parts = [
+        marker(a),
+        `### tunnelvision · this line changed ${n} element${n === 1 ? "" : "s"}`,
+        `Comparing \`${ctx.from}\` → \`${ctx.to}\`.${cause.text ? ` ${cause.side === "LEFT" ? "Removed" : "Now"}: \`${cell(cause.text)}\`` : ""}`,
+        "",
+        targetSection(t, ctx, extra),
+    ];
+    const rest = cause.effects.filter((e) => e !== rep);
+    if (rest.length) {
+        const line = (e) => {
+            const node = findNode(data, e);
+            return `- \`${cell(node ? label(node) : e.dir)}\` ${e.status}, ${e.via} — \`${cell(`${e.page}/${e.dir}`)}\``;
+        };
+        const listed = rest.slice(0, MAX_LISTED).map(line);
+        if (rest.length > MAX_LISTED)
+            listed.push(`- …and ${rest.length - MAX_LISTED} more (see \`tunnelvision inspector\`)`);
+        parts.push("", `<details><summary>…and ${rest.length} more affected element${rest.length === 1 ? "" : "s"}</summary>\n\n${listed.join("\n")}\n</details>`);
+    }
+    return parts.join("\n").trimEnd();
+}
+/** The inspector node an effect refers to. */
+function findNode(data, e) {
+    const page = data.pages.find((p) => p.slug === e.page);
+    const uid = e.status === "removed" ? `removed:${e.dir}` : e.dir;
+    let found = null;
+    if (page)
+        walk(page.elements, (n) => {
+            if (n.uid === uid)
+                found = n;
+        });
+    return found;
+}
+function commentBody(a, ctx, data) {
+    if (a.cause)
+        return causeBody(a, a.cause, data, ctx);
     const shown = a.targets.slice(0, MAX_SHOWN);
     const rest = a.targets.slice(MAX_SHOWN);
     const count = a.targets.length;
@@ -137,6 +196,70 @@ function commentBody(a, ctx) {
             "\n</details>");
     }
     return parts.join("\n").trimEnd();
+}
+function targetOf(page, node) {
+    return { page, node, dest: `${page.slug}/${node.uid.replace(/^removed:/, "removed/")}` };
+}
+/** One anchor per changed line that caused visual changes, with its representative change as the target. */
+function codeFirstAnchors(data, lines) {
+    const anchors = new Map();
+    const c = data.correlation;
+    if (!c)
+        return { anchors, summary: `causes not traced: ${data.correlationSkipped ?? "unknown reason"}` };
+    let offDiff = 0;
+    for (const cause of c.causes) {
+        const changedLines = (cause.side === "LEFT" ? lines.changed.left : lines.changed.right).get(cause.path);
+        const rep = cause.representative;
+        const node = rep && findNode(data, rep);
+        const page = rep && data.pages.find((p) => p.slug === rep.page);
+        if (!changedLines?.has(cause.line) || !node || !page) {
+            offDiff++;
+            continue;
+        }
+        anchors.set(`${cause.side}:${cause.path}:${cause.line}`, {
+            path: cause.path,
+            line: cause.line,
+            side: cause.side,
+            targets: [targetOf(page, node)],
+            cause,
+        });
+    }
+    const parts = [
+        `${c.causes.length} changed lines caused visual changes`,
+        `${offDiff} outside the PR diff`,
+        `${c.unexplained.length} unexplained and ${c.invisible.length} invisible changes (inspector only)`,
+    ];
+    return { anchors, summary: parts.join(" · ") };
+}
+/** One anchor per JSX line that changed elements point at. */
+function visualFirstAnchors(data, lines, root, top) {
+    const anchors = new Map();
+    let changed = 0;
+    let noSource = 0;
+    let offDiff = 0;
+    for (const page of data.pages) {
+        walk(page.elements, (node) => {
+            if (!CHANGE_STATUSES.has(node.status))
+                return;
+            changed++;
+            const src = node.component?.source ?? null;
+            const file = repoPath(src, root, top);
+            if (!src || !file) {
+                noSource++;
+                return;
+            }
+            const side = node.status === "removed" ? "LEFT" : "RIGHT";
+            if (!(side === "LEFT" ? lines.left : lines.right).get(file)?.has(src.lineNumber)) {
+                offDiff++;
+                return;
+            }
+            const key = `${side}:${file}:${src.lineNumber}`;
+            const anchor = anchors.get(key) ?? { path: file, line: src.lineNumber, side, targets: [] };
+            anchor.targets.push(targetOf(page, node));
+            anchors.set(key, anchor);
+        });
+    }
+    return { anchors, summary: `${changed} changed elements · ${noSource} without a source location · ${offDiff} outside the PR diff` };
 }
 /** The baseline for a PR: the capture at the merge base with its base branch, when there is one. */
 function prBaseline(paths, remote, pr) {
@@ -191,33 +314,13 @@ export async function updatePr(opts) {
         throw new Error("update-pr needs per-element captures. Re-capture both versions with `--by-element`.");
     }
     const lines = await gh.commentableLines(pr.number);
-    const anchors = new Map();
-    let changed = 0;
-    let noSource = 0;
-    let offDiff = 0;
-    for (const page of data.pages) {
-        walk(page.elements, (node) => {
-            if (!CHANGE_STATUSES.has(node.status))
-                return;
-            changed++;
-            const src = node.component?.source ?? null;
-            const file = repoPath(src, paths.root, top);
-            if (!src || !file) {
-                noSource++;
-                return;
-            }
-            const side = node.status === "removed" ? "LEFT" : "RIGHT";
-            if (!(side === "LEFT" ? lines.left : lines.right).get(file)?.has(src.lineNumber)) {
-                offDiff++;
-                return;
-            }
-            const key = `${side}:${file}:${src.lineNumber}`;
-            const anchor = anchors.get(key) ?? { path: file, line: src.lineNumber, side, targets: [] };
-            anchor.targets.push({ page, node, dest: `${page.slug}/${node.uid.replace(/^removed:/, "removed/")}` });
-            anchors.set(key, anchor);
-        });
-    }
-    const summary = pc.dim(`  ${changed} changed elements · ${noSource} without a source location · ${offDiff} outside the PR diff`);
+    const config = applyOverrides(configExists(paths) ? loadConfig(paths) : DEFAULT_CONFIG, opts);
+    const mode = opts.mode ?? config.updatePr.mode;
+    if (mode !== "code-first" && mode !== "visual-first")
+        throw new Error(`Unknown --mode "${mode}". Use code-first or visual-first.`);
+    console.log(pc.dim(`  ${mode}`));
+    const { anchors, summary: counts } = mode === "code-first" ? codeFirstAnchors(data, lines) : visualFirstAnchors(data, lines, paths.root, top);
+    const summary = pc.dim(`  ${counts}`);
     if (anchors.size === 0) {
         console.log(summary);
         console.log(pc.green("  Nothing to comment on."));
@@ -267,7 +370,7 @@ export async function updatePr(opts) {
         for (const a of sorted) {
             console.log("");
             console.log(pc.cyan(`── ${a.path}:${a.line} (${a.side})`));
-            console.log(commentBody(a, ctx));
+            console.log(commentBody(a, ctx, data));
         }
         console.log("");
         console.log(summary);
@@ -285,7 +388,7 @@ export async function updatePr(opts) {
     const fresh = [];
     let updated = 0;
     for (const a of sorted) {
-        const body = commentBody(a, ctx);
+        const body = commentBody(a, ctx, data);
         const prior = existing.find((c) => c.body.includes(marker(a)) && c.path === a.path && c.line === a.line && c.side === a.side);
         if (prior) {
             await gh.updateReviewComment(prior.id, body);

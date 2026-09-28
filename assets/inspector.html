@@ -78,6 +78,16 @@
 	.overlay.from { border-style: dashed; border-color: var(--removed); background: transparent; }
 	.hint { color: var(--muted); font-size: 11px; }
 	kbd { font-family: var(--mono); font-size: 11px; border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
+	.group { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; padding: 10px 10px 4px; }
+	.cause-text { color: var(--muted); font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+	.via { border: 1px solid var(--border); border-radius: 8px; padding: 0 6px; font-size: 10px; color: var(--muted); }
+	table.props { border-collapse: collapse; font-family: var(--mono); font-size: 12px; margin: 0 0 18px; }
+	table.props td { padding: 2px 14px 2px 0; vertical-align: top; }
+	table.props td:first-child { color: var(--muted); }
+	ul.effects { list-style: none; margin: 0; padding: 0; }
+	ul.effects li { padding: 1px 0; }
+	a.el { color: var(--accent); text-decoration: none; cursor: pointer; }
+	a.el:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
@@ -85,6 +95,7 @@
 	<h1>tunnelvision inspector</h1>
 	<label>from <select id="from"></select></label>
 	<label>to <select id="to"></select></label>
+	<label title="Elements: the page trees. Causes: the changed lines that explain visual changes.">view <select id="view"><option value="elements">elements</option><option value="causes">causes</option></select></label>
 	<label title="pixelmatch colour threshold (0–1); lower catches subtler colour changes">threshold <input type="number" id="threshold" min="0" max="1" step="0.01" /></label>
 	<label><input type="checkbox" id="changedOnly" checked /> changed only</label>
 	<input type="search" id="filter" placeholder="filter tag, id, class, source…" />
@@ -101,7 +112,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const enc = (p) => p.split("/").map(encodeURIComponent).join("/");
 
-let state = { root: "", data: null, expanded: new Set(), selected: null, rows: [] };
+let state = { root: "", data: null, expanded: new Set(), selected: null, rows: [], view: "elements" };
 
 async function getJson(url) {
 	const res = await fetch(url);
@@ -138,14 +149,28 @@ async function init() {
 		load();
 	};
 	$("changedOnly").onchange = () => renderTree();
+	$("view").value = state.view = params.get("view") === "causes" ? "causes" : "elements";
+	$("view").onchange = () => {
+		state.view = $("view").value;
+		state.selected = null;
+		updateUrl();
+		renderTree();
+		renderDetail();
+	};
 	$("filter").oninput = () => renderTree();
 	load();
 }
 
-async function load(refresh) {
+function updateUrl() {
 	const from = $("from").value, to = $("to").value, threshold = Number($("threshold").value);
 	const custom = threshold !== state.defaultThreshold ? `&threshold=${threshold}` : "";
-	history.replaceState(null, "", `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${custom}`);
+	const view = state.view === "causes" ? "&view=causes" : "";
+	history.replaceState(null, "", `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${custom}${view}`);
+}
+
+async function load(refresh) {
+	const from = $("from").value, to = $("to").value, threshold = Number($("threshold").value);
+	updateUrl();
 	$("tree").innerHTML = '<div class="empty">Diffing…</div>';
 	$("summary").innerHTML = "";
 	try {
@@ -160,7 +185,7 @@ async function load(refresh) {
 	// Expand everything that contains a change so the interesting paths are visible.
 	state.expanded = new Set();
 	for (const item of state.items.values()) {
-		if (item.page ? item.page.changedElements > 0 : item.node.changedDescendants > 0) state.expanded.add(item.key);
+		if (item.page ? item.page.changedElements > 0 : item.node?.changedDescendants > 0) state.expanded.add(item.key);
 	}
 	if (!state.items.has(state.selected)) state.selected = null;
 	renderTree();
@@ -182,7 +207,37 @@ function indexData() {
 		};
 		visit(page.elements, 1, pkey);
 	}
+
+	// Causes, and what they explain per element (keyed by page/dir).
+	const c = state.data.correlation;
+	state.causesOf = new Map();
+	state.unexplainedOf = new Map();
+	if (!c) return;
+	c.causes.forEach((cause, i) => {
+		state.items.set("c:" + i, { key: "c:" + i, cause });
+		for (const effect of cause.effects) {
+			const k = effect.page + "/" + effect.dir;
+			state.causesOf.set(k, [...(state.causesOf.get(k) ?? []), { cause, effect, key: "c:" + i }]);
+		}
+	});
+	c.unexplained.forEach((u, i) => {
+		state.items.set("u:" + i, { key: "u:" + i, unexplained: u });
+		state.unexplainedOf.set(u.page + "/" + u.dir, u);
+	});
+	c.invisible.forEach((inv, i) => state.items.set("i:" + i, { key: "i:" + i, invisible: inv }));
 }
+
+/** The tree key of an effect's element (removed elements are keyed by their baseline path). */
+function elementKey(e) {
+	return "p:" + e.page + "/" + (e.status === "removed" ? "removed:" + e.dir : e.dir);
+}
+
+/** A cause's location, as a source link relative to the repository. */
+function causeSource(cause) {
+	return { fileName: state.data.repoRoot.replace(/\/$/, "") + "/" + cause.path, lineNumber: cause.line, columnNumber: 1, path: `${cause.path}:${cause.line}` };
+}
+
+const VIA = { direct: "sets it", inherited: "inherited", var: "via var()", jsx: "JSX line", "knock-on": "knock-on" };
 
 /**
  * Normalise a source location from an element's `component`. Accepts `{ path }`,
@@ -217,8 +272,45 @@ function label(node) {
 	return s;
 }
 
+function renderCauses() {
+	const c = state.data.correlation;
+	state.rows = [];
+	if (!c) {
+		$("tree").innerHTML = `<div class="empty">Causes not traced${state.data.correlationSkipped ? ": " + esc(state.data.correlationSkipped) : ""}.</div>`;
+		return;
+	}
+	const q = $("filter").value.trim().toLowerCase();
+	const out = [];
+	const row = (key, dot, labelHtml, metaHtml) => {
+		state.rows.push(key);
+		out.push(`<div class="row ${state.selected === key ? "selected" : ""}" data-key="${esc(key)}" style="padding-left:10px">` +
+			`<span class="dot s-${dot}"></span><span class="label">${labelHtml}</span><span class="meta">${metaHtml}</span></div>`);
+	};
+	const group = (title, n) => out.push(`<div class="group">${esc(title)} · ${n}</div>`);
+	const match = (...parts) => !q || parts.join(" ").toLowerCase().includes(q);
+
+	const causes = c.causes.map((cause, i) => [cause, i]).filter(([x]) => match(x.path, x.text ?? ""));
+	group("Causes", causes.length);
+	for (const [cause, i] of causes) {
+		const where = `${cause.path.split("/").pop()}:${cause.line}${cause.side === "LEFT" ? " (deleted)" : ""}`;
+		row("c:" + i, "changed", `${esc(where)} <span class="cause-text">${esc(cause.text ?? cause.kind)}</span>`, `<span class="badge" title="elements affected">${cause.effects.length}</span>`);
+	}
+	const unexplained = c.unexplained.map((u, i) => [u, i]).filter(([u]) => match(u.page, u.dir));
+	if (unexplained.length) group("Unexplained visual changes", unexplained.length);
+	for (const [u, i] of unexplained) row("u:" + i, u.status, esc(u.page + "/" + u.dir), u.note ? `<span class="src" title="${esc(u.note)}">${esc(u.note)}</span>` : "");
+	const invisible = c.invisible.map((v, i) => [v, i]).filter(([v]) => match(v.path));
+	if (invisible.length) group("CSS changes with no visible effect", invisible.length);
+	for (const [v, i] of invisible) {
+		row("i:" + i, "unchanged", esc(`${v.path.split("/").pop()}:${v.line}${v.side === "LEFT" ? " (deleted)" : ""}`), `<span class="via">${v.reason === "not-exercised" ? "not exercised" : "no effect"}</span>`);
+	}
+	$("tree").innerHTML = out.join("");
+	const sel = $("tree").querySelector(".selected");
+	if (sel) sel.scrollIntoView({ block: "nearest" });
+}
+
 function renderTree() {
 	if (!state.data) return;
+	if (state.view === "causes") return renderCauses();
 	const changedOnly = $("changedOnly").checked;
 	const q = $("filter").value.trim().toLowerCase();
 	const filtering = changedOnly || q;
@@ -292,6 +384,7 @@ document.addEventListener("keydown", (e) => {
 	const i = state.rows.indexOf(state.selected);
 	if (e.key === "ArrowDown" || e.key === "j") select(state.rows[Math.min(state.rows.length - 1, i + 1)]);
 	else if (e.key === "ArrowUp" || e.key === "k") select(state.rows[Math.max(0, i - 1)]);
+	else if (state.view === "causes") return;
 	else if (e.key === "ArrowRight" && state.selected) toggle(state.selected, true);
 	else if (e.key === "ArrowLeft" && state.selected) {
 		const item = state.items.get(state.selected);
@@ -360,6 +453,24 @@ function renderDetail() {
 	}
 	const pill = (s) => `<span class="status-pill s-${s}">${esc(s)}</span>`;
 
+	if (item.cause) return renderCause(item.cause);
+	if (item.unexplained) {
+		const u = item.unexplained;
+		$("detail").innerHTML = `<h2>${esc(u.page + "/" + u.dir)}${pill(u.status)}</h2>` +
+			`<p class="hint">No changed line explains this visual change.${u.note ? " " + esc(u.note) + "." : ""}</p>` +
+			propsTable(u.props) + `<p><a class="el" data-goto="${esc(elementKey(u))}">Show element →</a></p>`;
+		return;
+	}
+	if (item.invisible) {
+		const v = item.invisible;
+		$("detail").innerHTML = `<h2>${esc(v.path + ":" + v.line)}</h2><dl><dt>source</dt><dd>${sourceLink(causeSource(v))}</dd>` +
+			`<dt>side</dt><dd>${v.side === "LEFT" ? "deleted line" : "added line"}</dd></dl>` +
+			`<p class="hint">${v.reason === "not-exercised"
+				? "No captured element matched this rule: it may only apply in a state or viewport that isn't captured (hover, another breakpoint, a page not in the sitemap)."
+				: "The rule applies to captured elements, but this change made no visible difference to any of them."}</p>`;
+		return;
+	}
+
 	if (item.page) {
 		const p = item.page;
 		$("detail").innerHTML = `<h2>${esc(p.slug)}${pill(p.status)}</h2>` +
@@ -391,7 +502,17 @@ function renderDetail() {
 		dl += `<dt>source</dt><dd><span class="hint">not rendered by React</span></dd>`;
 	}
 
-	let html = `<h2>${label(n)}${pill(n.status)}</h2><dl>${dl}</dl>` + imageGrid(`${page.slug}/${n.dir}/element.png`, n, `${page.slug}/${n.fromDir ?? n.dir}/element.png`);
+	const causedBy = state.causesOf.get(page.slug + "/" + n.dir) ?? [];
+	const unexplained = state.unexplainedOf.get(page.slug + "/" + n.dir);
+	if (causedBy.length) {
+		dl += `<dt>caused by</dt><dd><ul class="effects">` + causedBy.map(({ cause, effect, key }) =>
+			`<li><a class="el" data-goto="${esc(key)}">${esc(cause.path + ":" + cause.line)}</a> <span class="via">${esc(VIA[effect.via])}</span> <span class="hint">${esc(cause.text ?? "")}</span></li>`).join("") + `</ul></dd>`;
+	} else if (unexplained) {
+		dl += `<dt>caused by</dt><dd><span class="hint">no changed line explains it${unexplained.note ? " — " + esc(unexplained.note) : ""}</span></dd>`;
+	}
+	const props = causedBy[0]?.effect.props ?? unexplained?.props ?? [];
+
+	let html = `<h2>${label(n)}${pill(n.status)}</h2><dl>${dl}</dl>` + propsTable(props) + imageGrid(`${page.slug}/${n.dir}/element.png`, n, `${page.slug}/${n.fromDir ?? n.dir}/element.png`);
 
 	// Where the element sits on the full page (after, falling back to before).
 	const side = page.images.to ? "to" : page.images.from ? "from" : null;
@@ -420,6 +541,52 @@ function renderDetail() {
 		});
 	}
 }
+
+/** Tracked properties that changed on an element, before → after. */
+function propsTable(props) {
+	if (!props.length) return "";
+	// Properties whose declaration didn't change are results of layout or an ancestor.
+	const sorted = [...props].sort((a, b) => Number(Boolean(b.own)) - Number(Boolean(a.own)));
+	return `<table class="props">` + sorted.map((p) =>
+		`<tr${p.own ? "" : ' class="hint" title="result of layout or an ancestor; its declaration didn\'t change"'}><td>${esc(p.name)}</td><td>${esc(p.from ?? "—")} → ${esc(p.to ?? "—")}</td></tr>`).join("") + `</table>`;
+}
+
+function renderCause(cause) {
+	const rep = cause.representative;
+	let html = `<h2>${esc(cause.path + ":" + cause.line)}</h2><dl>` +
+		`<dt>source</dt><dd>${sourceLink(causeSource(cause))}</dd>` +
+		(cause.text ? `<dt>${cause.side === "LEFT" ? "was" : "now"}</dt><dd>${esc(cause.text)}</dd>` : "") +
+		`<dt>kind</dt><dd>${esc(cause.kind)}${cause.side === "LEFT" ? " (deleted line)" : ""}</dd>` +
+		`<dt>affects</dt><dd>${cause.effects.length} element${cause.effects.length === 1 ? "" : "s"}</dd></dl>`;
+	if (rep) {
+		const node = state.items.get(elementKey(rep))?.node;
+		html += `<figcaption>representative · <a class="el" data-goto="${esc(elementKey(rep))}">${esc(rep.page + "/" + rep.dir)}</a></figcaption>`;
+		if (node) html += imageGrid(`${rep.page}/${node.dir}/element.png`, node, `${rep.page}/${node.fromDir ?? node.dir}/element.png`);
+		html += propsTable(rep.props);
+	}
+	const order = { direct: 0, inherited: 1, var: 1, jsx: 1, "knock-on": 2 };
+	const effects = [...cause.effects].sort((a, b) => order[a.via] - order[b.via] || b.size - a.size);
+	html += `<figcaption>affected elements</figcaption><ul class="effects">` + effects.map((e) =>
+		`<li><a class="el" data-goto="${esc(elementKey(e))}">${esc(e.page + "/" + e.dir)}</a> <span class="via">${esc(VIA[e.via])}</span>` +
+		(e.props.some((p) => p.own) ? ` <span class="hint">${esc(e.props.filter((p) => p.own).map((p) => p.name).slice(0, 4).join(", "))}</span>` : "") +
+		(e.alsoCausedBy ? ` <span class="hint">also ${esc(e.alsoCausedBy.join(", "))}</span>` : "") + `</li>`).join("") + `</ul>`;
+	$("detail").innerHTML = html;
+}
+
+/** Jump from a cause to an element (or back), switching views as needed. */
+$("detail").addEventListener("click", (e) => {
+	const link = e.target.closest("a.el[data-goto]");
+	if (!link) return;
+	const key = link.dataset.goto;
+	if (!state.items.has(key)) return;
+	state.view = $("view").value = key.startsWith("p:") ? "elements" : "causes";
+	updateUrl();
+	if (key.startsWith("p:")) {
+		// Reveal the element in the tree.
+		for (let k = state.items.get(key).parent; k; k = state.items.get(k)?.parent) state.expanded.add(k);
+	}
+	select(key);
+});
 
 init().catch((err) => { $("tree").innerHTML = `<div class="empty">${esc(err.message)}</div>`; });
 </script>

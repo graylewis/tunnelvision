@@ -1,3 +1,6 @@
 
 # tunnelvision screenshots & diffs (local cache)
 .tunnelvision/
+
+# compiled tests
+.test-dist/

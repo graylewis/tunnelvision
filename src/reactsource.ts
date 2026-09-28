@@ -41,7 +41,7 @@ export interface ComponentFile {
 const FETCH_TIMEOUT_MS = 5000;
 
 /** Resolve symlinks (e.g. macOS /var → /private/var) so root-relative paths line up. */
-function realpath(p: string): string {
+export function realpath(p: string): string {
 	// Resolve the nearest existing ancestor so paths to missing files still normalise.
 	let rest = "";
 	for (let cur = p; ; cur = path.dirname(cur)) {
@@ -69,8 +69,14 @@ async function loadSourceMap(scriptUrl: string): Promise<TraceMap | null> {
 	if (!script) return null;
 	const refs = [...script.matchAll(/[#@]\s*sourceMappingURL=([^\s'"]+)/g)];
 	const ref = refs.at(-1)?.[1];
-	if (!ref) return null;
+	return ref ? loadMapRef(ref, scriptUrl) : null;
+}
 
+/**
+ * Load the source map `ref` points at: an inline `data:` URL, or a URL
+ * relative to `baseUrl` (the script or stylesheet that referenced it).
+ */
+export async function loadMapRef(ref: string, baseUrl: string): Promise<TraceMap | null> {
 	try {
 		if (ref.startsWith("data:")) {
 			const comma = ref.indexOf(",");
@@ -79,9 +85,9 @@ async function loadSourceMap(scriptUrl: string): Promise<TraceMap | null> {
 			const json = meta.endsWith(";base64")
 				? Buffer.from(data, "base64").toString("utf8")
 				: decodeURIComponent(data);
-			return new TraceMap(json, scriptUrl);
+			return new TraceMap(json, baseUrl);
 		}
-		const mapUrl = new URL(ref, scriptUrl).href;
+		const mapUrl = new URL(ref, baseUrl).href;
 		const json = await fetchText(mapUrl);
 		return json ? new TraceMap(json, mapUrl) : null;
 	} catch {
@@ -100,7 +106,7 @@ async function loadSourceMap(scriptUrl: string): Promise<TraceMap | null> {
  *   turbopack:///[project]/src/App.tsx           → <root>/src/App.tsx
  *   rsc://React/Server/file:///abs/App.tsx?42    → /abs/App.tsx
  */
-function toFilePath(source: string, root: string): string {
+export function toFilePath(source: string, root: string): string {
 	let s = source.replace(/^(?:rsc|about):\/\/React\/[^/]+\//, "");
 	try {
 		if (s.startsWith("file://")) return fileURLToPath(s.replace(/\?.*$/, ""));
@@ -127,14 +133,15 @@ function toFilePath(source: string, root: string): string {
 	return path.join(root, ...rel.split("/"));
 }
 
+/** `file` relative to `root` (POSIX separators) when it's inside it, else unchanged. */
+export function rootRelative(file: string, root: string): string {
+	if (!path.isAbsolute(file)) return file;
+	const rel = path.relative(root, realpath(file));
+	return rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel.split(path.sep).join("/") : file;
+}
+
 function withPath(fileName: string, line: number, column: number, root: string): ComponentSource {
-	let file = fileName;
-	if (path.isAbsolute(file)) {
-		const rel = path.relative(root, realpath(file));
-		if (rel && !rel.startsWith("..") && !path.isAbsolute(rel)) {
-			file = rel.split(path.sep).join("/");
-		}
-	}
+	const file = rootRelative(fileName, root);
 	return { fileName, lineNumber: line, columnNumber: column, path: `${file}:${line}:${column}` };
 }
 

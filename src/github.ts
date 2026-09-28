@@ -38,6 +38,11 @@ export interface NewReviewComment {
 export interface CommentableLines {
 	right: Map<string, Set<number>>;
 	left: Map<string, Set<number>>;
+	/** Only the added (right) and deleted (left) lines, without context. */
+	changed: {
+		right: Map<string, Set<number>>;
+		left: Map<string, Set<number>>;
+	};
 }
 
 const API = "https://api.github.com";
@@ -118,11 +123,13 @@ export class GitHub {
 	/** Which lines of each changed file sit inside a diff hunk (and so can be commented on). */
 	async commentableLines(number: number): Promise<CommentableLines> {
 		const files = await this.list<{ filename: string; patch?: string }>(`/pulls/${number}/files`);
-		const out: CommentableLines = { right: new Map(), left: new Map() };
+		const out: CommentableLines = { right: new Map(), left: new Map(), changed: { right: new Map(), left: new Map() } };
 		for (const f of files) {
 			if (!f.patch) continue;
 			const right = new Set<number>();
 			const left = new Set<number>();
+			const added = new Set<number>();
+			const deleted = new Set<number>();
 			let oldLine = 0;
 			let newLine = 0;
 			for (const line of f.patch.split("\n")) {
@@ -131,8 +138,10 @@ export class GitHub {
 					oldLine = Number(hunk[1]);
 					newLine = Number(hunk[2]);
 				} else if (line.startsWith("+")) {
+					added.add(newLine);
 					right.add(newLine++);
 				} else if (line.startsWith("-")) {
+					deleted.add(oldLine);
 					left.add(oldLine++);
 				} else if (!line.startsWith("\\")) {
 					// Context lines can be commented on from either side.
@@ -142,6 +151,8 @@ export class GitHub {
 			}
 			out.right.set(f.filename, right);
 			out.left.set(f.filename, left);
+			out.changed.right.set(f.filename, added);
+			out.changed.left.set(f.filename, deleted);
 		}
 		return out;
 	}

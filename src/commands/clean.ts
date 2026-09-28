@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import pc from "picocolors";
 import { resolvePaths, versionDir } from "../paths.js";
+import { deleteSnapshotRef } from "../git.js";
 import { listVersions } from "../versions.js";
 
 export interface CleanOptions {
@@ -21,6 +22,7 @@ export async function clean(opts: CleanOptions): Promise<number> {
 	const paths = resolvePaths(opts.root);
 
 	if (opts.all) {
+		for (const v of listVersions(paths)) deleteSnapshotRef(paths.root, v.key);
 		rm(paths.versions);
 		rm(paths.diffs);
 		console.log(pc.green("✓ removed all versions and diffs"));
@@ -40,7 +42,10 @@ export async function clean(opts: CleanOptions): Promise<number> {
 		}
 		const versions = listVersions(paths); // oldest -> newest
 		const toRemove = versions.slice(0, Math.max(0, versions.length - opts.keep));
-		for (const v of toRemove) rm(versionDir(paths, v.key));
+		for (const v of toRemove) {
+			rm(versionDir(paths, v.key));
+			deleteSnapshotRef(paths.root, v.key);
+		}
 		console.log(
 			pc.green(
 				`✓ kept ${Math.min(opts.keep, versions.length)} newest, removed ${toRemove.length} version(s)`,

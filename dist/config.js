@@ -1,9 +1,12 @@
 import fs from "node:fs";
 import { resolvePaths } from "./paths.js";
+import { DEFAULT_SETTLE_MS } from "./stabilize.js";
+import { DEFAULT_TRACKED_PROPERTIES } from "./styles.js";
 export const DEFAULT_CONFIG = {
     baseUrl: "http://localhost:3000",
     viewport: { width: 1280, height: 800 },
     wait: 1000,
+    settle: DEFAULT_SETTLE_MS,
     retina: false,
     authFile: ".tunnelvision/auth.json",
     concurrency: 4,
@@ -16,6 +19,12 @@ export const DEFAULT_CONFIG = {
         attributes: ["data-testid", "data-test", "data-cy", "data-qa"],
         ignoreIds: [],
     },
+    styles: {
+        properties: DEFAULT_TRACKED_PROPERTIES,
+    },
+    updatePr: {
+        mode: "code-first",
+    },
 };
 /** Deep-merge a partial config on top of defaults. */
 function withDefaults(partial) {
@@ -25,6 +34,8 @@ function withDefaults(partial) {
         viewport: { ...DEFAULT_CONFIG.viewport, ...(partial.viewport ?? {}) },
         diff: { ...DEFAULT_CONFIG.diff, ...(partial.diff ?? {}) },
         match: { ...DEFAULT_CONFIG.match, ...(partial.match ?? {}) },
+        styles: { ...DEFAULT_CONFIG.styles, ...(partial.styles ?? {}) },
+        updatePr: { ...DEFAULT_CONFIG.updatePr, ...(partial.updatePr ?? {}) },
     };
 }
 export function configExists(paths) {
@@ -51,8 +62,11 @@ export function loadConfig(paths) {
     return withDefaults(parsed);
 }
 export function saveConfig(paths, config) {
+    // Default tracked properties aren't written out, so they keep up with new versions.
+    const { styles, ...rest } = config;
+    const saved = styles.properties === DEFAULT_CONFIG.styles.properties ? rest : config;
     fs.mkdirSync(paths.dir, { recursive: true });
-    fs.writeFileSync(paths.config, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+    fs.writeFileSync(paths.config, `${JSON.stringify(saved, null, 2)}\n`, "utf8");
 }
 export function applyOverrides(config, o) {
     const next = {
@@ -60,6 +74,8 @@ export function applyOverrides(config, o) {
         viewport: { ...config.viewport },
         diff: { ...config.diff },
         match: { ...config.match },
+        styles: { ...config.styles },
+        updatePr: { ...config.updatePr },
     };
     if (o.baseUrl !== undefined)
         next.baseUrl = o.baseUrl;
@@ -69,6 +85,8 @@ export function applyOverrides(config, o) {
         next.viewport.height = o.height;
     if (o.wait !== undefined)
         next.wait = o.wait;
+    if (o.settle !== undefined)
+        next.settle = o.settle;
     if (o.retina !== undefined)
         next.retina = o.retina;
     if (o.scaleFactor !== undefined)

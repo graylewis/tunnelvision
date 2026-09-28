@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { stringify as yamlStringify } from "yaml";
-import { STABILIZE_JS } from "./stabilize.js";
+import { stabilizeScript } from "./stabilize.js";
 const INSTALL_HINT = "Install it with:\n  pip install shot-scraper\n  shot-scraper install   # downloads the browser";
 /** Check whether shot-scraper is available on PATH. */
 export function checkShotScraper() {
@@ -39,7 +39,7 @@ export function buildShotsYaml(pages, config, outputDir) {
             output: path.join(outputDir, page.filename),
             width: config.viewport.width,
             height: config.viewport.height,
-            javascript: STABILIZE_JS,
+            javascript: stabilizeScript(override?.settle ?? config.settle),
         };
         const wait = override?.wait ?? config.wait;
         if (wait && wait > 0)
@@ -61,7 +61,9 @@ export function runEntries(entries, opts, label = (o) => o) {
     }
     fs.mkdirSync(path.dirname(opts.shotsYamlPath), { recursive: true });
     fs.writeFileSync(opts.shotsYamlPath, opts.yaml, "utf8");
-    const args = ["multi", opts.shotsYamlPath];
+    // Sites that honour prefers-reduced-motion skip or shorten their animations,
+    // so captures settle sooner and more consistently.
+    const args = ["multi", opts.shotsYamlPath, "--reduced-motion"];
     if (opts.authFile && fs.existsSync(opts.authFile)) {
         args.push("--auth", opts.authFile);
     }

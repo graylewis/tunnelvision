@@ -3,6 +3,7 @@ import { applyOverrides, loadConfig, type Overrides } from "../config.js";
 import { diffDir, resolvePaths, versionDir } from "../paths.js";
 import { resolveVersion } from "../git.js";
 import { diffVersions } from "../diffengine.js";
+import { addCorrelation } from "../correlate.js";
 import { listVersions, previousVersion, versionExists } from "../versions.js";
 import { printReport, writeJsonReport } from "../report.js";
 
@@ -66,6 +67,7 @@ export async function diff(opts: DiffOptions): Promise<number> {
 		config,
 		{ from, to },
 	);
+	addCorrelation(paths, report);
 
 	if (opts.json && !opts.report) {
 		console.log(JSON.stringify(report, null, 2));

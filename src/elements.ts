@@ -91,6 +91,8 @@ export interface RawElement {
 	box: ElementRect;
 	/** Null when the element isn't rendered by React. */
 	react: ReactInfo | null;
+	/** Computed values of the tracked properties. */
+	computed?: Record<string, string>;
 	children: RawElement[];
 }
 
@@ -135,6 +137,8 @@ export const ELEMENT_IMAGE = "element.png";
 export const PAGE_IMAGE = "page.png";
 /** The per-page manifest filename. */
 export const ELEMENT_MANIFEST = "elements.json";
+/** Per-page style data (see `styles.ts`), kept apart since it's large and only correlation reads it. */
+export const STYLE_MANIFEST = "styles.json";
 
 /** 3: element images are cropped on demand (needs `scale`) and components live in the manifest. */
 export const MANIFEST_VERSION = 3;
@@ -143,10 +147,14 @@ export const MANIFEST_VERSION = 3;
  * The in-page extraction script, evaluated by the capture driver after the page
  * has loaded and settled. Returns an array of top-level block elements
  * (children of <body>), each with nested `children`. `attributes` are the
- * configured match attributes to record on each element.
+ * configured match attributes to record on each element, and `properties` the
+ * tracked CSS properties whose computed values are recorded.
  */
-export function extractScript(attributes: string[]): string {
-	return EXTRACT_JS.replace("__MATCH_ATTRIBUTES__", JSON.stringify(attributes));
+export function extractScript(attributes: string[], properties: string[]): string {
+	return EXTRACT_JS.replace("__MATCH_ATTRIBUTES__", JSON.stringify(attributes)).replace(
+		"__TRACKED_PROPERTIES__",
+		JSON.stringify(properties),
+	);
 }
 
 const EXTRACT_JS = `
@@ -158,6 +166,7 @@ new Promise((resolve) => {
       "table-footer-group", "table-cell", "table-caption"
     ]);
     const MATCH_ATTRIBUTES = __MATCH_ATTRIBUTES__;
+    const TRACKED_PROPERTIES = __TRACKED_PROPERTIES__;
     const SKIP = new Set([
       "SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "LINK", "META",
       "HEAD", "BR", "HR", "SVG", "CANVAS"
@@ -284,6 +293,12 @@ new Promise((resolve) => {
       }
       return out;
     }
+    function computed(el) {
+      const cs = getComputedStyle(el);
+      const out = {};
+      for (const name of TRACKED_PROPERTIES) out[name] = cs.getPropertyValue(name);
+      return out;
+    }
     function walk(el, parentSel) {
       const out = [];
       for (const child of el.children) {
@@ -309,6 +324,7 @@ new Promise((resolve) => {
             },
             box: { x: r.x + window.scrollX, y: r.y + window.scrollY, width: r.width, height: r.height },
             react: reactInfo(child),
+            computed: computed(child),
             children: walk(child, sel)
           });
         } else {

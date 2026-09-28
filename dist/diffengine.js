@@ -121,6 +121,7 @@ export function diffVersions(fromDir, toDir, outDir, config, labels) {
     const doneFrom = new Set();
     const doneTo = new Set();
     const opts = matchOptions(config.match);
+    const pairs = new Map();
     const pageSlugs = new Set([...fromFiles, ...toFiles].map((f) => f.split("/")[0]));
     for (const slug of pageSlugs) {
         const a = readElementManifest(path.join(fromDir, slug, ELEMENT_MANIFEST));
@@ -130,6 +131,7 @@ export function diffVersions(fromDir, toDir, outDir, config, labels) {
         const pageA = { manifest: a, page: tryReadPng(path.join(fromDir, slug, PAGE_IMAGE)) };
         const pageB = { manifest: b, page: tryReadPng(path.join(toDir, slug, PAGE_IMAGE)) };
         const match = matchElements(a.elements, b.elements, opts);
+        pairs.set(slug, { from: a, to: b, match });
         const rel = (n) => `${slug}/${n.dir}/${ELEMENT_IMAGE}`;
         const visit = (nodes, side) => {
             for (const n of nodes) {
@@ -198,7 +200,7 @@ export function diffVersions(fromDir, toDir, outDir, config, labels) {
     const changedCount = pages.filter((p) => p.status === "changed" || p.status === "size-mismatch" || p.status === "error").length;
     const addedCount = pages.filter((p) => p.status === "added").length;
     const removedCount = pages.filter((p) => p.status === "removed").length;
-    return {
+    const report = {
         from: labels.from,
         to: labels.to,
         pages,
@@ -207,6 +209,8 @@ export function diffVersions(fromDir, toDir, outDir, config, labels) {
         removedCount,
         hasChanges: changedCount + addedCount + removedCount > 0,
     };
+    Object.defineProperty(report, "pairs", { value: pairs, enumerable: false });
+    return report;
 }
 /** Find a per-page maxDiffPercent override by matching the filename's page path. */
 function perPageCutoff(filename, config) {

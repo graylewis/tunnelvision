@@ -39,6 +39,16 @@ What the tunnelvision prototype taught us: a CLI that screenshots every page in 
 - shot-scraper 1.8 breaks with Playwright ≥ 1.53, so it needs a pinned version in a per-project venv.
 - Wrapping a Python tool from a Node CLI adds real setup friction.
 
+## Reading the cascade over CDP
+
+- `CSS.getMatchedStylesForNode` returns matched rules in cascade order: layered rules first (in layer order), then unlayered rules by specificity and source order. So the last normal declaration wins. `!important` has to be handled separately (it reverses layer order), and each rule reports its `layers`.
+- Shorthands come back as one entry with a `range` and `longhandProperties`, followed by duplicate longhand entries without a `range`. Only ranged entries are real declarations. A longhand that a shorthand set belongs to the shorthand's line.
+- Before `var()` is substituted, longhands show an empty value. Use the shorthand's text.
+- `inherited[]` lists ancestors nearest first, all the way up to `:root`, including custom properties. Responses average about 27KB per node on the dashboard, mostly repeated ancestor rules, so the driver has to deduplicate rules into a table.
+- Pipelined calls (32 in flight) take about 1.3s per 1,000 nodes; one at a time, about 1.4ms per node.
+- Vite dev injects `<style data-vite-dev-id="/abs/path">` with an empty `sourceURL`. There's no source map unless `css.devSourcemap: true`, in which case `sourceMapURL` is an inline `data:` URL.
+- CSS Modules rename classes (`.box` becomes `._box_zlz7f_1`) but keep line numbers, so an exact text comparison with the file on disk fails. Compare with class names normalised instead.
+
 ## Takeaway
 
 Pixel diffing is easy. The value is in stable captures, reliable element matching, and linking changes back to source. The source link only works with modern React dev builds, and GitHub's diff-line limit stops it from covering style-only changes.

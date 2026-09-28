@@ -71,14 +71,27 @@ export function latestExcluding(paths, key) {
 export function versionExists(paths, key) {
     return fs.existsSync(versionDir(paths, key));
 }
-export function metaFromInfo(info, baseUrl, pageCount) {
+export function metaFromInfo(info, baseUrl, pageCount, rev) {
     return {
         key: info.key,
         capturedAt: new Date().toISOString(),
         fromGit: info.fromGit,
         dirty: info.dirty,
         sha: info.sha,
+        ...(rev ? { rev } : {}),
         baseUrl,
         pageCount,
     };
+}
+/**
+ * The revision a version's files can be read or diffed at: its snapshot, or
+ * its commit when it was captured from a clean tree. Null when the captured
+ * files can't be recovered (an old dirty capture, or one made outside git).
+ */
+export function versionRev(meta) {
+    if (meta.rev)
+        return meta.rev;
+    if (meta.fromGit && !meta.dirty && meta.sha)
+        return meta.sha;
+    return null;
 }

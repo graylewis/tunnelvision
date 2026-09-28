@@ -9,6 +9,12 @@ export interface VersionMeta {
 	fromGit: boolean;
 	dirty: boolean;
 	sha?: string;
+	/**
+	 * Full SHA of a commit holding exactly the files captured: `HEAD` for a
+	 * clean tree, a snapshot commit (see `snapshotTree`) for a dirty one.
+	 * Absent in captures made before snapshots existed.
+	 */
+	rev?: string;
 	baseUrl: string;
 	pageCount: number;
 }
@@ -90,6 +96,7 @@ export function metaFromInfo(
 	info: VersionInfo,
 	baseUrl: string,
 	pageCount: number,
+	rev?: string | null,
 ): VersionMeta {
 	return {
 		key: info.key,
@@ -97,7 +104,19 @@ export function metaFromInfo(
 		fromGit: info.fromGit,
 		dirty: info.dirty,
 		sha: info.sha,
+		...(rev ? { rev } : {}),
 		baseUrl,
 		pageCount,
 	};
+}
+
+/**
+ * The revision a version's files can be read or diffed at: its snapshot, or
+ * its commit when it was captured from a clean tree. Null when the captured
+ * files can't be recovered (an old dirty capture, or one made outside git).
+ */
+export function versionRev(meta: VersionMeta): string | null {
+	if (meta.rev) return meta.rev;
+	if (meta.fromGit && !meta.dirty && meta.sha) return meta.sha;
+	return null;
 }

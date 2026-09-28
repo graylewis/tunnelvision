@@ -2,6 +2,7 @@ import pc from "picocolors";
 import type { Overrides } from "../config.js";
 import { diffDir, versionDir } from "../paths.js";
 import { diffVersions } from "../diffengine.js";
+import { addCorrelation } from "../correlate.js";
 import { latestExcluding } from "../versions.js";
 import { printReport, writeJsonReport } from "../report.js";
 import { prepareCapture, runCapture } from "./shoot.js";
@@ -64,6 +65,7 @@ export async function review(opts: ReviewOptions): Promise<number> {
 		ctx.config,
 		{ from: baseline.key, to: ctx.version.key },
 	);
+	addCorrelation(ctx.paths, report);
 
 	printReport(report);
 	if (report.hasChanges) {

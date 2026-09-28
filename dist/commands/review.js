@@ -1,6 +1,7 @@
 import pc from "picocolors";
 import { diffDir, versionDir } from "../paths.js";
 import { diffVersions } from "../diffengine.js";
+import { addCorrelation } from "../correlate.js";
 import { latestExcluding } from "../versions.js";
 import { printReport, writeJsonReport } from "../report.js";
 import { prepareCapture, runCapture } from "./shoot.js";
@@ -40,6 +41,7 @@ export async function review(opts) {
         return capture.missing.length > 0 ? 1 : 0;
     }
     const report = diffVersions(versionDir(ctx.paths, baseline.key), versionDir(ctx.paths, ctx.version.key), diffDir(ctx.paths, baseline.key, ctx.version.key), ctx.config, { from: baseline.key, to: ctx.version.key });
+    addCorrelation(ctx.paths, report);
     printReport(report);
     if (report.hasChanges) {
         console.log(pc.dim(`  diff images: ${diffDir(ctx.paths, baseline.key, ctx.version.key)}`));

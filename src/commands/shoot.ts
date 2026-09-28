@@ -3,7 +3,7 @@ import pc from "picocolors";
 import fs from "node:fs";
 import { applyOverrides, loadConfig, type Config, type Overrides } from "../config.js";
 import { resolvePaths, versionDir, type Paths } from "../paths.js";
-import { resolveVersion, type VersionInfo } from "../git.js";
+import { resolveVersion, snapshotTree, type VersionInfo } from "../git.js";
 import { findSitemaps, parseSitemap } from "../sitemap.js";
 import { resolvePages, type Page } from "../pages.js";
 import { buildShotsYaml, requireShotScraper, runMulti, type RunResult } from "../shotscraper.js";
@@ -14,12 +14,18 @@ import {
 	extractScript,
 	ELEMENT_MANIFEST,
 	MANIFEST_VERSION,
+	STYLE_MANIFEST,
 	PAGE_IMAGE,
 	pngSize,
 	type ElementManifest,
 	type ElementNode,
+	type RawElement,
 } from "../elements.js";
+import { Cascade } from "../cascade.js";
+import { StyleLocator } from "../stylesource.js";
+import { STYLE_MANIFEST_VERSION, writeStyleManifest, type ElementStyles, type RawStyles } from "../styles.js";
 import { metaFromInfo, writeMeta } from "../versions.js";
+import { stabilizeScript } from "../stabilize.js";
 import { resolveComponents, SourceResolver, type ComponentFile } from "../reactsource.js";
 
 export interface ShootOptions extends Overrides {
@@ -92,9 +98,11 @@ export async function runCapture(ctx: CaptureContext): Promise<RunResult> {
 		? ctx.config.authFile
 		: path.join(ctx.paths.root, ctx.config.authFile);
 	const auth = fs.existsSync(authFile) ? authFile : undefined;
+	// Taken before capturing, while the files match what the app is serving.
+	const rev = captureRev(ctx);
 
 	if (ctx.byElement) {
-		return runElementCapture(ctx, auth);
+		return runElementCapture(ctx, rev, auth);
 	}
 
 	const yaml = buildShotsYaml(ctx.pages, ctx.config, ctx.outputDir);
@@ -109,7 +117,7 @@ export async function runCapture(ctx: CaptureContext): Promise<RunResult> {
 
 	writeMeta(
 		ctx.paths,
-		metaFromInfo(ctx.version, ctx.config.baseUrl, ctx.pages.length),
+		metaFromInfo(ctx.version, ctx.config.baseUrl, ctx.pages.length, rev),
 	);
 	return result;
 }
@@ -122,13 +130,16 @@ export async function runCapture(ctx: CaptureContext): Promise<RunResult> {
  * the same load. Only that screenshot and the tree (`elements.json`) are
  * stored; element images are cropped out of it whenever they're needed.
  */
-async function runElementCapture(ctx: CaptureContext, auth?: string): Promise<RunResult> {
+async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?: string): Promise<RunResult> {
 	const { config } = ctx;
 	const scale = config.scaleFactor && config.scaleFactor > 0 ? config.scaleFactor : config.retina ? 2 : 1;
 	const resolver = new SourceResolver(ctx.paths.root);
+	const locator = new StyleLocator(ctx.paths.root);
 	const produced: string[] = [];
 	const missing: string[] = [];
 	const noReactSource: string[] = [];
+	const noStyles: string[] = [];
+	let unlocatedSheets = 0;
 	let elementCount = 0;
 
 	const slugs = ctx.pages.map((page) => page.filename.replace(/\.png$/i, ""));
@@ -152,6 +163,18 @@ async function runElementCapture(ctx: CaptureContext, auth?: string): Promise<Ru
 		addComponents(tree, components);
 		const withSource = [...components.values()].filter((c) => c.source).length;
 		if (components.size > 0 && withSource === 0) noReactSource.push(slug);
+
+		if (capture.styles) {
+			const { rules, unlocated } = await locator.rules(capture.styles);
+			unlocatedSheets += unlocated;
+			writeStyleManifest(path.join(pageRoot, STYLE_MANIFEST), {
+				version: STYLE_MANIFEST_VERSION,
+				rules,
+				elements: elementStyles(tree, capture.tree ?? [], capture.styles, config.styles.properties),
+			});
+		} else {
+			noStyles.push(slug);
+		}
 
 		const manifest: ElementManifest = {
 			version: MANIFEST_VERSION,
@@ -188,7 +211,7 @@ async function runElementCapture(ctx: CaptureContext, auth?: string): Promise<Ru
 			scaleFactor: scale,
 			authFile: auth,
 			concurrency: Math.max(1, Math.floor(config.concurrency)),
-			extractJs: extractScript(config.match.attributes),
+			extractJs: extractScript(config.match.attributes, config.styles.properties),
 		},
 		(i, capture) => {
 			done++;
@@ -208,9 +231,46 @@ async function runElementCapture(ctx: CaptureContext, auth?: string): Promise<Ru
 		);
 	}
 
+	if (noStyles.length > 0) {
+		console.log(pc.yellow(`  Couldn't read CSS rules on ${noStyles.length} page(s); visual changes there can't be traced to CSS.`));
+	}
+	if (unlocatedSheets > 0) {
+		console.log(
+			pc.yellow(
+				`  ${unlocatedSheets} stylesheet(s) couldn't be traced to a source file; ` +
+					"with Vite, set `css: { devSourcemap: true }` for processed CSS (PostCSS, Tailwind, Sass).",
+			),
+		);
+	}
+
 	console.log(pc.dim(`  ${elementCount} elements recorded (cropped from each page screenshot on demand)`));
-	writeMeta(ctx.paths, metaFromInfo(ctx.version, config.baseUrl, ctx.pages.length));
+	writeMeta(ctx.paths, metaFromInfo(ctx.version, config.baseUrl, ctx.pages.length, rev));
 	return { produced, missing, exitCode: 0 };
+}
+
+/**
+ * Resolve the winning declaration of each tracked property on every element,
+ * keyed by element `dir`. `raw` is the tree `nodes` were planned from, index
+ * for index.
+ */
+function elementStyles(
+	nodes: ElementNode[],
+	raw: RawElement[],
+	styles: RawStyles,
+	properties: string[],
+): Record<string, ElementStyles> {
+	const cascade = new Cascade(styles);
+	const out: Record<string, ElementStyles> = {};
+	const visit = (planned: ElementNode[], extracted: RawElement[]): void => {
+		planned.forEach((node, i) => {
+			const source = extracted[i];
+			if (!source) return;
+			out[node.dir] = cascade.resolveElement(node.selector, properties, source.computed ?? {});
+			visit(node.children, source.children);
+		});
+	};
+	visit(nodes, raw);
+	return out;
 }
 
 /** Attach each element's resolved component info, and fill in its source identity from it. */
@@ -227,10 +287,17 @@ function addComponents(nodes: ElementNode[], components: Map<ElementNode, Compon
 	}
 }
 
-/** Resolve wait / waitFor for a page from config. */
-function pageWait(ctx: CaptureContext, page: Page): Pick<PageJob, "wait" | "waitFor"> {
+/** Snapshot the files this capture was taken from, so it can be diffed at them later. */
+function captureRev(ctx: CaptureContext): string | null {
+	return ctx.version.fromGit ? snapshotTree(ctx.paths.root, ctx.version.key) : null;
+}
+
+/** Resolve wait / waitFor / settle for a page from config. */
+function pageWait(ctx: CaptureContext, page: Page): Pick<PageJob, "wait" | "waitFor" | "stabilizeJs"> {
 	const override = ctx.config.pages?.[page.pathAndQuery];
-	const out: Pick<PageJob, "wait" | "waitFor"> = {};
+	const out: Pick<PageJob, "wait" | "waitFor" | "stabilizeJs"> = {
+		stabilizeJs: stabilizeScript(override?.settle ?? ctx.config.settle),
+	};
 	const wait = override?.wait ?? ctx.config.wait;
 	if (wait && wait > 0) out.wait = wait;
 	if (override?.waitFor) out.waitFor = override.waitFor;

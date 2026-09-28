@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Viewport } from "./config.js";
 import type { RawElement } from "./elements.js";
-import { STABILIZE_JS } from "./stabilize.js";
+import type { RawStyles } from "./styles.js";
 
 /**
  * Drive Playwright directly for `--by-element` captures. shot-scraper can't
@@ -27,11 +27,15 @@ export interface PageJob {
 	output: string;
 	wait?: number;
 	waitFor?: string;
+	/** Scrolls to fire reveals, lets them settle, and freezes CSS animations (see `stabilize.ts`). */
+	stabilizeJs: string;
 }
 
 export interface PageCapture {
 	ok: boolean;
 	tree?: RawElement[];
+	/** Matched rules per element, read over CDP; null when that failed. */
+	styles?: RawStyles | null;
 	error?: string;
 }
 
@@ -135,7 +139,7 @@ export function capturePages(
 				try {
 					const msg = JSON.parse(line) as PageCapture & { index: number };
 					const result: PageCapture = msg.ok
-						? { ok: true, tree: Array.isArray(msg.tree) ? msg.tree : [] }
+						? { ok: true, tree: Array.isArray(msg.tree) ? msg.tree : [], styles: msg.styles ?? null }
 						: { ok: false, error: msg.error ?? "unknown error" };
 					results[msg.index] = result;
 					onPage?.(msg.index, result);
@@ -160,7 +164,6 @@ export function capturePages(
 				authFile: opts.authFile ?? null,
 				concurrency: opts.concurrency,
 				extractJs: opts.extractJs,
-				stabilizeJs: STABILIZE_JS,
 				pages,
 			}),
 		);

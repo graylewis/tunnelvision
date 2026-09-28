@@ -87,6 +87,7 @@ tunnelvision review          # captures again and shows a visual diff
 --base-url <url>        override the base URL
 --width <px> --height <px>   viewport size
 --wait <ms>             wait before each capture
+--settle <ms>           let animations finish after the scroll pass (default 500)
 --auth <file>           auth context file
 --threshold <n>         pixelmatch colour threshold (0-1)
 --max-diff-percent <n>  page mismatch % cutoff for pass/fail
@@ -131,12 +132,13 @@ How it works:
   `--concurrency <n>`).
 - **Hierarchy** — every element gets a path named after its tag (disambiguated
   by `id` or sibling index), nested exactly like the DOM, e.g.
-  `header-top/h1` or `main/section-2`. A version stores just two files per page:
+  `header-top/h1` or `main/section-2`. A version stores three files per page:
 
   ```
   versions/<key>/<page>/
     page.png            # full-page screenshot; every element is cropped from it
     elements.json       # the element tree: boxes, selectors, identity, React source
+    styles.json         # tracked CSS properties per element and the rules that set them
   ```
 
 - **Per-element diffs** — `diff`/`review` walk the trees recursively, so you get
@@ -146,6 +148,56 @@ How it works:
   instead of one big page-level diff. Diffing auto-detects the stored layout, so
   `--by-element` on `diff` is optional as long as both versions were captured
   that way.
+
+### Tracing changes to the lines that caused them
+
+`diff`, `review`, the inspector and `update-pr` also work the other way round:
+starting from the lines that changed between two versions, they find the
+visual changes each line caused.
+
+```
+  Causes
+    src/styles.css:7  :root { --accent: #0ea5e9 }
+      → 46 elements  background-color, border-top-color, …
+    src/styles.css:42  .card { padding: 24px }
+      → 74 elements  padding-top, padding-right, …
+    src/styles.css:47 (deleted)  .stat-value { font-size: 24px }
+      → 4 elements  font-size, font-weight, line-height
+    src/components/Header.jsx:6  jsx
+      → 11 elements  font-size
+    1 CSS line with no visible effect (1 not exercised)
+```
+
+- **At capture**, every element records the computed value of a set of
+  **tracked properties** (box model, layout, colour, type, …; set
+  `styles.properties` in config to change it) and, read over the Chrome
+  DevTools Protocol from the same load, the **winning declaration** of each:
+  the rule that set it after the cascade (`!important`, layers, inline
+  styles, inheritance), and the custom properties it goes through via `var()`.
+- **Source lines** come from each stylesheet's source map, or, for CSS served
+  unchanged (plain CSS, CSS Modules in Vite dev), from the file itself once
+  its text is confirmed to match. With Vite and PostCSS, Tailwind or Sass, set
+  `css: { devSourcemap: true }`; `doctor` checks for it.
+- **At diff time**, the git diff between the two versions' captured files is
+  joined against them. A property that changed on an element points at its
+  winning declaration in each version: if that line (or a `var()` it uses, or
+  the element's own JSX line, e.g. a `className` edit) is in the diff, it's a
+  **cause**. Deleted lines are matched against the baseline, so removing a rule
+  is found too. A value that changed under an unchanged declaration (`width:
+  100%` in a wider parent) is a result of layout, not a cause.
+- **Knock-on effects**: elements that moved or resized without a property of
+  their own changing are attributed to the earlier sibling or ancestor that
+  pushed them, and containers to the content that changed inside them.
+- **Leftovers** are listed separately: **unexplained visual changes** (no
+  changed line explains them) and **invisible changes**, changed CSS lines that
+  changed nothing visible. Those whose rule matched no captured element at all
+  (a `:hover` state, another breakpoint) are marked *not exercised*.
+- **Uncommitted work**: a capture of a dirty tree snapshots it as a commit
+  under `refs/tunnelvision/<key>` (your index and checkout are untouched), so it
+  can still be diffed after you keep editing. `clean` removes these refs.
+
+Versions captured before this have no `styles.json`; their changes can still be
+traced to JSX lines. Re-capture them to trace CSS.
 
 ### How elements are matched between versions
 
@@ -243,7 +295,12 @@ Starts a local server with a single-page UI for browsing `--by-element` diffs:
 - selecting an element shows its before / after / diff screenshots, selector,
   rect in both versions, an outline of where it sits on the full page, and the
   React source location and owner chain from `elements.json`, with buttons
-  that open each `file:line` in Zed or VS Code.
+  that open each `file:line` in Zed or VS Code, plus the lines that **caused**
+  its change and its tracked properties before → after;
+- the **causes** view lists the changed lines that caused visual changes,
+  then unexplained visual changes and CSS changes with no visible effect.
+  Selecting a cause shows its representative screenshot and every element it
+  affected.
 
 Diffs are computed when you pick a pair and diff images are written to
 `diffs/<from>__<to>/`, the same as `tunnelvision diff`. Before/after element
@@ -262,13 +319,25 @@ tunnelvision update-pr                # push images + comment on the current bra
 tunnelvision update-pr --pr 12 <from> <to>
 ```
 
-Annotates a GitHub pull request with the `--by-element` diff. Each changed
-element whose React source line is part of the PR's diff gets an inline review
-comment on that line. The comment shows the essentials from the inspector
-(status, mismatch %, selector, path, where it moved from, how it was matched,
-its rect before and after, and the components that rendered it, linked to the
-PR's head) along with **before / after / diff** screenshots. Elements that share
-a source line, like list items or chart bars, are grouped into one comment.
+Annotates a GitHub pull request with the `--by-element` diff. There are two
+modes (`--mode`, or `updatePr.mode` in config):
+
+- **`code-first`** (default): every changed line in the PR that
+  [caused visual changes](#tracing-changes-to-the-lines-that-caused-them) gets
+  an inline review comment on exactly that line (on the old side for deleted
+  lines). It shows one representative change, the largest direct one that
+  isn't an outlier, with the properties the line changed, and lists every
+  other affected element. Visual changes without a cause in the diff, and
+  changed lines with no visible effect, aren't posted; they're in the
+  inspector.
+- **`visual-first`**: every changed element whose React source line is part of
+  the PR's diff gets a comment on that line. Elements that share a source
+  line, like list items or chart bars, are grouped into one comment.
+
+Comments show the essentials from the inspector (status, mismatch %, selector,
+path, where it moved from, how it was matched, its rect before and after, and
+the components that rendered it, linked to the PR's head) along with **before
+/ after / diff** screenshots.
 
 - **Versions**: `to` defaults to the current HEAD. `from` defaults to the
   capture at the PR's merge base with its base branch, and falls back to the
@@ -278,9 +347,10 @@ a source line, like list items or chart bars, are grouped into one comment.
   override with `--branch`) under `pr-<n>/<from>__<to>/` and linked by commit
   SHA, so they render in private repos too. This uses git plumbing only, so
   your checkout and index are never touched.
-- **Skipped elements**: GitHub can only anchor comments on lines inside the
-  PR's diff, so changes whose source line isn't in it (such as a CSS tweak that
-  restyles an untouched component) are skipped and counted in the summary.
+- **Skipped changes**: GitHub can only anchor comments on lines inside the
+  PR's diff. In visual-first mode, changes whose source line isn't in it (such
+  as a CSS tweak that restyles an untouched component) are skipped and counted
+  in the summary; code-first mode comments on the CSS line instead.
 - **Re-running** edits the existing comments (matched by a hidden marker)
   instead of posting duplicates.
 - **Auth**: needs a token with pull request write access and push access, from
@@ -306,6 +376,7 @@ git-ignored.
   "baseUrl": "http://localhost:3000",
   "viewport": { "width": 1280, "height": 800 },
   "wait": 1000,
+  "settle": 500,
   "authFile": ".tunnelvision/auth.json",
   "concurrency": 4,
   "diff": { "threshold": 0.1, "includeAA": false, "maxDiffPercent": 0.1 },
@@ -313,8 +384,10 @@ git-ignored.
     "attributes": ["data-testid", "data-test", "data-cy", "data-qa"],
     "ignoreIds": ["^tmp-"]
   },
+  "styles": { "properties": ["color", "padding-top", "..."] },
+  "updatePr": { "mode": "code-first" },
   "pages": {
-    "/pricing": { "waitFor": "document.querySelector('.loaded')", "wait": 2000 }
+    "/pricing": { "waitFor": "document.querySelector('.loaded')", "wait": 2000, "settle": 3000 }
   }
 }
 ```
@@ -325,6 +398,21 @@ git-ignored.
 capture time, so re-shoot after changing this list. `ignoreIds` adds regular
 expressions for generated ids to ignore, on top of the built-in list. It applies
 at diff time, so it also affects existing captures.
+
+`styles.properties` replaces the default list of tracked properties (leave it
+out to keep the defaults, which change with new versions). It's recorded at
+capture time.
+
+`wait` runs right after the page loads. Then tunnelvision scrolls through the
+page to fire scroll-triggered reveals (framer-motion `whileInView`,
+IntersectionObserver fade-ins, lazy images), waits `settle` for the animations
+they start to finish, and freezes CSS animations and transitions before the
+screenshot. Every capture also emulates `prefers-reduced-motion: reduce`, so
+sites that honour it (CSS media queries, framer-motion's `useReducedMotion` or
+`<MotionConfig reducedMotion="user">`) skip or shorten their animations.
+JS-driven animations that ignore it, such as a plain `motion.div`, aren't
+frozen, so if they're still moving at capture time (and show up as
+unexplained visual changes), raise `settle` for the whole site or per page.
 
 Precedence: **CLI flags > `config.json` > built-in defaults**.
 
@@ -342,6 +430,7 @@ base URL and fails fast if it can't be reached.
   config.json
   auth.json                         # git-ignored secret
   versions/<key>/<page>.png         # screenshots, plus meta.json & shots.yml
+  versions/<key>/<page>/            # --by-element: page.png, elements.json, styles.json
   diffs/<from>__<to>/<page>.png      # pixelmatch diff images
 ```
 

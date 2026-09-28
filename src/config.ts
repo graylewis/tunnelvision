@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import { resolvePaths, type Paths } from "./paths.js";
+import { DEFAULT_SETTLE_MS } from "./stabilize.js";
+import { DEFAULT_TRACKED_PROPERTIES } from "./styles.js";
 
 export interface DiffConfig {
 	/** pixelmatch per-pixel colour threshold (0-1, lower = more sensitive). */
@@ -26,6 +28,23 @@ export interface MatchConfig {
 	ignoreIds: string[];
 }
 
+/** Style data recorded per element in `--by-element` captures. */
+export interface StylesConfig {
+	/** Computed CSS properties whose changes are traced back to the declarations that set them. */
+	properties: string[];
+}
+
+/**
+ * How `update-pr` places screenshots. `code-first`: one comment per changed
+ * line that caused visual changes, on that line. `visual-first`: one comment
+ * per changed element, on its JSX line.
+ */
+export type PrMode = "code-first" | "visual-first";
+
+export interface UpdatePrConfig {
+	mode: PrMode;
+}
+
 export interface Viewport {
 	width: number;
 	height: number;
@@ -36,6 +55,8 @@ export interface PageOverride {
 	waitFor?: string;
 	/** Milliseconds to wait before capturing this page. */
 	wait?: number;
+	/** Milliseconds animations get to finish after the scroll pass on this page. */
+	settle?: number;
 	/** Per-page mismatch-% cutoff override. */
 	maxDiffPercent?: number;
 }
@@ -45,6 +66,12 @@ export interface Config {
 	viewport: Viewport;
 	/** Default milliseconds to wait before capturing each page. */
 	wait: number;
+	/**
+	 * Milliseconds animations get to finish after the scroll pass that fires
+	 * scroll-triggered reveals, before the screenshot. Raise it for pages with
+	 * long JS-driven animations (framer-motion), which aren't frozen.
+	 */
+	settle: number;
 	/** Capture at 2x (retina). Doubles image dimensions. Mutually exclusive with scaleFactor. */
 	retina: boolean;
 	/** Capture at a specific device-pixel scale factor (e.g. 3). Overrides retina when > 0. */
@@ -54,6 +81,8 @@ export interface Config {
 	concurrency: number;
 	diff: DiffConfig;
 	match: MatchConfig;
+	styles: StylesConfig;
+	updatePr: UpdatePrConfig;
 	/** Optional per-page overrides keyed by URL path (e.g. "/pricing"). */
 	pages?: Record<string, PageOverride>;
 }
@@ -62,6 +91,7 @@ export const DEFAULT_CONFIG: Config = {
 	baseUrl: "http://localhost:3000",
 	viewport: { width: 1280, height: 800 },
 	wait: 1000,
+	settle: DEFAULT_SETTLE_MS,
 	retina: false,
 	authFile: ".tunnelvision/auth.json",
 	concurrency: 4,
@@ -74,6 +104,12 @@ export const DEFAULT_CONFIG: Config = {
 		attributes: ["data-testid", "data-test", "data-cy", "data-qa"],
 		ignoreIds: [],
 	},
+	styles: {
+		properties: DEFAULT_TRACKED_PROPERTIES,
+	},
+	updatePr: {
+		mode: "code-first",
+	},
 };
 
 /** Deep-merge a partial config on top of defaults. */
@@ -84,6 +120,8 @@ function withDefaults(partial: Partial<Config>): Config {
 		viewport: { ...DEFAULT_CONFIG.viewport, ...(partial.viewport ?? {}) },
 		diff: { ...DEFAULT_CONFIG.diff, ...(partial.diff ?? {}) },
 		match: { ...DEFAULT_CONFIG.match, ...(partial.match ?? {}) },
+		styles: { ...DEFAULT_CONFIG.styles, ...(partial.styles ?? {}) },
+		updatePr: { ...DEFAULT_CONFIG.updatePr, ...(partial.updatePr ?? {}) },
 	};
 }
 
@@ -113,8 +151,11 @@ export function loadConfig(paths: Paths): Config {
 }
 
 export function saveConfig(paths: Paths, config: Config): void {
+	// Default tracked properties aren't written out, so they keep up with new versions.
+	const { styles, ...rest } = config;
+	const saved = styles.properties === DEFAULT_CONFIG.styles.properties ? rest : config;
 	fs.mkdirSync(paths.dir, { recursive: true });
-	fs.writeFileSync(paths.config, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+	fs.writeFileSync(paths.config, `${JSON.stringify(saved, null, 2)}\n`, "utf8");
 }
 
 /**
@@ -126,6 +167,7 @@ export interface Overrides {
 	width?: number;
 	height?: number;
 	wait?: number;
+	settle?: number;
 	threshold?: number;
 	maxDiffPercent?: number;
 	retina?: boolean;
@@ -142,11 +184,14 @@ export function applyOverrides(config: Config, o: Overrides): Config {
 		viewport: { ...config.viewport },
 		diff: { ...config.diff },
 		match: { ...config.match },
+		styles: { ...config.styles },
+		updatePr: { ...config.updatePr },
 	};
 	if (o.baseUrl !== undefined) next.baseUrl = o.baseUrl;
 	if (o.width !== undefined) next.viewport.width = o.width;
 	if (o.height !== undefined) next.viewport.height = o.height;
 	if (o.wait !== undefined) next.wait = o.wait;
+	if (o.settle !== undefined) next.settle = o.settle;
 	if (o.retina !== undefined) next.retina = o.retina;
 	if (o.scaleFactor !== undefined) next.scaleFactor = o.scaleFactor;
 	if (o.threshold !== undefined) next.diff.threshold = o.threshold;

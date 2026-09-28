@@ -77,12 +77,14 @@ export class GitHub {
     /** Which lines of each changed file sit inside a diff hunk (and so can be commented on). */
     async commentableLines(number) {
         const files = await this.list(`/pulls/${number}/files`);
-        const out = { right: new Map(), left: new Map() };
+        const out = { right: new Map(), left: new Map(), changed: { right: new Map(), left: new Map() } };
         for (const f of files) {
             if (!f.patch)
                 continue;
             const right = new Set();
             const left = new Set();
+            const added = new Set();
+            const deleted = new Set();
             let oldLine = 0;
             let newLine = 0;
             for (const line of f.patch.split("\n")) {
@@ -92,9 +94,11 @@ export class GitHub {
                     newLine = Number(hunk[2]);
                 }
                 else if (line.startsWith("+")) {
+                    added.add(newLine);
                     right.add(newLine++);
                 }
                 else if (line.startsWith("-")) {
+                    deleted.add(oldLine);
                     left.add(oldLine++);
                 }
                 else if (!line.startsWith("\\")) {
@@ -105,6 +109,8 @@ export class GitHub {
             }
             out.right.set(f.filename, right);
             out.left.set(f.filename, left);
+            out.changed.right.set(f.filename, added);
+            out.changed.left.set(f.filename, deleted);
         }
         return out;
     }

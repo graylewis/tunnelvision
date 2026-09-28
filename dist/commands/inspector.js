@@ -8,6 +8,8 @@ import { applyOverrides, configExists, DEFAULT_CONFIG, loadConfig } from "../con
 import { diffDir, resolvePaths, versionDir } from "../paths.js";
 import { diffVersions } from "../diffengine.js";
 import { listVersions, versionExists } from "../versions.js";
+import { addCorrelation } from "../correlate.js";
+import { topLevel } from "../git.js";
 import { matchElements, matchOptions } from "../matching.js";
 import { cropRect, ELEMENT_IMAGE, ELEMENT_MANIFEST, ElementImages, PAGE_IMAGE, pngSize, readElementManifest, } from "../elements.js";
 /** The single-page UI, shipped alongside `dist/` (see `files` in package.json). */
@@ -41,7 +43,7 @@ export function buildDiff(paths, overrides, from, to) {
     const fromDir = versionDir(paths, from);
     const toDir = versionDir(paths, to);
     const outDir = diffDir(paths, from, to);
-    const report = diffVersions(fromDir, toDir, outDir, config, { from, to });
+    const report = addCorrelation(paths, diffVersions(fromDir, toDir, outDir, config, { from, to }));
     // A removed element can share its path with a different element in the
     // target, so removals are looked up separately.
     const byFile = new Map();
@@ -143,6 +145,9 @@ export function buildDiff(paths, overrides, from, to) {
         },
         threshold: config.diff.threshold,
         pages,
+        correlation: report.correlation ?? null,
+        ...(report.correlationSkipped ? { correlationSkipped: report.correlationSkipped } : {}),
+        repoRoot: topLevel(paths.root) ?? paths.root,
     };
 }
 /** Resolve `rel` under `base`, refusing anything that escapes it. */

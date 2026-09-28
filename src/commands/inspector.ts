@@ -8,6 +8,8 @@ import { applyOverrides, configExists, DEFAULT_CONFIG, loadConfig, type Override
 import { diffDir, resolvePaths, versionDir, type Paths } from "../paths.js";
 import { diffVersions, type DiffReport, type PageDiff, type PageStatus } from "../diffengine.js";
 import { listVersions, versionExists } from "../versions.js";
+import { addCorrelation, type Correlation } from "../correlate.js";
+import { topLevel } from "../git.js";
 import { matchElements, matchOptions, type MatchedBy } from "../matching.js";
 import {
 	cropRect,
@@ -97,6 +99,12 @@ export interface InspectorDiff {
 	/** The pixelmatch colour threshold this diff ran with. */
 	threshold: number;
 	pages: InspectorPage[];
+	/** Which changed lines caused which visual changes. */
+	correlation: Correlation | null;
+	/** Why there's no `correlation`. */
+	correlationSkipped?: string;
+	/** Repository top level, which cause paths are relative to. */
+	repoRoot: string;
 }
 
 export const CHANGE_STATUSES = new Set<NodeStatus>(["changed", "added", "removed", "size-mismatch", "error"]);
@@ -128,7 +136,7 @@ export function buildDiff(paths: Paths, overrides: Overrides, from: string, to: 
 	const toDir = versionDir(paths, to);
 	const outDir = diffDir(paths, from, to);
 
-	const report = diffVersions(fromDir, toDir, outDir, config, { from, to });
+	const report = addCorrelation(paths, diffVersions(fromDir, toDir, outDir, config, { from, to }));
 	// A removed element can share its path with a different element in the
 	// target, so removals are looked up separately.
 	const byFile = new Map<string, PageDiff>();
@@ -246,6 +254,9 @@ export function buildDiff(paths: Paths, overrides: Overrides, from: string, to: 
 		},
 		threshold: config.diff.threshold,
 		pages,
+		correlation: report.correlation ?? null,
+		...(report.correlationSkipped ? { correlationSkipped: report.correlationSkipped } : {}),
+		repoRoot: topLevel(paths.root) ?? paths.root,
 	};
 }
 

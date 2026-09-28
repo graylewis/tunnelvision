@@ -1,0 +1,8 @@
+@layer base, theme;
+@layer theme { .spike-a { color: green; } }
+@layer base { .spike-a { color: red; padding: 4px; } }
+:root { --spike-gap: 12px; --spike-alias: var(--spike-gap); }
+.spike-a { padding: 8px 16px; margin: var(--spike-alias); }
+.spike-b { color: blue !important; }
+.spike-parent { color: purple; font-size: 18px; }
+#x.spike-b { color: orange; }

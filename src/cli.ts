@@ -27,6 +27,11 @@ function withCaptureOptions(cmd: Command): Command {
 		.option("--width <px>", "viewport width", num)
 		.option("--height <px>", "viewport height", num)
 		.option("--wait <ms>", "milliseconds to wait before each capture", num)
+		.option(
+			"--settle <ms>",
+			"milliseconds animations get to finish after scrolling to trigger reveals, before the screenshot (default 500)",
+			num,
+		)
 		.option("--retina", "capture at 2x (retina); doubles image dimensions")
 		.option("--scale-factor <n>", "capture at a specific device pixel scale factor", num)
 		.option("--auth <file>", "path to a shot-scraper auth context file")
@@ -83,6 +88,7 @@ withCaptureOptions(
 			width: opts.width,
 			height: opts.height,
 			wait: opts.wait,
+			settle: opts.settle,
 			retina: opts.retina,
 			scaleFactor: opts.scaleFactor,
 			auth: opts.auth,
@@ -129,6 +135,7 @@ withDiffOptions(
 			width: opts.width,
 			height: opts.height,
 			wait: opts.wait,
+			settle: opts.settle,
 			retina: opts.retina,
 			scaleFactor: opts.scaleFactor,
 			auth: opts.auth,
@@ -191,7 +198,7 @@ program
 
 program
 	.command("update-pr")
-	.description("Comment on a GitHub PR with per-element visual diffs, anchored at each element's source line")
+	.description("Comment on a GitHub PR with visual diffs, anchored at the lines that caused them")
 	.argument("[from]", "baseline version key (defaults to the PR's merge base, else the previous capture)")
 	.argument("[to]", "target version key (defaults to the current HEAD)")
 	.option("--pr <n>", "pull request number (defaults to the open PR for the current branch)", num)
@@ -200,6 +207,7 @@ program
 	.option("--threshold <n>", "pixelmatch colour threshold (0-1)", num)
 	.option("--max-diff-percent <n>", "element mismatch %% cutoff for changed", num)
 	.option("--dry-run", "print the comments without pushing images or posting")
+	.option("--mode <mode>", "code-first (a comment per changed line that caused changes) or visual-first (per changed element)")
 	.action((from, to, opts) =>
 		run(() =>
 			updatePr({
@@ -212,6 +220,7 @@ program
 				threshold: opts.threshold,
 				maxDiffPercent: opts.maxDiffPercent,
 				dryRun: opts.dryRun,
+				mode: opts.mode,
 			}),
 		),
 	);

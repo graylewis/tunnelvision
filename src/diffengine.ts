@@ -13,7 +13,8 @@ import {
 	type ElementManifest,
 	type ElementNode,
 } from "./elements.js";
-import { matchElements, matchOptions, type MatchedBy } from "./matching.js";
+import type { Correlation } from "./correlate.js";
+import { matchElements, matchOptions, type ElementMatch, type MatchedBy } from "./matching.js";
 
 export type PageStatus = "unchanged" | "changed" | "added" | "removed" | "size-mismatch" | "error";
 
@@ -45,6 +46,22 @@ export interface DiffReport {
 	removedCount: number;
 	/** True if anything counts as a change for exit-code purposes. */
 	hasChanges: boolean;
+	/**
+	 * Per-element pages keyed by slug: both manifests and how their elements
+	 * were paired. Non-enumerable, so it stays out of JSON reports.
+	 */
+	pairs?: Map<string, PagePairs>;
+	/** Which changed lines caused which visual changes (see `correlate.ts`), when it could be worked out. */
+	correlation?: Correlation;
+	/** Why there's no `correlation`. */
+	correlationSkipped?: string;
+}
+
+/** A per-element page captured in both versions, and how its elements were paired. */
+export interface PagePairs {
+	from: ElementManifest;
+	to: ElementManifest;
+	match: ElementMatch;
 }
 
 /**
@@ -182,6 +199,7 @@ export function diffVersions(
 	const doneFrom = new Set<string>();
 	const doneTo = new Set<string>();
 	const opts = matchOptions(config.match);
+	const pairs = new Map<string, PagePairs>();
 
 	const pageSlugs = new Set([...fromFiles, ...toFiles].map((f) => f.split("/")[0]));
 	for (const slug of pageSlugs) {
@@ -192,6 +210,7 @@ export function diffVersions(
 		const pageB: ElementPage = { manifest: b, page: tryReadPng(path.join(toDir, slug, PAGE_IMAGE)) };
 
 		const match = matchElements(a.elements, b.elements, opts);
+		pairs.set(slug, { from: a, to: b, match });
 		const rel = (n: ElementNode) => `${slug}/${n.dir}/${ELEMENT_IMAGE}`;
 		const visit = (nodes: ElementNode[], side: "from" | "to"): void => {
 			for (const n of nodes) {
@@ -260,7 +279,7 @@ export function diffVersions(
 	const addedCount = pages.filter((p) => p.status === "added").length;
 	const removedCount = pages.filter((p) => p.status === "removed").length;
 
-	return {
+	const report: DiffReport = {
 		from: labels.from,
 		to: labels.to,
 		pages,
@@ -269,6 +288,8 @@ export function diffVersions(
 		removedCount,
 		hasChanges: changedCount + addedCount + removedCount > 0,
 	};
+	Object.defineProperty(report, "pairs", { value: pairs, enumerable: false });
+	return report;
 }
 
 /** Find a per-page maxDiffPercent override by matching the filename's page path. */

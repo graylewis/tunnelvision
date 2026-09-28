@@ -1,3 +1,20 @@
+### human-written docs
+tunnelvision is an app that allows you to review visual changes to your git repo just like code changes. each code change is mapped
+directly to the visual consequences of that change, and presented to you with screenshots of exactly what changed. 
+
+tunnelvision is installed directly into your repo, and all of the artifacts necessary for use are stored in `.tunnelvision`
+
+steps to set up:
+1. install shot-scraper, ensure that it's on your path
+2. install tunnelvision into your repo.
+3. `npx tunnelvision init` in your repo.
+4. `npx tunnelvision shoot` to create a 'commit' of how your app looks.
+5. after making some changes, run `npx tunnelvision shoot` again to create a second commit.
+6. `npx tunnelvision diff` generates a diff for you or your agent. alternatively, use `npx tunnelvision inspector` for a lightweight web interface.
+7. install tunnelvision sandhog for a richer experience
+
+----
+### agent-written docs
 # tunnelvision
 
 Screenshot every page of your app from its sitemap, version the shots by git

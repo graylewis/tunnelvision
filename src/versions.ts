@@ -46,7 +46,8 @@ export function listVersions(paths: Paths): VersionMeta[] {
 	for (const key of dirs) {
 		const meta = readMeta(paths, key);
 		if (meta) {
-			metas.push(meta);
+			// The directory name is the key: a renamed capture keeps its old key in meta.json.
+			metas.push({ ...meta, key });
 		} else {
 			// Fall back to directory mtime if meta is missing.
 			const stat = fs.statSync(versionDir(paths, key));

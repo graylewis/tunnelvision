@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TraceMap, originalPositionFor } from "@jridgewell/trace-mapping";
-import { COMPONENT_FILE, resolveElementOutput } from "./elements.js";
 const FETCH_TIMEOUT_MS = 5000;
 /** Resolve symlinks (e.g. macOS /var → /private/var) so root-relative paths line up. */
 function realpath(p) {
@@ -159,20 +158,4 @@ export async function resolveComponents(nodes, resolver) {
     };
     await visit(nodes);
     return files;
-}
-/**
- * Write each resolved `component.json` into its element's directory. Returns
- * how many were written and how many carried a source location (zero with
- * React present usually means a production build).
- */
-export function writeComponentFiles(pageRoot, files) {
-    let withSource = 0;
-    for (const [node, file] of files) {
-        const out = resolveElementOutput(pageRoot, `${node.dir}/${COMPONENT_FILE}`);
-        fs.mkdirSync(path.dirname(out), { recursive: true });
-        fs.writeFileSync(out, `${JSON.stringify(file, null, 2)}\n`, "utf8");
-        if (file.source)
-            withSource++;
-    }
-    return { written: files.size, withSource };
 }

@@ -9,112 +9,10 @@ import { diffDir, resolvePaths, versionDir } from "../paths.js";
 import { diffVersions } from "../diffengine.js";
 import { listVersions, versionExists } from "../versions.js";
 import { matchElements, matchOptions } from "../matching.js";
-import { COMPONENT_FILE, ELEMENT_IMAGE, ELEMENT_MANIFEST, PAGE_IMAGE, } from "../elements.js";
+import { cropRect, ELEMENT_IMAGE, ELEMENT_MANIFEST, ElementImages, PAGE_IMAGE, pngSize, readElementManifest, } from "../elements.js";
 /** The single-page UI, shipped alongside `dist/` (see `files` in package.json). */
 const PAGE_FILE = new URL("../../assets/inspector.html", import.meta.url);
-/**
- * Find `element` inside `page` by pixel matching, searching outward from the
- * recorded position `(ex, ey)`.
- *
- * The recorded rects can't be trusted on their own. Elements are measured with
- * `shot-scraper javascript`, which always uses Playwright's default 1280×720
- * viewport, but screenshots use the configured viewport. So anything that
- * depends on viewport height (vertically centred layouts, `vh` units) lands
- * somewhere else in `page.png`. The element screenshot comes from the same run
- * as the page screenshot, so matching its pixels gives the true position.
- *
- * We compare only a sparse set of high-contrast "edge" pixels, which makes
- * each candidate cheap and keeps blank areas from matching at the wrong offset.
- */
-function locateElement(page, element, ex, ey, dpr) {
-    const { width: w, height: h } = element;
-    if (w > page.width || h > page.height)
-        return null;
-    const e = element.data;
-    const p = page.data;
-    // The strongest-gradient pixel in each cell of a 16×16 grid over the element.
-    const cells = 16;
-    const samples = [];
-    for (let cy = 0; cy < cells; cy++) {
-        for (let cx = 0; cx < cells; cx++) {
-            let best = -1;
-            let bestGrad = 30;
-            const x0 = Math.floor((cx * w) / cells);
-            const x1 = Math.min(w - 1, Math.floor(((cx + 1) * w) / cells));
-            const y0 = Math.floor((cy * h) / cells);
-            const y1 = Math.min(h - 1, Math.floor(((cy + 1) * h) / cells));
-            for (let y = y0; y < y1; y++) {
-                for (let x = x0; x < x1; x++) {
-                    const i = (y * w + x) * 4;
-                    const r = i + 4;
-                    const d = i + w * 4;
-                    let g = 0;
-                    for (let c = 0; c < 3; c++)
-                        g += Math.abs(e[i + c] - e[r + c]) + Math.abs(e[i + c] - e[d + c]);
-                    if (g > bestGrad) {
-                        bestGrad = g;
-                        best = y * w + x;
-                    }
-                }
-            }
-            if (best >= 0)
-                samples.push(best);
-        }
-    }
-    // A flat element can't be told apart from its surroundings.
-    if (samples.length < 4)
-        return null;
-    const sx = samples.map((s) => s % w);
-    const sy = samples.map((s) => Math.floor(s / w));
-    const score = (ox, oy, limit) => {
-        let total = 0;
-        for (let k = 0; k < samples.length && total < limit; k++) {
-            const i = samples[k] * 4;
-            const j = ((oy + sy[k]) * page.width + ox + sx[k]) * 4;
-            total += Math.abs(e[i] - p[j]) + Math.abs(e[i + 1] - p[j + 1]) + Math.abs(e[i + 2] - p[j + 2]);
-        }
-        return total;
-    };
-    // Search outward from the recorded position so ties go to the nearest offset.
-    const outward = (range) => {
-        const out = [0];
-        for (let d = 1; d <= range; d++)
-            out.push(d, -d);
-        return out;
-    };
-    const dxs = outward(Math.round(64 * dpr));
-    const dys = outward(Math.round(400 * dpr));
-    let best = { x: 0, y: 0, score: Infinity };
-    search: for (const dy of dys) {
-        const oy = Math.round(ey) + dy;
-        if (oy < 0 || oy + h > page.height)
-            continue;
-        for (const dx of dxs) {
-            const ox = Math.round(ex) + dx;
-            if (ox < 0 || ox + w > page.width)
-                continue;
-            const sc = score(ox, oy, best.score);
-            if (sc < best.score) {
-                best = { x: ox, y: oy, score: sc };
-                if (sc === 0)
-                    break search;
-            }
-        }
-    }
-    // Allow for anti-aliasing and compression noise, but reject real mismatches.
-    if (best.score / samples.length > 24)
-        return null;
-    return { x: best.x, y: best.y, width: w, height: h, matched: true };
-}
 export const CHANGE_STATUSES = new Set(["changed", "added", "removed", "size-mismatch", "error"]);
-function readJson(file) {
-    try {
-        return JSON.parse(fs.readFileSync(file, "utf8"));
-    }
-    catch {
-        return null;
-    }
-}
 /** Page slugs in a version: element-root directories plus flat `<slug>.png` captures. */
 function listPages(dir) {
     const out = new Map();
@@ -171,8 +69,10 @@ export function buildDiff(paths, overrides, from, to) {
             const s = statusOf(image, fs.existsSync(path.join(fromDir, image)), fs.existsSync(path.join(toDir, image)));
             return { slug, url: null, byElement, ...s, image, changedElements: 0, elements: [] };
         }
-        const fromManifest = readJson(path.join(fromRoot, ELEMENT_MANIFEST));
-        const toManifest = readJson(path.join(toRoot, ELEMENT_MANIFEST));
+        const fromManifest = readElementManifest(path.join(fromRoot, ELEMENT_MANIFEST));
+        const toManifest = readElementManifest(path.join(toRoot, ELEMENT_MANIFEST));
+        const fromSize = pngSize(path.join(fromRoot, PAGE_IMAGE));
+        const toSize = pngSize(path.join(toRoot, PAGE_IMAGE));
         // Pair elements the same way the diff did, then lay the tree out in the
         // target's shape, with removed elements under their old parent's partner.
         const fromTree = fromManifest?.elements ?? [];
@@ -182,13 +82,15 @@ export function buildDiff(paths, overrides, from, to) {
         const make = (a, b, children) => {
             const node = (b ?? a);
             const dir = node.dir;
-            const img = (root, n) => Boolean(n) && fs.existsSync(path.join(root, ...n.dir.split("/"), ELEMENT_IMAGE));
-            const s = statusOf(`${slug}/${dir}/${ELEMENT_IMAGE}`, img(fromRoot, a), img(toRoot, b), !b);
+            const crop = {
+                from: (a && fromSize && fromManifest && cropRect(fromSize, a.box, fromManifest.scale)) || null,
+                to: (b && toSize && toManifest && cropRect(toSize, b.box, toManifest.scale)) || null,
+            };
+            const s = statusOf(`${slug}/${dir}/${ELEMENT_IMAGE}`, Boolean(crop.from), Boolean(crop.to), !b);
             // A node missing from one tree is added/removed even if its capture failed.
             if (s.status === "missing" && (!a || !b))
                 s.status = a ? "removed" : "added";
-            const component = (b && readJson(path.join(toRoot, ...b.dir.split("/"), COMPONENT_FILE))) ??
-                (a && readJson(path.join(fromRoot, ...a.dir.split("/"), COMPONENT_FILE)));
+            const component = b?.component ?? a?.component;
             return {
                 tag: node.tag,
                 id: node.id,
@@ -200,6 +102,7 @@ export function buildDiff(paths, overrides, from, to) {
                 moved: Boolean(b && match.moved.has(b)),
                 selector: node.selector,
                 rect: { from: a?.rect ?? null, to: b?.rect ?? null },
+                crop,
                 ...s,
                 component: component ?? null,
                 changedDescendants: countChanged(children),
@@ -265,50 +168,8 @@ export async function inspector(opts) {
         throw new Error(`No captures found under ${paths.versions}. Run \`tunnelvision shoot --by-element\` first.`);
     }
     const cache = new Map();
-    const located = new Map();
-    const viewportWidth = (configExists(paths) ? loadConfig(paths) : DEFAULT_CONFIG).viewport.width;
-    // Decoded page screenshots, kept for the most recent few pages.
-    const pagePngs = new Map();
-    const readPagePng = (file) => {
-        let png = pagePngs.get(file);
-        if (!png) {
-            png = PNG.sync.read(fs.readFileSync(file));
-            if (pagePngs.size >= 8)
-                pagePngs.delete(pagePngs.keys().next().value);
-        }
-        pagePngs.delete(file);
-        pagePngs.set(file, png);
-        return png;
-    };
-    /** The element's box in `page.png`: matched when possible, else the recorded rect. */
-    const locate = (pageRoot, dir, elDir) => {
-        const manifest = readJson(path.join(pageRoot, ELEMENT_MANIFEST));
-        const find = (nodes) => {
-            for (const n of nodes) {
-                if (n.dir === dir)
-                    return n;
-                if (dir.startsWith(`${n.dir}/`))
-                    return find(n.children);
-            }
-            return undefined;
-        };
-        const node = manifest && find(manifest.elements);
-        const pageFile = path.join(pageRoot, PAGE_IMAGE);
-        if (!node || !fs.existsSync(pageFile))
-            return null;
-        const page = readPagePng(pageFile);
-        const { rect } = node;
-        const elementFile = path.join(elDir, ELEMENT_IMAGE);
-        if (fs.existsSync(elementFile)) {
-            const element = PNG.sync.read(fs.readFileSync(elementFile));
-            const dpr = rect.width > 0 ? element.width / rect.width : 1;
-            const found = locateElement(page, element, rect.x * dpr, rect.y * dpr, dpr);
-            if (found)
-                return found;
-        }
-        const dpr = Math.max(1, Math.round(page.width / viewportWidth));
-        return { x: rect.x * dpr, y: rect.y * dpr, width: rect.width * dpr, height: rect.height * dpr, matched: false };
-    };
+    // Element images are cropped from page screenshots on request.
+    const images = new ElementImages();
     const server = http.createServer((req, res) => {
         const url = new URL(req.url ?? "/", "http://localhost");
         try {
@@ -323,21 +184,6 @@ export async function inspector(opts) {
                 const base = configExists(paths) ? loadConfig(paths) : DEFAULT_CONFIG;
                 const threshold = applyOverrides(base, opts).diff.threshold;
                 return sendJson(res, 200, { root: paths.root, versions, threshold });
-            }
-            if (url.pathname === "/api/locate") {
-                // ?version=<key>&page=<slug>&dir=<element dir>
-                const version = url.searchParams.get("version") ?? "";
-                const slug = url.searchParams.get("page") ?? "";
-                const dir = url.searchParams.get("dir") ?? "";
-                const vdir = safeJoin(paths.versions, version);
-                const pageRoot = vdir && version && safeJoin(vdir, slug);
-                const elDir = pageRoot && slug && safeJoin(pageRoot, dir);
-                if (!elDir)
-                    return sendJson(res, 404, { error: "Unknown element" });
-                const cacheKey = `${version}\0${slug}\0${dir}`;
-                if (!located.has(cacheKey))
-                    located.set(cacheKey, locate(pageRoot, dir, elDir));
-                return sendJson(res, 200, located.get(cacheKey));
             }
             if (url.pathname === "/api/diff") {
                 const from = url.searchParams.get("from") ?? "";
@@ -364,6 +210,7 @@ export async function inspector(opts) {
                 if (!result ||
                     url.searchParams.has("refresh") ||
                     overrides.threshold !== result.threshold) {
+                    images.clear();
                     result = buildDiff(paths, overrides, from, to);
                     cache.set(cacheKey, result);
                 }
@@ -375,11 +222,20 @@ export async function inspector(opts) {
                 const [, kind, key, rel] = img;
                 const base = kind === "version" ? paths.versions : paths.diffs;
                 const dir = safeJoin(base, decodeURIComponent(key));
-                const file = dir && safeJoin(dir, decodeURIComponent(rel));
-                if (!file || !file.toLowerCase().endsWith(".png") || !fs.existsSync(file)) {
+                const relPath = decodeURIComponent(rel);
+                const file = dir && safeJoin(dir, relPath);
+                if (!file || !file.toLowerCase().endsWith(".png"))
                     return send(res, 404, "text/plain", "Not found");
+                if (fs.existsSync(file))
+                    return send(res, 200, "image/png", fs.readFileSync(file));
+                // <slug>/<element dir>/element.png in a version: crop it out of the page.
+                const parts = relPath.split("/").filter(Boolean);
+                if (kind === "version" && parts.length > 2 && parts.at(-1) === ELEMENT_IMAGE) {
+                    const crop = images.crop(path.join(dir, parts[0]), parts.slice(1, -1).join("/"));
+                    if (crop)
+                        return send(res, 200, "image/png", PNG.sync.write(crop));
                 }
-                return send(res, 200, "image/png", fs.readFileSync(file));
+                return send(res, 404, "text/plain", "Not found");
             }
             send(res, 404, "text/plain", "Not found");
         }

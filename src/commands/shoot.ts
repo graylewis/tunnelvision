@@ -10,22 +10,17 @@ import { buildShotsYaml, requireShotScraper, runMulti, type RunResult } from "..
 import { capturePages, type PageCapture, type PageJob } from "../playwright.js";
 import {
 	assignDirs,
-	collectShots,
-	cropElements,
+	cropRect,
 	extractScript,
 	ELEMENT_MANIFEST,
 	MANIFEST_VERSION,
 	PAGE_IMAGE,
+	pngSize,
 	type ElementManifest,
 	type ElementNode,
 } from "../elements.js";
 import { metaFromInfo, writeMeta } from "../versions.js";
-import {
-	resolveComponents,
-	SourceResolver,
-	writeComponentFiles,
-	type ComponentFile,
-} from "../reactsource.js";
+import { resolveComponents, SourceResolver, type ComponentFile } from "../reactsource.js";
 
 export interface ShootOptions extends Overrides {
 	root: string;
@@ -124,8 +119,8 @@ export async function runCapture(ctx: CaptureContext): Promise<RunResult> {
  *
  * Each page is loaded once (several pages at a time): the driver waits, reads
  * the visible block-level element tree, and takes a full-page screenshot from
- * the same load. We then lay the tree out as nested directories under the
- * page's slug and crop every element's box out of that screenshot.
+ * the same load. Only that screenshot and the tree (`elements.json`) are
+ * stored; element images are cropped out of it whenever they're needed.
  */
 async function runElementCapture(ctx: CaptureContext, auth?: string): Promise<RunResult> {
 	const { config } = ctx;
@@ -134,6 +129,7 @@ async function runElementCapture(ctx: CaptureContext, auth?: string): Promise<Ru
 	const produced: string[] = [];
 	const missing: string[] = [];
 	const noReactSource: string[] = [];
+	let elementCount = 0;
 
 	const slugs = ctx.pages.map((page) => page.filename.replace(/\.png$/i, ""));
 	const jobs: PageJob[] = ctx.pages.map((page, i) => ({
@@ -153,12 +149,15 @@ async function runElementCapture(ctx: CaptureContext, auth?: string): Promise<Ru
 
 		// React source locations, which also feed each element's identity.
 		const components = await resolveComponents(tree, resolver);
-		addSourceIdentity(tree, components);
+		addComponents(tree, components);
+		const withSource = [...components.values()].filter((c) => c.source).length;
+		if (components.size > 0 && withSource === 0) noReactSource.push(slug);
 
 		const manifest: ElementManifest = {
 			version: MANIFEST_VERSION,
 			url: ctx.pages[i].url,
 			extractedAt: new Date().toISOString(),
+			scale,
 			elements: tree,
 		};
 		fs.writeFileSync(
@@ -167,14 +166,17 @@ async function runElementCapture(ctx: CaptureContext, auth?: string): Promise<Ru
 			"utf8",
 		);
 
-		// React source locations alongside each element, when the page uses React.
-		const react = writeComponentFiles(pageRoot, components);
-		if (react.written > 0 && react.withSource === 0) noReactSource.push(slug);
-
-		// One crop per element, nested to mirror the DOM.
-		const crops = cropElements(jobs[i].output, pageRoot, collectShots(tree), scale);
-		produced.push(`${slug}/${PAGE_IMAGE}`, ...crops.produced.map((rel) => `${slug}/${rel}`));
-		missing.push(...crops.missing.map((rel) => `${slug}/${rel} (outside the page)`));
+		produced.push(`${slug}/${PAGE_IMAGE}`);
+		// Elements that can't be cropped out of the screenshot have no image.
+		const size = pngSize(jobs[i].output);
+		const visit = (nodes: ElementNode[]): void => {
+			for (const node of nodes) {
+				if (size && cropRect(size, node.box, scale)) elementCount++;
+				else missing.push(`${slug}/${node.dir} (outside the page)`);
+				visit(node.children);
+			}
+		};
+		visit(tree);
 	};
 
 	const pending: Promise<void>[] = [];
@@ -206,19 +208,22 @@ async function runElementCapture(ctx: CaptureContext, auth?: string): Promise<Ru
 		);
 	}
 
+	console.log(pc.dim(`  ${elementCount} elements recorded (cropped from each page screenshot on demand)`));
 	writeMeta(ctx.paths, metaFromInfo(ctx.version, config.baseUrl, ctx.pages.length));
 	return { produced, missing, exitCode: 0 };
 }
 
-/** Fill in each element's source file and location from its resolved component info. */
-function addSourceIdentity(nodes: ElementNode[], components: Map<ElementNode, ComponentFile>): void {
+/** Attach each element's resolved component info, and fill in its source identity from it. */
+function addComponents(nodes: ElementNode[], components: Map<ElementNode, ComponentFile>): void {
 	for (const node of nodes) {
-		const source = components.get(node)?.source;
+		const component = components.get(node);
+		if (component) node.component = component;
+		const source = component?.source;
 		if (node.identity && source) {
 			node.identity.source = source.path;
 			node.identity.file = source.path.replace(/:\d+:\d+$/, "");
 		}
-		addSourceIdentity(node.children, components);
+		addComponents(node.children, components);
 	}
 }
 

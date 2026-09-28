@@ -8,9 +8,9 @@ import { findSitemaps, parseSitemap } from "../sitemap.js";
 import { resolvePages } from "../pages.js";
 import { buildShotsYaml, requireShotScraper, runMulti } from "../shotscraper.js";
 import { capturePages } from "../playwright.js";
-import { assignDirs, collectShots, cropElements, extractScript, ELEMENT_MANIFEST, MANIFEST_VERSION, PAGE_IMAGE, } from "../elements.js";
+import { assignDirs, cropRect, extractScript, ELEMENT_MANIFEST, MANIFEST_VERSION, PAGE_IMAGE, pngSize, } from "../elements.js";
 import { metaFromInfo, writeMeta } from "../versions.js";
-import { resolveComponents, SourceResolver, writeComponentFiles, } from "../reactsource.js";
+import { resolveComponents, SourceResolver } from "../reactsource.js";
 /** Load config + sitemap + resolve pages and the version key. Throws on fatal problems. */
 export async function prepareCapture(opts) {
     const paths = resolvePaths(opts.root);
@@ -73,8 +73,8 @@ export async function runCapture(ctx) {
  *
  * Each page is loaded once (several pages at a time): the driver waits, reads
  * the visible block-level element tree, and takes a full-page screenshot from
- * the same load. We then lay the tree out as nested directories under the
- * page's slug and crop every element's box out of that screenshot.
+ * the same load. Only that screenshot and the tree (`elements.json`) are
+ * stored; element images are cropped out of it whenever they're needed.
  */
 async function runElementCapture(ctx, auth) {
     const { config } = ctx;
@@ -83,6 +83,7 @@ async function runElementCapture(ctx, auth) {
     const produced = [];
     const missing = [];
     const noReactSource = [];
+    let elementCount = 0;
     const slugs = ctx.pages.map((page) => page.filename.replace(/\.png$/i, ""));
     const jobs = ctx.pages.map((page, i) => ({
         url: page.url,
@@ -99,22 +100,31 @@ async function runElementCapture(ctx, auth) {
         const tree = assignDirs(capture.tree ?? []);
         // React source locations, which also feed each element's identity.
         const components = await resolveComponents(tree, resolver);
-        addSourceIdentity(tree, components);
+        addComponents(tree, components);
+        const withSource = [...components.values()].filter((c) => c.source).length;
+        if (components.size > 0 && withSource === 0)
+            noReactSource.push(slug);
         const manifest = {
             version: MANIFEST_VERSION,
             url: ctx.pages[i].url,
             extractedAt: new Date().toISOString(),
+            scale,
             elements: tree,
         };
         fs.writeFileSync(path.join(pageRoot, ELEMENT_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-        // React source locations alongside each element, when the page uses React.
-        const react = writeComponentFiles(pageRoot, components);
-        if (react.written > 0 && react.withSource === 0)
-            noReactSource.push(slug);
-        // One crop per element, nested to mirror the DOM.
-        const crops = cropElements(jobs[i].output, pageRoot, collectShots(tree), scale);
-        produced.push(`${slug}/${PAGE_IMAGE}`, ...crops.produced.map((rel) => `${slug}/${rel}`));
-        missing.push(...crops.missing.map((rel) => `${slug}/${rel} (outside the page)`));
+        produced.push(`${slug}/${PAGE_IMAGE}`);
+        // Elements that can't be cropped out of the screenshot have no image.
+        const size = pngSize(jobs[i].output);
+        const visit = (nodes) => {
+            for (const node of nodes) {
+                if (size && cropRect(size, node.box, scale))
+                    elementCount++;
+                else
+                    missing.push(`${slug}/${node.dir} (outside the page)`);
+                visit(node.children);
+            }
+        };
+        visit(tree);
     };
     const pending = [];
     let done = 0;
@@ -135,18 +145,22 @@ async function runElementCapture(ctx, auth) {
         console.log(pc.yellow(`  React detected but no source locations on ${noReactSource.length} page(s); ` +
             "line numbers need a React 19+ development build."));
     }
+    console.log(pc.dim(`  ${elementCount} elements recorded (cropped from each page screenshot on demand)`));
     writeMeta(ctx.paths, metaFromInfo(ctx.version, config.baseUrl, ctx.pages.length));
     return { produced, missing, exitCode: 0 };
 }
-/** Fill in each element's source file and location from its resolved component info. */
-function addSourceIdentity(nodes, components) {
+/** Attach each element's resolved component info, and fill in its source identity from it. */
+function addComponents(nodes, components) {
     for (const node of nodes) {
-        const source = components.get(node)?.source;
+        const component = components.get(node);
+        if (component)
+            node.component = component;
+        const source = component?.source;
         if (node.identity && source) {
             node.identity.source = source.path;
             node.identity.file = source.path.replace(/:\d+:\d+$/, "");
         }
-        addSourceIdentity(node.children, components);
+        addComponents(node.children, components);
     }
 }
 /** Resolve wait / waitFor for a page from config. */

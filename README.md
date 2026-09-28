@@ -118,8 +118,10 @@ How it works:
   `display:none`/`visibility:hidden`) from that same load. Inline wrappers and
   text nodes are flattened away so their block descendants bubble up to the
   nearest block ancestor.
-- **Cropped elements** — each element's box is cropped out of the full-page
-  screenshot. The crop size comes from the element's own width and height
+- **Cropped on demand** — only the full-page screenshot and the element tree
+  are stored. Each element's image is its box cropped out of that screenshot,
+  so it's cut out in memory whenever it's needed (diffing, the inspector,
+  `update-pr`) rather than written to disk. The crop size comes from the element's own width and height
   (rounded to whole device pixels), not from its rounded edges. That way an
   element that didn't change keeps exactly the same image size when a parent
   shifts it by a fraction of a pixel, instead of flipping between e.g. 127 and
@@ -127,23 +129,14 @@ How it works:
 - **Parallel pages** — several pages are captured at once, each in its own
   browser context (default 4; set `concurrency` in config or pass
   `--concurrency <n>`).
-- **Hierarchy on disk** — every element becomes a directory named after its tag
-  (disambiguated by `id` or sibling index), nested exactly like the DOM. The
-  element's own screenshot is `element.png` inside that directory; a full-page
-  `page.png` and an `elements.json` manifest sit at the page root:
+- **Hierarchy** — every element gets a path named after its tag (disambiguated
+  by `id` or sibling index), nested exactly like the DOM, e.g.
+  `header-top/h1` or `main/section-2`. A version stores just two files per page:
 
   ```
   versions/<key>/<page>/
-    page.png            # full-page screenshot (context)
-    elements.json       # the extracted element tree + selectors
-    header-top/
-      element.png       # <header id="top"> on its own
-      component.json    # React source location (React apps only)
-      h1/element.png
-    main/
-      element.png
-      section-1/element.png
-      section-2/element.png
+    page.png            # full-page screenshot; every element is cropped from it
+    elements.json       # the element tree: boxes, selectors, identity, React source
   ```
 
 - **Per-element diffs** — `diff`/`review` walk the trees recursively, so you get
@@ -191,8 +184,8 @@ back to sibling order, which pairs elements the same way path matching did.
 
 ### React source locations
 
-If the page is rendered by React, a `component.json` is written next to each
-element's `element.png` recording where that element came from in your source.
+If the page is rendered by React, each element in `elements.json` gets a
+`component` recording where that element came from in your source.
 It finds the element's React fiber and walks its `_debugOwner` chain the same
 way [click-to-component](https://github.com/ericclemmons/click-to-component)
 does. For locations it uses React 19's `_debugStack`, an `Error` that React
@@ -226,14 +219,13 @@ maps (the default for Vite, Next.js and most dev servers). If a script has no
 source map, the location in the served script is recorded instead and marked
 `"generated": true`. React 18 and earlier don't record `_debugStack`, and
 neither do production builds. In those cases component names are still
-recorded but `source` is `null`. Pages not rendered by React get no
-`component.json`.
+recorded but `source` is `null`. Elements not rendered by React get no
+`component`.
 
 > **Note:** Both versions being compared must have been captured with
 > `--by-element` for the per-element diff to line up. Captures made before
-> tunnelvision switched to cropping (which re-loaded the page once per element)
-> will show as changed once against new ones: `page.png` is now full-page
-> rather than viewport-sized, and element text can sit a pixel differently.
+> element images were cropped on demand (with an `element.png` per element and
+> no `scale` in `elements.json`) aren't matched per element; re-shoot them.
 
 ### Inspector
 
@@ -250,11 +242,12 @@ Starts a local server with a single-page UI for browsing `--by-element` diffs:
   counting changed descendants; "changed only" and a text filter narrow it down;
 - selecting an element shows its before / after / diff screenshots, selector,
   rect in both versions, an outline of where it sits on the full page, and the
-  React source location and owner chain from `component.json`, with buttons
+  React source location and owner chain from `elements.json`, with buttons
   that open each `file:line` in Zed or VS Code.
 
 Diffs are computed when you pick a pair and diff images are written to
-`diffs/<from>__<to>/`, the same as `tunnelvision diff`. `--threshold` and
+`diffs/<from>__<to>/`, the same as `tunnelvision diff`. Before/after element
+images are cropped out of each version's `page.png` as the UI requests them. `--threshold` and
 `--max-diff-percent` apply as they do there. The **threshold** field in the
 header re-runs the diff at a different pixelmatch colour threshold, which is
 useful when subtle, low-contrast changes (like white corners on a light grey
@@ -279,7 +272,7 @@ a source line, like list items or chart bars, are grouped into one comment.
 
 - **Versions**: `to` defaults to the current HEAD. `from` defaults to the
   capture at the PR's merge base with its base branch, and falls back to the
-  previous capture. Line numbers come from `to`'s `component.json`, so capture
+  previous capture. Line numbers come from `to`'s `elements.json`, so capture
   the PR's head commit.
 - **Images** are committed to a shared orphan branch (`tunnelvision-assets`,
   override with `--branch`) under `pr-<n>/<from>__<to>/` and linked by commit

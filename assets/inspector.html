@@ -185,7 +185,7 @@ function indexData() {
 }
 
 /**
- * Normalise a source location from component.json. Accepts `{ path }`,
+ * Normalise a source location from an element's `component`. Accepts `{ path }`,
  * `{ fileName, lineNumber, columnNumber }` or `{ file|url, line, column }`.
  */
 function loc(src) {
@@ -388,7 +388,7 @@ function renderDetail() {
 				`</ol></dd>`;
 		}
 	} else {
-		dl += `<dt>source</dt><dd><span class="hint">not rendered by React (no component.json)</span></dd>`;
+		dl += `<dt>source</dt><dd><span class="hint">not rendered by React</span></dd>`;
 	}
 
 	let html = `<h2>${label(n)}${pill(n.status)}</h2><dl>${dl}</dl>` + imageGrid(`${page.slug}/${n.dir}/element.png`, n, `${page.slug}/${n.fromDir ?? n.dir}/element.png`);
@@ -403,21 +403,17 @@ function renderDetail() {
 
 	const ctx = $("ctx");
 	if (ctx) {
-		// Ask the server where each version's element really sits in its page
-		// screenshot (image px); recorded rects can be offset by viewport height.
+		// Outline where each version's element is cropped from (image px).
 		const key = state.selected;
-		const boxes = ["from", "to"].filter((w) => n.rect[w] && page.images[w]).map((w) =>
-			getJson(`/api/locate?version=${encodeURIComponent(state.data[w])}&page=${encodeURIComponent(page.slug)}&dir=${encodeURIComponent(w === "from" ? n.fromDir ?? n.dir : n.dir)}`)
-				.then((box) => [w, box]).catch(() => [w, null]));
 		const loaded = new Promise((r) => (ctx.complete ? r() : (ctx.onload = r)));
-		Promise.all([loaded, ...boxes]).then(([, ...found]) => {
+		loaded.then(() => {
 			if (state.selected !== key || !ctx.isConnected) return;
 			const k = ctx.clientWidth / ctx.naturalWidth;
-			for (const [which, b] of found) {
+			for (const which of ["from", "to"]) {
+				const b = n.crop[which];
 				if (!b) continue;
 				const o = document.createElement("div");
 				o.className = "overlay " + which;
-				if (!b.matched) o.title = "approximate: could not match the element screenshot";
 				Object.assign(o.style, { left: b.x * k + "px", top: b.y * k + "px", width: b.width * k + "px", height: b.height * k + "px" });
 				ctx.parentElement.appendChild(o);
 			}

@@ -1,8 +1,10 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import pc from "picocolors";
+import { PNG } from "pngjs";
 import type { Overrides } from "../config.js";
-import { ELEMENT_IMAGE } from "../elements.js";
+import { ELEMENT_IMAGE, ElementImages } from "../elements.js";
 import { currentBranch, isGitRepo, mergeBase, remoteUrl, topLevel } from "../git.js";
 import { GitHub, parseRepo, resolveToken, type NewReviewComment, type PullRequest } from "../github.js";
 import { publishImages, type ImageUpload } from "../imagebranch.js";
@@ -287,15 +289,27 @@ export async function updatePr(opts: UpdatePrOptions): Promise<number> {
 		return 0;
 	}
 
-	// Only the elements that get screenshots in a comment are uploaded.
+	// Only the elements that get screenshots in a comment are uploaded. Their
+	// before/after images are cropped from the page screenshots into a scratch
+	// directory, which is kept for a dry run so the printed paths stay valid.
 	const imageBase = `pr-${pr.number}/${from}__${to}`;
 	const uploads: ImageUpload[] = [];
+	const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tunnelvision-pr-"));
+	const images = new ElementImages();
 	for (const a of anchors.values()) {
 		for (const t of a.targets.slice(0, MAX_SHOWN)) {
 			const { node, page } = t;
 			const add = (file: string, name: string) => uploads.push({ file, dest: `${imageBase}/${t.dest}/${name}` });
-			if (node.images.from) add(path.join(versionDir(paths, from), page.slug, ...(node.fromDir ?? node.dir).split("/"), ELEMENT_IMAGE), "before.png");
-			if (node.images.to) add(path.join(versionDir(paths, to), page.slug, ...node.dir.split("/"), ELEMENT_IMAGE), "after.png");
+			const crop = (version: string, dir: string, name: string) => {
+				const png = images.crop(path.join(versionDir(paths, version), page.slug), dir);
+				if (!png) return;
+				const file = path.join(scratch, ...t.dest.split("/"), name);
+				fs.mkdirSync(path.dirname(file), { recursive: true });
+				fs.writeFileSync(file, PNG.sync.write(png));
+				add(file, name);
+			};
+			if (node.images.from) crop(from, node.fromDir ?? node.dir, "before.png");
+			if (node.images.to) crop(to, node.dir, "after.png");
 			if (node.images.diff) add(path.join(diffDir(paths, from, to), page.slug, ...node.dir.split("/"), ELEMENT_IMAGE), "diff.png");
 		}
 	}
@@ -325,7 +339,11 @@ export async function updatePr(opts: UpdatePrOptions): Promise<number> {
 		return 0;
 	}
 
-	ctx.imageCommit = publishImages(top, remote, branch, uploads, `tunnelvision: PR #${pr.number} ${from} → ${to}`);
+	try {
+		ctx.imageCommit = publishImages(top, remote, branch, uploads, `tunnelvision: PR #${pr.number} ${from} → ${to}`);
+	} finally {
+		fs.rmSync(scratch, { recursive: true, force: true });
+	}
 	console.log(pc.green(`  ✓ pushed ${uploads.length} images to ${branch}`) + pc.dim(` (${ctx.imageCommit.slice(0, 7)})`));
 
 	const existing = await gh.listReviewComments(pr.number);

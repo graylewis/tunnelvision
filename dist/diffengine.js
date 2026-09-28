@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import pixelmatch from "pixelmatch";
 import { PNG } from "pngjs";
-import { ELEMENT_IMAGE, ELEMENT_MANIFEST } from "./elements.js";
+import { cropImage, cropRect, ELEMENT_IMAGE, ELEMENT_MANIFEST, PAGE_IMAGE, readElementManifest, } from "./elements.js";
 import { matchElements, matchOptions } from "./matching.js";
 /**
  * All PNGs under `dir`, returned as POSIX-style paths relative to `dir`.
@@ -34,19 +34,35 @@ function listPngs(dir) {
 function readPng(file) {
     return PNG.sync.read(fs.readFileSync(file));
 }
-function readManifest(file) {
+function tryReadPng(file) {
     try {
-        return JSON.parse(fs.readFileSync(file, "utf8"));
+        return readPng(file);
     }
     catch {
         return null;
     }
 }
-/** Pixel-diff one image pair, writing a diff image when it counts as changed. */
+/** Crop `node` out of its page screenshot, or null when it has no image. */
+function cropNode({ manifest, page }, node) {
+    const rect = page && cropRect(page, node.box, manifest.scale);
+    return rect ? cropImage(page, rect) : null;
+}
+/** Whether `node` can be cropped out of its page screenshot. */
+function hasImage({ manifest, page }, node) {
+    return Boolean(page && cropRect(page, node.box, manifest.scale));
+}
+/** Pixel-diff two image files, writing a diff image when they count as changed. */
 function diffImages(fromFile, toFile, outFile, entry, config) {
     try {
-        const a = readPng(fromFile);
-        const b = readPng(toFile);
+        return diffPngs(readPng(fromFile), readPng(toFile), outFile, entry, config);
+    }
+    catch (err) {
+        return { ...entry, status: "error", message: err.message };
+    }
+}
+/** Pixel-diff one decoded image pair, writing a diff image when it counts as changed. */
+function diffPngs(a, b, outFile, entry, config) {
+    try {
         if (a.width !== b.width || a.height !== b.height) {
             return {
                 ...entry,
@@ -89,6 +105,8 @@ function diffImages(fromFile, toFile, outFile, entry, config) {
  * - Per-element captures (pages with an `elements.json` on both sides) pair
  *   elements by identity (see `matching.ts`), so an element is compared with
  *   its counterpart even when its position in the tree, and so its path, changed.
+ *   Each element's image is cropped from its page screenshot in memory, and
+ *   only diff images for changed elements are written.
  * - Everything else pairs by identical relative path.
  * - Images unique to one side are reported as added/removed and count as changes.
  * - Images whose dimensions differ are reported as size-mismatch (a change).
@@ -105,10 +123,12 @@ export function diffVersions(fromDir, toDir, outDir, config, labels) {
     const opts = matchOptions(config.match);
     const pageSlugs = new Set([...fromFiles, ...toFiles].map((f) => f.split("/")[0]));
     for (const slug of pageSlugs) {
-        const a = readManifest(path.join(fromDir, slug, ELEMENT_MANIFEST));
-        const b = readManifest(path.join(toDir, slug, ELEMENT_MANIFEST));
+        const a = readElementManifest(path.join(fromDir, slug, ELEMENT_MANIFEST));
+        const b = readElementManifest(path.join(toDir, slug, ELEMENT_MANIFEST));
         if (!a || !b)
             continue;
+        const pageA = { manifest: a, page: tryReadPng(path.join(fromDir, slug, PAGE_IMAGE)) };
+        const pageB = { manifest: b, page: tryReadPng(path.join(toDir, slug, PAGE_IMAGE)) };
         const match = matchElements(a.elements, b.elements, opts);
         const rel = (n) => `${slug}/${n.dir}/${ELEMENT_IMAGE}`;
         const visit = (nodes, side) => {
@@ -118,7 +138,7 @@ export function diffVersions(fromDir, toDir, outDir, config, labels) {
                     doneTo.add(own);
                     const partner = match.toFrom.get(n);
                     if (!partner) {
-                        if (toFiles.has(own))
+                        if (hasImage(pageB, n))
                             pages.push({ filename: own, status: "added", message: "new element" });
                     }
                     else {
@@ -131,10 +151,12 @@ export function diffVersions(fromDir, toDir, outDir, config, labels) {
                             ...(other !== own ? { fromFilename: other } : {}),
                             ...(match.moved.has(n) ? { moved: true } : {}),
                         };
-                        const inFrom = fromFiles.has(other);
-                        const inTo = toFiles.has(own);
-                        if (inFrom && inTo) {
-                            pages.push(diffImages(abs(fromDir, other), abs(toDir, own), abs(outDir, own), entry, config));
+                        const imgFrom = cropNode(pageA, partner);
+                        const imgTo = cropNode(pageB, n);
+                        const inFrom = Boolean(imgFrom);
+                        const inTo = Boolean(imgTo);
+                        if (imgFrom && imgTo) {
+                            pages.push(diffPngs(imgFrom, imgTo, abs(outDir, own), entry, config));
                         }
                         else if (inFrom || inTo) {
                             // The element exists on both sides but one screenshot is missing.
@@ -148,7 +170,7 @@ export function diffVersions(fromDir, toDir, outDir, config, labels) {
                 }
                 else if (!match.fromTo.has(n)) {
                     doneFrom.add(own);
-                    if (fromFiles.has(own))
+                    if (hasImage(pageA, n))
                         pages.push({ filename: own, status: "removed", message: "element no longer present" });
                 }
                 visit(n.children, side);

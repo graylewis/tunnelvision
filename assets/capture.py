@@ -34,6 +34,13 @@ async def capture(browser, job, index, page_job, sem):
         try:
             page = await context.new_page()
             await page.goto(page_job["url"])
+            # Let hydration scripts finish loading. Components that hydrate
+            # after the stabilize scroll pass never see their scroll-triggered
+            # reveals fire. Capped, since some pages never go idle (polling).
+            try:
+                await page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
             if page_job.get("wait"):
                 await page.wait_for_timeout(page_job["wait"])
             # Fire scroll-triggered reveals and freeze CSS animations (same

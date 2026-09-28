@@ -2,11 +2,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { TraceMap, originalPositionFor } from "@jridgewell/trace-mapping";
-import { COMPONENT_FILE, resolveElementOutput, type ElementNode, type StackFrame } from "./elements.js";
+import type { ElementNode, StackFrame } from "./elements.js";
 
 /**
  * Turn the `_debugStack` frames captured in the browser into original source
- * locations, and write them next to each element as `component.json`.
+ * locations, recorded on each element in `elements.json`.
  *
  * A frame points at the code the browser ran (a Vite-transformed module, a
  * webpack/Turbopack chunk, ...), so we fetch that script, follow its
@@ -30,7 +30,7 @@ export interface ComponentSource {
 	generated?: true;
 }
 
-/** Contents of each element's `component.json`. */
+/** An element's resolved React source locations, stored on its node in `elements.json`. */
 export interface ComponentFile {
 	tag: string;
 	selector: string;
@@ -198,23 +198,4 @@ export async function resolveComponents(
 	};
 	await visit(nodes);
 	return files;
-}
-
-/**
- * Write each resolved `component.json` into its element's directory. Returns
- * how many were written and how many carried a source location (zero with
- * React present usually means a production build).
- */
-export function writeComponentFiles(
-	pageRoot: string,
-	files: Map<ElementNode, ComponentFile>,
-): { written: number; withSource: number } {
-	let withSource = 0;
-	for (const [node, file] of files) {
-		const out = resolveElementOutput(pageRoot, `${node.dir}/${COMPONENT_FILE}`);
-		fs.mkdirSync(path.dirname(out), { recursive: true });
-		fs.writeFileSync(out, `${JSON.stringify(file, null, 2)}\n`, "utf8");
-		if (file.source) withSource++;
-	}
-	return { written: files.size, withSource };
 }

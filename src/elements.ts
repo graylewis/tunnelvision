@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { PNG } from "pngjs";
+import type { ComponentFile } from "./reactsource.js";
 
 /**
  * Extract, plan, and address the per-element hierarchy used by `--by-element`.
@@ -9,10 +10,13 @@ import { PNG } from "pngjs";
  * all *visible block-level* elements on the page, preserving DOM nesting.
  * Non-block wrappers (inline spans, text nodes, etc.) are flattened away so their
  * block descendants bubble up to the nearest block ancestor. Each surviving
- * element records its page-coordinate rect, which we use to crop it out of the
- * full-page screenshot taken in the same page load, plus a stable CSS selector
- * (an `nth-of-type` chain from <body>) and a filesystem-safe directory name so
- * the on-disk layout mirrors the page hierarchy.
+ * element records its page-coordinate box, a stable CSS selector (an
+ * `nth-of-type` chain from <body>) and a hierarchical directory path that
+ * addresses it (and its diff image) the same way the DOM nests.
+ *
+ * Element screenshots are never written to disk: each one is a crop of the
+ * full-page screenshot taken in the same load, so it's cut out on demand from
+ * `page.png` and the element's `box` (see `ElementImages`).
  */
 
 export interface ElementRect {
@@ -106,36 +110,34 @@ export interface ElementNode {
 	react: ReactInfo | null;
 	/** Missing in captures made before identity matching existed. */
 	identity?: ElementIdentity;
+	/** Resolved React source locations, when React rendered the element. */
+	component?: ComponentFile;
 	children: ElementNode[];
-}
-
-/** A single element screenshot, cropped out of the page screenshot. */
-export interface ElementShot {
-	/** The element's unrounded box in CSS pixels, in page coordinates. */
-	box: ElementRect;
-	/** POSIX path (relative to the page element root) of the output PNG. */
-	relOutput: string;
 }
 
 /** The file written per page so the tree can be inspected/rebuilt. */
 export interface ElementManifest {
-	/** 2 once elements carry `identity`; absent in older captures. */
+	/** `MANIFEST_VERSION` at capture time; absent in the oldest captures. */
 	version?: number;
 	url: string;
 	extractedAt: string;
+	/** Device pixels per CSS pixel in `page.png`, used to crop element boxes. */
+	scale: number;
 	elements: ElementNode[];
 }
 
-/** The name of the screenshot placed inside every element directory. */
+/**
+ * The name an element's image goes by inside its directory. Only diff images
+ * are written there; the element itself is cropped from `page.png` on demand.
+ */
 export const ELEMENT_IMAGE = "element.png";
-/** The full-page screenshot kept at each page's element root for context. */
+/** The full-page screenshot at each page's element root; every element is cropped from it. */
 export const PAGE_IMAGE = "page.png";
 /** The per-page manifest filename. */
 export const ELEMENT_MANIFEST = "elements.json";
-/** React source info placed alongside `element.png` when the page uses React. */
-export const COMPONENT_FILE = "component.json";
 
-export const MANIFEST_VERSION = 2;
+/** 3: element images are cropped on demand (needs `scale`) and components live in the manifest. */
+export const MANIFEST_VERSION = 3;
 
 /**
  * The in-page extraction script, evaluated by the capture driver after the page
@@ -381,60 +383,122 @@ export function assignDirs(nodes: RawElement[], parentDir = ""): ElementNode[] {
 	});
 }
 
-/** Flatten a planned tree into the list of element screenshots to capture. */
-export function collectShots(nodes: ElementNode[]): ElementShot[] {
-	const shots: ElementShot[] = [];
-	const visit = (list: ElementNode[]): void => {
-		for (const node of list) {
-			shots.push({ box: node.box, relOutput: `${node.dir}/${ELEMENT_IMAGE}` });
-			visit(node.children);
-		}
-	};
-	visit(nodes);
-	return shots;
-}
-
-/** Convert a POSIX relative output path into an absolute filesystem path. */
-export function resolveElementOutput(pageRoot: string, relOutput: string): string {
-	return path.join(pageRoot, ...relOutput.split("/"));
+/** The node at `dir` in a planned tree. */
+export function findNode(nodes: ElementNode[], dir: string): ElementNode | undefined {
+	for (const n of nodes) {
+		if (n.dir === dir) return n;
+		if (dir.startsWith(`${n.dir}/`)) return findNode(n.children, dir);
+	}
+	return undefined;
 }
 
 /**
- * Crop every element out of the full-page screenshot at `pageFile`. Element
- * boxes are in CSS pixels, so they're scaled by `scale` (the device pixel
- * ratio) and clamped to the image. Returns the relative outputs written and
- * those skipped because their box lies outside the page.
+ * Read a page's `elements.json`. Returns null for manifests from before
+ * on-demand cropping (no `scale`); those captures stored `element.png` files
+ * instead and diff by path.
  */
-export function cropElements(
-	pageFile: string,
-	pageRoot: string,
-	shots: ElementShot[],
-	scale: number,
-): { produced: string[]; missing: string[] } {
-	const page = PNG.sync.read(fs.readFileSync(pageFile));
-	const produced: string[] = [];
-	const missing: string[] = [];
-	for (const shot of shots) {
-		// Size comes from the element's own dimensions, not its rounded edges, so
-		// an unchanged element keeps the same crop size when a parent shifts it
-		// by a sub-pixel amount (edge rounding would flip between e.g. 127/128).
-		const { box } = shot;
-		const left = Math.round(box.x * scale);
-		const top = Math.round(box.y * scale);
-		const x0 = Math.max(0, left);
-		const y0 = Math.max(0, top);
-		const x1 = Math.min(page.width, left + Math.round(box.width * scale));
-		const y1 = Math.min(page.height, top + Math.round(box.height * scale));
-		if (x1 <= x0 || y1 <= y0) {
-			missing.push(shot.relOutput);
-			continue;
-		}
-		const crop = new PNG({ width: x1 - x0, height: y1 - y0 });
-		PNG.bitblt(page, crop, x0, y0, x1 - x0, y1 - y0, 0, 0);
-		const out = resolveElementOutput(pageRoot, shot.relOutput);
-		fs.mkdirSync(path.dirname(out), { recursive: true });
-		fs.writeFileSync(out, PNG.sync.write(crop));
-		produced.push(shot.relOutput);
+export function readElementManifest(file: string): ElementManifest | null {
+	try {
+		const manifest = JSON.parse(fs.readFileSync(file, "utf8")) as ElementManifest;
+		return (manifest.version ?? 0) >= MANIFEST_VERSION ? manifest : null;
+	} catch {
+		return null;
 	}
-	return { produced, missing };
+}
+
+/** Width and height of a PNG, read from its header without decoding it. */
+export function pngSize(file: string): { width: number; height: number } | null {
+	try {
+		const fd = fs.openSync(file, "r");
+		try {
+			const header = Buffer.alloc(24);
+			if (fs.readSync(fd, header, 0, 24, 0) < 24) return null;
+			return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) };
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Where an element's box lands in a page screenshot of `page`'s size, in image
+ * pixels. Boxes are in CSS pixels, so they're scaled by `scale` (the device
+ * pixel ratio) and clamped to the image. Null when the box lies outside it.
+ */
+export function cropRect(
+	page: { width: number; height: number },
+	box: ElementRect,
+	scale: number,
+): ElementRect | null {
+	// Size comes from the element's own dimensions, not its rounded edges, so
+	// an unchanged element keeps the same crop size when a parent shifts it
+	// by a sub-pixel amount (edge rounding would flip between e.g. 127/128).
+	const left = Math.round(box.x * scale);
+	const top = Math.round(box.y * scale);
+	const x0 = Math.max(0, left);
+	const y0 = Math.max(0, top);
+	const x1 = Math.min(page.width, left + Math.round(box.width * scale));
+	const y1 = Math.min(page.height, top + Math.round(box.height * scale));
+	if (x1 <= x0 || y1 <= y0) return null;
+	return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+/** Copy `rect` (image pixels) out of `page`. */
+export function cropImage(page: PNG, rect: ElementRect): PNG {
+	const crop = new PNG({ width: rect.width, height: rect.height });
+	PNG.bitblt(page, crop, rect.x, rect.y, rect.width, rect.height, 0, 0);
+	return crop;
+}
+
+/**
+ * Crops element images out of page screenshots, keeping the most recently used
+ * few decoded pages and manifests in memory. `pageRoot` is a page's directory
+ * inside a version (`versions/<key>/<slug>`).
+ */
+export class ElementImages {
+	private pages = new Map<string, PNG | null>();
+	private manifests = new Map<string, ElementManifest | null>();
+
+	constructor(private readonly limit = 8) {}
+
+	manifest(pageRoot: string): ElementManifest | null {
+		return this.cached(this.manifests, pageRoot, () => readElementManifest(path.join(pageRoot, ELEMENT_MANIFEST)));
+	}
+
+	page(pageRoot: string): PNG | null {
+		return this.cached(this.pages, pageRoot, () => {
+			try {
+				return PNG.sync.read(fs.readFileSync(path.join(pageRoot, PAGE_IMAGE)));
+			} catch {
+				return null;
+			}
+		});
+	}
+
+	/** The element at `dir`, cropped out of its page screenshot; null if it can't be. */
+	crop(pageRoot: string, dir: string): PNG | null {
+		const manifest = this.manifest(pageRoot);
+		const node = manifest && findNode(manifest.elements, dir);
+		if (!node) return null;
+		const page = this.page(pageRoot);
+		const rect = page && cropRect(page, node.box, manifest!.scale);
+		return rect ? cropImage(page, rect) : null;
+	}
+
+	/** Forget everything loaded, e.g. after a version was re-captured. */
+	clear(): void {
+		this.pages.clear();
+		this.manifests.clear();
+	}
+
+	private cached<T>(cache: Map<string, T>, key: string, load: () => T): T {
+		const hit = cache.has(key);
+		const value = hit ? cache.get(key)! : load();
+		cache.delete(key);
+		if (!hit && cache.size >= this.limit) cache.delete(cache.keys().next().value!);
+		cache.set(key, value);
+		return value;
+	}
 }

@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { STABILIZE_JS } from "./stabilize.js";
 /**
  * Drive Playwright directly for `--by-element` captures. shot-scraper can't
  * measure elements and screenshot them from the same page load (its
@@ -125,6 +126,7 @@ export function capturePages(pages, opts, onPage) {
             authFile: opts.authFile ?? null,
             concurrency: opts.concurrency,
             extractJs: opts.extractJs,
+            stabilizeJs: STABILIZE_JS,
             pages,
         }));
     });

@@ -1,21 +1,29 @@
-### human-written docs
+# human-written docs
 tunnelvision is an app that allows you to review visual changes to your git repo just like code changes. each code change is mapped
 directly to the visual consequences of that change, and presented to you with screenshots of exactly what changed. 
 
 tunnelvision is installed directly into your repo, and all of the artifacts necessary for use are stored in `.tunnelvision`
 
-steps to set up:
+### steps to set up:
 1. install shot-scraper, ensure that it's on your path
 2. install tunnelvision into your repo.
-3. `npx tunnelvision init` in your repo.
-4. `npx tunnelvision shoot` to create a 'commit' of how your app looks.
-5. after making some changes, run `npx tunnelvision shoot` again to create a second commit.
-6. `npx tunnelvision diff` generates a diff for you or your agent. alternatively, use `npx tunnelvision inspector` for a lightweight web interface.
-7. install tunnelvision sandhog for a richer experience
+3. ensure that you have a valid sitemap.xml or tunnelvision.json "sitemap" field.
+4. `npx tunnelvision init` in your repo.
+5. `npx tunnelvision review` to create a baseline 'commit' of how your app looks.
+6. whenever you want to review your changes, use `npx tunnelvision review` to create a new point-in-time, and generate a diff for you or your agent`
+7. optionally, use `npx tunnelvision inspector` for a lightweight web interface.
+8. install tunnelvision sandhog for a richer experience
+
+### troubleshooting for your project:
+tunnelvision relies on playwright to generate screenshots, and therefore can be a bit finicky with things like long-running animations.
+by default, tunnelvision requests reduced motion from the web browser, which should prevent most issues. 
+if you're still finding diffs identified where they shouldn't be, try using --wait (wait for pageload) or --settle (wait for page to settle after scrolling)
+
+if your app is behind an auth wall, use --auth to interactively log into your app and then store your auth information for tunnelvision to use (stored in .tunnelvision, so make sure not to commit it). tunnelvision will use the auth information when screenshotting your app. 
 
 ----
-### agent-written docs
-# tunnelvision
+# agent-written docs
+## tunnelvision
 
 Screenshot every page of your app from its sitemap, version the shots by git
 commit, and diff them visually with [pixelmatch](https://github.com/mapbox/pixelmatch).

@@ -30,6 +30,24 @@ under `.tunnelvision/`, keyed by the git commit they were taken at.
   > venv (`source .venv/bin/activate`) before running it — otherwise a broken
   > global install (e.g. `/usr/local/bin/shot-scraper`) may be used instead."
 
+### For the best experience
+
+Tracing visual changes back to the lines that caused them (`--by-element`)
+works best when your app provides both of the following:
+
+- **React 19+ in a development build.** React 19 records where each element's
+  JSX was written, which tunnelvision uses to find its `file:line`. React 18
+  and earlier, and production builds, only give component names. See
+  [React source locations](#react-source-locations).
+- **CSS source maps enabled.** These map each style rule back to the line of
+  source that wrote it. Plain CSS served unchanged doesn't need them, but
+  PostCSS, Tailwind, Sass and CSS-in-JS do. With Vite, set
+  `css: { devSourcemap: true }` in `vite.config`. See
+  [Tracing changes to the lines that caused them](#tracing-changes-to-the-lines-that-caused-them).
+
+Without them, screenshots and visual diffs still work, but fewer changes can
+be traced to a cause. `tunnelvision doctor` checks the Vite source map setting.
+
 ## Install
 
 ```bash
@@ -119,6 +137,14 @@ How it works:
   `display:none`/`visibility:hidden`) from that same load. Inline wrappers and
   text nodes are flattened away so their block descendants bubble up to the
   nearest block ancestor.
+- **Only what's painted** — an element's crop is the part of its box that's
+  actually painted: what's left once ancestors that clip it (`overflow`,
+  `clip-path`, `contain: paint`) and the page edges have cut it down. Elements
+  with nothing left (clipped away entirely, inside an `opacity: 0` ancestor,
+  `sr-only`, off the page) aren't recorded at all. Otherwise their crop would
+  show whatever is painted over them, and changes to those layers would be
+  reported as changes to the hidden element. Set `"includeHidden": true` to
+  record them anyway, cropped by their full box.
 - **Cropped on demand** — only the full-page screenshot and the element tree
   are stored. Each element's image is its box cropped out of that screenshot,
   so it's cut out in memory whenever it's needed (diffing, the inspector,
@@ -379,6 +405,7 @@ git-ignored.
   "settle": 500,
   "authFile": ".tunnelvision/auth.json",
   "concurrency": 4,
+  "includeHidden": false,
   "diff": { "threshold": 0.1, "includeAA": false, "maxDiffPercent": 0.1 },
   "match": {
     "attributes": ["data-testid", "data-test", "data-cy", "data-qa"],

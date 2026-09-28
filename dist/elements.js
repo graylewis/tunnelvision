@@ -19,10 +19,13 @@ export const MANIFEST_VERSION = 3;
  * has loaded and settled. Returns an array of top-level block elements
  * (children of <body>), each with nested `children`. `attributes` are the
  * configured match attributes to record on each element, and `properties` the
- * tracked CSS properties whose computed values are recorded.
+ * tracked CSS properties whose computed values are recorded. `includeHidden`
+ * keeps elements with no painted pixels, cropped by their full box.
  */
-export function extractScript(attributes, properties) {
-    return EXTRACT_JS.replace("__MATCH_ATTRIBUTES__", JSON.stringify(attributes)).replace("__TRACKED_PROPERTIES__", JSON.stringify(properties));
+export function extractScript(attributes, properties, includeHidden = false) {
+    return EXTRACT_JS.replace("__MATCH_ATTRIBUTES__", JSON.stringify(attributes))
+        .replace("__TRACKED_PROPERTIES__", JSON.stringify(properties))
+        .replace("__INCLUDE_HIDDEN__", JSON.stringify(includeHidden));
 }
 const EXTRACT_JS = `
 new Promise((resolve) => {
@@ -34,6 +37,7 @@ new Promise((resolve) => {
     ]);
     const MATCH_ATTRIBUTES = __MATCH_ATTRIBUTES__;
     const TRACKED_PROPERTIES = __TRACKED_PROPERTIES__;
+    const INCLUDE_HIDDEN = __INCLUDE_HIDDEN__;
     const SKIP = new Set([
       "SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "LINK", "META",
       "HEAD", "BR", "HR", "SVG", "CANVAS"
@@ -46,6 +50,91 @@ new Promise((resolve) => {
       const r = el.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) return false;
       return true;
+    }
+    // Nothing inside a display:none or fully transparent element is painted.
+    function paintsNothing(el) {
+      const cs = getComputedStyle(el);
+      return cs.display === "none" || parseFloat(cs.opacity || "1") === 0;
+    }
+    function intersect(c, l, t, r, b) {
+      c.l = Math.max(c.l, l); c.t = Math.max(c.t, t);
+      c.r = Math.min(c.r, r); c.b = Math.min(c.b, b);
+    }
+    // An inset() or rect() length: px, or a percentage of \`size\`.
+    function length(v, size) {
+      return v.endsWith("%") ? (parseFloat(v) / 100) * size : parseFloat(v) || 0;
+    }
+    // Whether an element with style \`cs\` is the containing block of fixed descendants.
+    function containsFixed(cs) {
+      return cs.transform !== "none" || cs.perspective !== "none" || cs.filter !== "none" ||
+        (cs.backdropFilter || "none") !== "none" || /paint|layout|strict|content/.test(cs.contain) ||
+        /transform|perspective|filter/.test(cs.willChange);
+    }
+    // Overflow only clips descendants whose containing block chain passes
+    // through it, so absolute and fixed elements escape the overflow of
+    // ancestors below their containing block.
+    function containingBlock(position, cs) {
+      if (position === "fixed") return containsFixed(cs);
+      if (position === "absolute") return cs.position !== "static" || containsFixed(cs);
+      return true;
+    }
+    // Clip what clip-path and clip leave of border box \`b\`. Only inset()
+    // shapes are resolved; any other clip-path is taken as the whole box.
+    function shapeClip(c, cs, b) {
+      const inset = cs.clipPath.match(/^inset\\(([^)]*?)(?:\\s+round\\b[^)]*)?\\)/);
+      if (inset) {
+        const v = inset[1].trim().split(/\\s+/);
+        const top = v[0], right = v[1] || top, bottom = v[2] || top, left = v[3] || right;
+        intersect(c, b.left + length(left, b.width), b.top + length(top, b.height),
+          b.right - length(right, b.width), b.bottom - length(bottom, b.height));
+      } else if (cs.clipPath !== "none") {
+        intersect(c, b.left, b.top, b.right, b.bottom);
+      }
+      if ((cs.position === "absolute" || cs.position === "fixed") && cs.clip.startsWith("rect(")) {
+        const v = cs.clip.slice(5, -1).split(/[,\\s]+/);
+        const at = (i, auto) => (v[i] === "auto" ? auto : length(v[i], 0));
+        intersect(c, b.left + at(3, 0), b.top + at(0, 0), b.left + at(1, b.width), b.top + at(2, b.height));
+      }
+    }
+    // Clip to the padding box of \`b\` on the axes its overflow clips.
+    function overflowClip(c, cs, b) {
+      const paint = /paint|strict|content/.test(cs.contain);
+      const x = paint || cs.overflowX !== "visible";
+      const y = paint || cs.overflowY !== "visible";
+      if (!x && !y) return;
+      const l = b.left + (parseFloat(cs.borderLeftWidth) || 0);
+      const t = b.top + (parseFloat(cs.borderTopWidth) || 0);
+      const r = b.right - (parseFloat(cs.borderRightWidth) || 0);
+      const bt = b.bottom - (parseFloat(cs.borderBottomWidth) || 0);
+      intersect(c, x ? l : -Infinity, y ? t : -Infinity, x ? r : Infinity, y ? bt : Infinity);
+    }
+    // The part of el's box (\`r\`, from getBoundingClientRect) that's actually
+    // painted, in page coordinates: what's left once its own clip-path and
+    // every ancestor that clips it (overflow, clip-path, paint containment)
+    // have cut it down, within the page. Null when nothing is left. A crop
+    // of the full box would show whatever is painted where the clipped part
+    // would be, i.e. other elements. Transformed boxes are their bounding
+    // rectangles, so this can over-estimate but never cut off painted pixels.
+    function paintedBox(el, r) {
+      const c = { l: r.left, t: r.top, r: r.right, b: r.bottom };
+      const own = getComputedStyle(el);
+      let position = own.position;
+      shapeClip(c, own, r);
+      for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) {
+        const cs = getComputedStyle(a);
+        const b = a.getBoundingClientRect();
+        if (containingBlock(position, cs)) {
+          overflowClip(c, cs, b);
+          position = cs.position;
+        }
+        shapeClip(c, cs, b);
+      }
+      const doc = document.documentElement;
+      intersect(c, -window.scrollX, -window.scrollY,
+        Math.max(doc.scrollWidth, window.innerWidth) - window.scrollX,
+        Math.max(doc.scrollHeight, window.innerHeight) - window.scrollY);
+      if (c.r <= c.l || c.b <= c.t) return null;
+      return { x: c.l + window.scrollX, y: c.t + window.scrollY, width: c.r - c.l, height: c.b - c.t };
     }
     function nthOfType(el) {
       let n = 0, sib = el;
@@ -173,8 +262,12 @@ new Promise((resolve) => {
         if (SKIP.has(tagU)) continue;
         const sel = parentSel + " > " + child.tagName.toLowerCase() +
           ":nth-of-type(" + nthOfType(child) + ")";
-        if (visibleBlock(child)) {
-          const r = child.getBoundingClientRect();
+        if (!INCLUDE_HIDDEN && paintsNothing(child)) continue;
+        const r = visibleBlock(child) ? child.getBoundingClientRect() : null;
+        const box = r && (INCLUDE_HIDDEN
+          ? { x: r.x + window.scrollX, y: r.y + window.scrollY, width: r.width, height: r.height }
+          : paintedBox(child, r));
+        if (box) {
           out.push({
             tag: child.tagName.toLowerCase(),
             id: child.id || null,
@@ -189,7 +282,7 @@ new Promise((resolve) => {
               width: Math.round(r.width),
               height: Math.round(r.height)
             },
-            box: { x: r.x + window.scrollX, y: r.y + window.scrollY, width: r.width, height: r.height },
+            box,
             react: reactInfo(child),
             computed: computed(child),
             children: walk(child, sel)

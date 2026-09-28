@@ -10,6 +10,7 @@ export const DEFAULT_CONFIG = {
     retina: false,
     authFile: ".tunnelvision/auth.json",
     concurrency: 4,
+    includeHidden: false,
     diff: {
         threshold: 0.1,
         includeAA: false,

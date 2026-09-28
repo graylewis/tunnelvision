@@ -154,7 +154,7 @@ async function runElementCapture(ctx, rev, auth) {
         scaleFactor: scale,
         authFile: auth,
         concurrency: Math.max(1, Math.floor(config.concurrency)),
-        extractJs: extractScript(config.match.attributes, config.styles.properties),
+        extractJs: extractScript(config.match.attributes, config.styles.properties, config.includeHidden),
     }, (i, capture) => {
         done++;
         const status = capture.ok ? "" : pc.red(` failed: ${capture.error}`);

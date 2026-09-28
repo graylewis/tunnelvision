@@ -79,6 +79,13 @@ export interface Config {
 	authFile: string;
 	/** Pages captured at once in `--by-element` mode. */
 	concurrency: number;
+	/**
+	 * Keep elements in `--by-element` captures that paint nothing (clipped away
+	 * by an ancestor's overflow or clip-path, inside a transparent ancestor, or
+	 * off the page), cropped by their full box. Off by default: their crops show
+	 * whatever is painted over them, so their changes are other elements'.
+	 */
+	includeHidden: boolean;
 	diff: DiffConfig;
 	match: MatchConfig;
 	styles: StylesConfig;
@@ -95,6 +102,7 @@ export const DEFAULT_CONFIG: Config = {
 	retina: false,
 	authFile: ".tunnelvision/auth.json",
 	concurrency: 4,
+	includeHidden: false,
 	diff: {
 		threshold: 0.1,
 		includeAA: false,

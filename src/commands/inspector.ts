@@ -284,7 +284,7 @@ function openBrowser(url: string): void {
 export async function inspector(opts: InspectorOptions): Promise<number> {
 	const paths = resolvePaths(opts.root);
 	if (!fs.existsSync(paths.versions)) {
-		throw new Error(`No captures found under ${paths.versions}. Run \`tunnelvision shoot --by-element\` first.`);
+		throw new Error(`No captures found under ${paths.versions}. Run \`tunnelvision shoot\` first.`);
 	}
 
 	const cache = new Map<string, InspectorDiff>();

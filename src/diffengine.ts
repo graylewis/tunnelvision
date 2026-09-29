@@ -66,7 +66,7 @@ export interface PagePairs {
 
 /**
  * All PNGs under `dir`, returned as POSIX-style paths relative to `dir`.
- * Recurses so per-element hierarchies (`--by-element`) diff the same way flat
+ * Recurses so per-element hierarchies diff the same way flat
  * page captures do.
  */
 function listPngs(dir: string): Set<string> {

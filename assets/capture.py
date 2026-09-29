@@ -1,5 +1,5 @@
 """
-tunnelvision's single-load page capture driver (used by `--by-element`).
+tunnelvision's single-load page capture driver (used by per-element captures).
 
 For each page: load it once, wait, take a full-page screenshot, then run the
 element-extraction script in the *same* load, so the element rects line up with

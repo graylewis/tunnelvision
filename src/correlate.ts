@@ -21,6 +21,12 @@ import { readStyleManifest, type DeclRef, type ElementStyles, type SourceLoc, ty
  * (deleted lines) the baseline's winners are used, on the new side (added
  * lines) the target's, so a deleted rule is still found.
  *
+ * An element whose own text changed is searched for in the changed lines
+ * themselves: the words it gained are looked for in added lines, the words it
+ * lost in deleted ones, in any file but a stylesheet. That finds copy wherever
+ * it was written (a JSX text line, a prop, a constants or translations file),
+ * which the element's JSX line alone can't.
+ *
  * Elements that changed without any tracked property changing are knock-on
  * effects of the nearest ancestor or earlier sibling that has a cause. What's
  * left over is reported as unexplained visual changes, and changed stylesheet
@@ -38,7 +44,7 @@ export interface PropChange {
 	own?: true;
 }
 
-export type EffectVia = "direct" | "inherited" | "var" | "jsx" | "knock-on";
+export type EffectVia = "direct" | "inherited" | "var" | "jsx" | "copy" | "knock-on";
 
 /** A visual change a cause produced. */
 export interface Effect {
@@ -57,7 +63,7 @@ export interface Effect {
 	alsoCausedBy?: string[];
 }
 
-export type CauseKind = "declaration" | "selector" | "variable" | "jsx";
+export type CauseKind = "declaration" | "selector" | "variable" | "jsx" | "copy";
 
 /** A changed line that explains visual changes. */
 export interface Cause {
@@ -130,6 +136,10 @@ export interface CorrelateInput {
 const VISUAL: Set<PageStatus> = new Set(["changed", "size-mismatch"]);
 const STYLESHEET = /\.(css|scss|sass|less|styl|pcss|postcss)$/i;
 export const LAYOUT_PROPERTIES = new Set(["width", "height", "min-width", "min-height", "max-width", "max-height"]);
+/** Words too common to say which line some copy came from, unless nothing else changed. */
+const STOP_WORDS = new Set(["the", "and", "for", "you", "your", "are", "with", "this", "that", "from", "our", "was", "has", "have", "its"]);
+/** More changed lines than this containing an element's new copy is a coincidence, not a cause. */
+const MAX_COPY_LINES = 5;
 
 interface Candidate {
 	side: Side;
@@ -149,7 +159,7 @@ interface Changed {
 	fromNode?: ElementNode;
 	status: PageStatus;
 	props: PropChange[];
-	/** Some property changed because its declaration did, so the change is the element's own. */
+	/** Some property changed because its declaration did, or its copy did on a changed line, so the change is the element's own. */
 	own: boolean;
 	size: number;
 	note?: string;
@@ -166,6 +176,35 @@ function walk(nodes: ElementNode[], visit: (n: ElementNode, parent: ElementNode 
 function declText(rule: StyleRule, ref: DeclRef): string {
 	const d = rule.decls[ref[1]];
 	return `${rule.selector} { ${d.name}: ${d.value}${d.important ? " !important" : ""} }`;
+}
+
+/** The words of `text`, lowercased: runs of letters and digits. */
+function words(text: string): string[] {
+	return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+/** The words of `to` that `from` doesn't have as many of. */
+function gained(from: string[], to: string[]): string[] {
+	const left = new Map<string, number>();
+	for (const w of from) left.set(w, (left.get(w) ?? 0) + 1);
+	const out = new Set<string>();
+	for (const w of to) {
+		const n = left.get(w) ?? 0;
+		if (n > 0) left.set(w, n - 1);
+		else out.add(w);
+	}
+	return [...out];
+}
+
+/** The words worth searching changed lines for: the distinctive ones, or all of them if none are. */
+function searchTerms(ws: string[]): string[] {
+	const distinctive = ws.filter((w) => w.length >= 3 && !STOP_WORDS.has(w) && !/^\d+$/.test(w));
+	return distinctive.length ? distinctive : ws;
+}
+
+/** `text` in quotes, shortened for a note. */
+function quote(text: string): string {
+	return JSON.stringify(text.length > 40 ? `${text.slice(0, 39)}…` : text);
 }
 
 /** The winning rule's selector, to say which rule took over. */
@@ -194,8 +233,8 @@ export function correlate(input: CorrelateInput): Correlation {
 	};
 
 	// Changed lines per side: RIGHT by target path, LEFT by baseline path (mapped back to the target's).
-	const added = new Map<string, Set<number>>();
-	const deleted = new Map<string, { lines: Set<number>; path: string }>();
+	const added = new Map<string, Map<number, string>>();
+	const deleted = new Map<string, { lines: Map<number, string>; path: string }>();
 	for (const [p, c] of input.changes) {
 		added.set(p, c.added);
 		deleted.set(c.oldPath, { lines: c.deleted, path: p });
@@ -203,6 +242,15 @@ export function correlate(input: CorrelateInput): Correlation {
 	const isChanged = (side: Side, p: string, line: number) =>
 		side === "RIGHT" ? Boolean(added.get(p)?.has(line)) : Boolean(deleted.get(p)?.lines.has(line));
 	const targetPath = (side: Side, p: string) => (side === "RIGHT" ? p : (deleted.get(p)?.path ?? p));
+
+	// Changed lines copy could be on, with their words: anything but stylesheets.
+	const copyLines: Record<Side, { path: string; line: number; text: string; words: Set<string> }[]> = { LEFT: [], RIGHT: [] };
+	for (const [p, c] of input.changes) {
+		for (const [side, lines, sidePath] of [["RIGHT", c.added, p], ["LEFT", c.deleted, c.oldPath]] as const) {
+			if (STYLESHEET.test(sidePath)) continue;
+			for (const [line, text] of lines) copyLines[side].push({ path: sidePath, line, text, words: new Set(words(text)) });
+		}
+	}
 
 	const diffByTo = new Map<string, PageDiff>();
 	const diffByFrom = new Map<string, PageDiff>();
@@ -273,6 +321,35 @@ export function correlate(input: CorrelateInput): Correlation {
 			return out;
 		};
 
+		/**
+		 * Changed lines on `side` holding `terms`: those with the most of them,
+		 * narrowed to the files that rendered `node` if any of those qualify,
+		 * then to those most made of `text`'s words (copy, rather than code
+		 * that happens to share a word with it).
+		 */
+		const copyLoc = (side: Side, node: ElementNode, terms: string[], text: string[]): Candidate[] => {
+			let best = 0;
+			let found: (typeof copyLines)[Side] = [];
+			for (const l of copyLines[side]) {
+				const score = terms.filter((t) => l.words.has(t)).length;
+				if (score > best) [best, found] = [score, [l]];
+				else if (score > 0 && score === best) found.push(l);
+			}
+			const near = new Set(
+				[node.component?.source, ...(node.component?.components ?? []).map((c) => c.source)]
+					.map((src) => (src && !src.generated ? repoPath(src.fileName) : null))
+					.filter(Boolean),
+			);
+			const own = found.filter((l) => near.has(l.path));
+			if (own.length) found = own;
+			const inText = new Set(text);
+			const share = (l: (typeof found)[number]) => [...l.words].filter((w) => inText.has(w)).length / l.words.size;
+			const top = Math.max(0, ...found.map(share));
+			found = found.filter((l) => share(l) === top);
+			if (found.length > MAX_COPY_LINES) return [];
+			return found.map((l) => ({ side, path: l.path, line: l.line, kind: "copy", via: "copy", text: l.text.trim() }));
+		};
+
 		const selectorLoc = (side: Side, styles: StyleManifest | null, el: ElementStyles | undefined, prop: string): Candidate | null => {
 			const ref = styles && el?.winners[prop]?.decl;
 			const rule = ref && styles?.rules[ref[0]];
@@ -290,7 +367,9 @@ export function correlate(input: CorrelateInput): Correlation {
 			const onRight = hit(right);
 			const onLeft = hit(left);
 			if (onRight.length) for (const c of onLeft) absorbed.add(`${c.path}:${c.line}`);
-			entry.hits.push(...(onRight.length ? onRight : onLeft));
+			// A line already found (copy on the element's JSX line, say) keeps what it was found as first.
+			const seen = new Set(entry.hits.map((c) => `${c.side}:${c.path}:${c.line}`));
+			entry.hits.push(...(onRight.length ? onRight : onLeft).filter((c) => !seen.has(`${c.side}:${c.path}:${c.line}`)));
 		};
 
 		const area = (n: ElementNode | undefined, scale: number) => (n ? Math.round(n.box.width * scale) * Math.round(n.box.height * scale) : 0);
@@ -334,8 +413,22 @@ export function correlate(input: CorrelateInput): Correlation {
 					}
 				}
 			}
+			const notes: string[] = [];
+			if (a.text !== undefined && b.text !== undefined && a.text !== b.text) {
+				const before = words(a.text);
+				const after = words(b.text);
+				const hits = entry.hits.length;
+				consider(
+					entry,
+					copyLoc("LEFT", a, searchTerms(gained(after, before)), before),
+					copyLoc("RIGHT", b, searchTerms(gained(before, after)), after),
+				);
+				if (entry.hits.length > hits) entry.own = true;
+				else notes.push(`copy changed (${quote(a.text)} → ${quote(b.text)}) but no changed line has it`);
+			}
 			consider(entry, [jsx("LEFT", a, "jsx")], [jsx("RIGHT", b, "jsx")]);
-			if (switched.length) entry.note = `winner changed (${switched.slice(0, 3).join("; ")}${switched.length > 3 ? "; …" : ""})`;
+			if (switched.length) notes.push(`winner changed (${switched.slice(0, 3).join("; ")}${switched.length > 3 ? "; …" : ""})`);
+			if (notes.length) entry.note = notes.join("; ");
 		});
 
 		walk(page.from.manifest.elements, (a) => {
@@ -473,7 +566,7 @@ export function correlate(input: CorrelateInput): Correlation {
 	for (const [p, c] of input.changes) {
 		for (const [side, lines, sidePath] of [["RIGHT", c.added, p], ["LEFT", c.deleted, c.oldPath]] as const) {
 			if (!stylesheet(sidePath)) continue;
-			for (const line of lines) {
+			for (const line of lines.keys()) {
 				if (used.has(`${side}:${p}:${line}`) || (side === "LEFT" && absorbed.has(`${sidePath}:${line}`))) continue;
 				invisible.push({ path: p, line, side, reason: inRule(side, sidePath, line) ? "no-effect" : "not-exercised" });
 			}

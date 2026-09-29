@@ -36,7 +36,7 @@ export async function prepareCapture(opts) {
     const pages = resolvePages(locs, config);
     const version = resolveVersion(opts.root);
     const outputDir = versionDir(paths, version.key);
-    return { paths, config, version, pages, outputDir, byElement: Boolean(opts.byElement) };
+    return { paths, config, version, pages, outputDir, byElement: !opts.onlyPages };
 }
 /** Fail fast if the base URL is not reachable. */
 async function assertReachable(baseUrl) {

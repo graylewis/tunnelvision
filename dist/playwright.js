@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 /**
- * Drive Playwright directly for `--by-element` captures. shot-scraper can't
+ * Drive Playwright directly for per-element captures. shot-scraper can't
  * measure elements and screenshot them from the same page load (its
  * `javascript` command has no viewport or screenshot support), so we run a
  * small driver script on the Python/Playwright install that shot-scraper
@@ -11,8 +11,9 @@ import { fileURLToPath } from "node:url";
  */
 /** The driver, shipped alongside `dist/` (see `files` in package.json). */
 const DRIVER = fileURLToPath(new URL("../assets/capture.py", import.meta.url));
-const INSTALL_HINT = "--by-element needs the Python Playwright that shot-scraper uses.\n" +
-    "Install shot-scraper (and run `shot-scraper install`) in the environment on your PATH.";
+const INSTALL_HINT = "Per-element captures need the Python Playwright that shot-scraper uses.\n" +
+    "Install shot-scraper (and run `shot-scraper install`) in the environment on your PATH,\n" +
+    "or pass --only-pages to capture whole pages with shot-scraper alone.";
 function findOnPath(bin) {
     for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
         const candidate = path.join(dir, bin);

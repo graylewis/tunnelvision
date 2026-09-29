@@ -64,18 +64,27 @@ function styles(side: Side): StyleManifest {
 	return { version: 1, rules: side.rules, elements };
 }
 
+type Line = number | [number, string];
+
 function input(opts: {
 	from: Side;
 	to: Side;
 	changed: Record<string, "changed" | "size-mismatch">;
 	/** Elements whose box is taller in the target. */
 	grown?: string[];
-	changes: Record<string, { added?: number[]; deleted?: number[] }>;
+	/** Each element's own text, before and after. */
+	text?: Record<string, [string, string]>;
+	/** Changed line numbers, or `[line, text]` where the text matters. */
+	changes: Record<string, { added?: Line[]; deleted?: Line[] }>;
 }): CorrelateInput {
 	const a = tree();
 	const b = tree();
 	for (const n of all(b)) {
 		if (opts.grown?.includes(n.dir)) n.rect = n.box = { ...n.box, height: n.box.height + 6 };
+	}
+	for (const [dir, [before, after]] of Object.entries(opts.text ?? {})) {
+		all(a).find((n) => n.dir === dir)!.text = before;
+		all(b).find((n) => n.dir === dir)!.text = after;
 	}
 	const match: ElementMatch = { fromTo: new Map(), toFrom: new Map(), matchedBy: new Map(), moved: new Set() };
 	const byDir = new Map(all(a).map((n) => [n.dir, n]));
@@ -90,8 +99,9 @@ function input(opts: {
 		status: opts.changed[n.dir] ?? "unchanged",
 		mismatchedPixels: opts.changed[n.dir] ? 50 : 0,
 	}));
+	const lines = (ls: Line[] = []) => new Map(ls.map((l): [number, string] => (typeof l === "number" ? [l, ""] : l)));
 	const changes = new Map<string, FileChanges>(
-		Object.entries(opts.changes).map(([p, c]) => [p, { oldPath: p, added: new Set(c.added ?? []), deleted: new Set(c.deleted ?? []) }]),
+		Object.entries(opts.changes).map(([p, c]) => [p, { oldPath: p, added: lines(c.added), deleted: lines(c.deleted) }]),
 	);
 	return {
 		pages: [{ slug: "index", from: { manifest: manifest(a), styles: styles(opts.from) }, to: { manifest: manifest(b), styles: styles(opts.to) }, match }],
@@ -322,4 +332,134 @@ test("an element with two causes lists the other on each", () => {
 			[6, ["src/styles.css:5"]],
 		],
 	);
+});
+
+// Copy: the card's JSX starts on src/App.jsx:12, so its text sits on a later line.
+
+test("changed copy on its own line inside the element's JSX is a copy cause", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main/card": "changed" },
+			text: { "main/card": ["Save changes", "Save draft"] },
+			changes: { "src/App.jsx": { added: [[14, "        Save draft"], [30, "  const onSave = () => save(draft);"]], deleted: [[14, "        Save changes"]] } },
+		}),
+	);
+	assert.deepEqual(
+		result.causes.map((c) => [c.path, c.line, c.side, c.kind, c.text, c.effects.map((e) => [e.dir, e.via])]),
+		[["src/App.jsx", 14, "RIGHT", "copy", "Save draft", [["main/card", "copy"]]]],
+	);
+	assert.deepEqual(result.unexplained, []);
+});
+
+test("copy from a translations file is found there", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main/card": "changed" },
+			text: { "main/card": ["Save changes", "Save draft"] },
+			changes: {
+				"src/locales/en.json": { added: [[8, '  "save.label": "Save draft",']], deleted: [[8, '  "save.label": "Save changes",']] },
+				"src/App.jsx": { added: [[40, "  // TODO: autosave"]] },
+			},
+		}),
+	);
+	assert.deepEqual(
+		result.causes.map((c) => [c.path, c.line, c.side, c.kind]),
+		[["src/locales/en.json", 8, "RIGHT", "copy"]],
+	);
+});
+
+test("when several changed lines have the copy, the element's own file wins", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main/card": "changed" },
+			text: { "main/card": ["Save changes", "Save draft"] },
+			changes: {
+				"src/locales/en.json": { added: [[8, '  "draft.title": "Draft"']] },
+				"src/App.jsx": { added: [[14, "        Save draft"]] },
+			},
+		}),
+	);
+	assert.deepEqual(
+		result.causes.map((c) => [c.path, c.line]),
+		[["src/App.jsx", 14]],
+	);
+});
+
+test("copy that only lost words is found on the deleted line", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main/card": "changed" },
+			text: { "main/card": ["Save all changes", "Save changes"] },
+			changes: { "src/App.jsx": { added: [[14, "        Save changes"]], deleted: [[14, "        Save all changes"]] } },
+		}),
+	);
+	assert.deepEqual(
+		result.causes.map((c) => [c.path, c.line, c.side, c.kind]),
+		[["src/App.jsx", 14, "LEFT", "copy"]],
+	);
+});
+
+test("copy on the element's JSX line is one cause, not two", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			// The container changes with it, taking the card's causes as a knock-on effect.
+			changed: { main: "changed", "main/card": "changed" },
+			text: { "main/card": ["Welcome", "Welcome back"] },
+			changes: { "src/App.jsx": { added: [[12, "    <div>Welcome back</div>"]], deleted: [[12, "    <div>Welcome</div>"]] } },
+		}),
+	);
+	assert.deepEqual(
+		result.causes.map((c) => [c.line, c.kind, c.effects.map((e) => [e.dir, e.via])]),
+		[
+			[
+				12,
+				"copy",
+				[
+					["main", "knock-on"],
+					["main/card", "copy"],
+				],
+			],
+		],
+	);
+});
+
+test("copy no changed line has is unexplained, and stylesheets aren't searched for it", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main/card": "changed" },
+			text: { "main/card": ["Grid view", "List view"] },
+			changes: { "src/styles.css": { added: [[3, ".list { display: grid }"]] } },
+		}),
+	);
+	assert.deepEqual(result.causes, []);
+	assert.deepEqual(
+		result.unexplained.map((u) => [u.dir, u.note]),
+		[["main/card", 'copy changed ("Grid view" → "List view") but no changed line has it']],
+	);
+});
+
+test("copy that too many changed lines have is a coincidence, not a cause", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main/card": "changed" },
+			text: { "main/card": ["Save changes", "Save draft"] },
+			changes: { "src/drafts.js": { added: [1, 2, 3, 4, 5, 6].map((n): [number, string] => [n, `export const draft${n} = "draft";`]) } },
+		}),
+	);
+	assert.deepEqual(result.causes, []);
+	assert.equal(result.unexplained.length, 1);
 });

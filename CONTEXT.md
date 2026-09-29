@@ -16,6 +16,10 @@ _Avoid_: Route, screen
 A visible block-level DOM node in a page's element tree, paired across versions by identity rather than DOM path.
 _Avoid_: Node, component
 
+**Own text**:
+The text an element renders, including its inline descendants but not the text of elements nested inside it.
+_Avoid_: textContent (that includes nested elements' text)
+
 **Tracked property**:
 A computed CSS property whose value is recorded for every element, drawn from a curated set of visual properties.
 _Avoid_: Style, computed style (for the whole set)
@@ -39,7 +43,7 @@ A line added or deleted in the git diff between the commits of two versions.
 _Avoid_: Hunk (a hunk can hold several changed lines)
 
 **Cause**:
-A changed line that explains a visual change: a declaration, selector or custom-property definition in a stylesheet, or an element's own JSX line.
+A changed line that explains a visual change: a declaration, selector or custom-property definition in a stylesheet, an element's own JSX line, or a line holding the words an element's own text gained or lost (a copy cause).
 _Avoid_: Culprit, source (source already means an element's JSX location)
 
 **Knock-on effect**:

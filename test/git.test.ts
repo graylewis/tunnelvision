@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { changedLines, deleteSnapshotRef, parseUnifiedDiff, snapshotRef, snapshotTree } from "../src/git.js";
 
-const sorted = (s: Set<number> | undefined) => [...(s ?? [])].sort((a, b) => a - b);
+const sorted = (m: Map<number, string> | undefined) => [...(m?.keys() ?? [])].sort((a, b) => a - b);
 
 test("parseUnifiedDiff: added, deleted and replaced lines", () => {
 	const diff = [
@@ -30,6 +30,8 @@ test("parseUnifiedDiff: added, deleted and replaced lines", () => {
 	assert.equal(f.oldPath, "src/styles.css");
 	assert.deepEqual(sorted(f.added), [3, 11, 12]);
 	assert.deepEqual(sorted(f.deleted), [3, 20, 21]);
+	assert.equal(f.added.get(3), "  padding: 24px;");
+	assert.equal(f.deleted.get(3), "  padding: 16px;");
 });
 
 test("parseUnifiedDiff: content that looks like headers stays content", () => {
@@ -47,6 +49,8 @@ test("parseUnifiedDiff: content that looks like headers stays content", () => {
 	const f = parseUnifiedDiff(diff).get("notes.md");
 	assert.deepEqual(sorted(f?.deleted), [1, 2]);
 	assert.deepEqual(sorted(f?.added), [1, 2]);
+	assert.equal(f?.deleted.get(1), "-- old rule");
+	assert.equal(f?.added.get(1), "++ new rule");
 	assert.equal(parseUnifiedDiff(diff).size, 1);
 });
 

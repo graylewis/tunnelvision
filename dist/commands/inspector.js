@@ -170,7 +170,7 @@ function openBrowser(url) {
 export async function inspector(opts) {
     const paths = resolvePaths(opts.root);
     if (!fs.existsSync(paths.versions)) {
-        throw new Error(`No captures found under ${paths.versions}. Run \`tunnelvision shoot --by-element\` first.`);
+        throw new Error(`No captures found under ${paths.versions}. Run \`tunnelvision shoot\` first.`);
     }
     const cache = new Map();
     // Element images are cropped from page screenshots on request.

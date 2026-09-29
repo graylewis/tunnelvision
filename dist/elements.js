@@ -255,6 +255,25 @@ new Promise((resolve) => {
       for (const name of TRACKED_PROPERTIES) out[name] = cs.getPropertyValue(name);
       return out;
     }
+    // Painted text inside \`el\`, skipping descendants that are elements of
+    // their own (\`emitted\`) since their text is theirs. Joined as rendered,
+    // with a space where a line break or a nested element splits it.
+    const emitted = new Set();
+    const MAX_TEXT = 10000;
+    function ownText(el) {
+      const hidden = getComputedStyle(el).visibility === "hidden";
+      let s = "";
+      for (const n of el.childNodes) {
+        if (n.nodeType === 3) {
+          if (!hidden) s += n.nodeValue;
+        } else if (n.nodeType === 1) {
+          const tagU = n.tagName.toUpperCase();
+          if (emitted.has(n) || tagU === "BR") s += " ";
+          else if (!SKIP.has(tagU) && !paintsNothing(n)) s += ownText(n);
+        }
+      }
+      return s;
+    }
     function walk(el, parentSel) {
       const out = [];
       for (const child of el.children) {
@@ -268,6 +287,8 @@ new Promise((resolve) => {
           ? { x: r.x + window.scrollX, y: r.y + window.scrollY, width: r.width, height: r.height }
           : paintedBox(child, r));
         if (box) {
+          emitted.add(child);
+          const children = walk(child, sel);
           out.push({
             tag: child.tagName.toLowerCase(),
             id: child.id || null,
@@ -285,7 +306,8 @@ new Promise((resolve) => {
             box,
             react: reactInfo(child),
             computed: computed(child),
-            children: walk(child, sel)
+            text: ownText(child).replace(/\\s+/g, " ").trim().slice(0, MAX_TEXT),
+            children
           });
         } else {
           for (const g of walk(child, sel)) out.push(g);
@@ -343,6 +365,7 @@ export function assignDirs(nodes, parentDir = "") {
             rect: node.rect,
             box: node.box ?? node.rect,
             react: node.react ?? null,
+            ...(node.text !== undefined ? { text: node.text } : {}),
             // Source-derived fields are filled in once frames are resolved (see shoot).
             identity: {
                 attributes: node.attributes ?? {},

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import pc from "picocolors";
 import { init } from "./commands/init.js";
 import { shoot } from "./commands/shoot.js";
@@ -29,8 +29,13 @@ function withCaptureOptions(cmd) {
         .option("--retina", "capture at 2x (retina); doubles image dimensions")
         .option("--scale-factor <n>", "capture at a specific device pixel scale factor", num)
         .option("--auth <file>", "path to a shot-scraper auth context file")
-        .option("--concurrency <n>", "pages captured at once with --by-element", num)
-        .option("--by-element", "capture every visible block-level element individually into a hierarchy mirroring the page");
+        .option("--concurrency <n>", "pages captured at once (per-element captures)", num)
+        .option("--only-pages", "capture one full-page screenshot per page, without per-element screenshots, style data or causes")
+        .addOption(byElementOption());
+}
+/** `--by-element` was the opt-in before per-element captures became the default; still accepted so old scripts keep working. */
+function byElementOption() {
+    return new Option("--by-element", "no longer needed: per-element captures are the default").hideHelp();
 }
 function withDiffOptions(cmd) {
     return cmd
@@ -72,7 +77,7 @@ withCaptureOptions(program.command("shoot").description("Capture screenshots of 
     scaleFactor: opts.scaleFactor,
     auth: opts.auth,
     concurrency: opts.concurrency,
-    byElement: opts.byElement,
+    onlyPages: opts.onlyPages,
 })));
 withDiffOptions(program
     .command("diff")
@@ -80,7 +85,7 @@ withDiffOptions(program
     .argument("[from]", "baseline version key")
     .argument("[to]", "target version key")
     .option("--base-url <url>", "override base URL (only affects re-resolving current key)")
-    .option("--by-element", "diff per-element hierarchies (auto-detected from the stored captures)")).action((from, to, opts) => run(() => diff({
+    .addOption(byElementOption())).action((from, to, opts) => run(() => diff({
     root: ROOT,
     from,
     to,
@@ -100,7 +105,7 @@ withDiffOptions(withCaptureOptions(program.command("review").description("Captur
     scaleFactor: opts.scaleFactor,
     auth: opts.auth,
     concurrency: opts.concurrency,
-    byElement: opts.byElement,
+    onlyPages: opts.onlyPages,
     threshold: opts.threshold,
     maxDiffPercent: opts.maxDiffPercent,
     json: opts.json,

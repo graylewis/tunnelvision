@@ -53,7 +53,7 @@ export async function doctor(opts) {
     if (!ss.installed) {
         console.log(pc.dim("      pip install shot-scraper && shot-scraper install"));
     }
-    // Playwright (used directly for --by-element captures)
+    // Playwright (used directly for per-element captures)
     let python = null;
     try {
         python = findPlaywrightPython();
@@ -61,7 +61,7 @@ export async function doctor(opts) {
     catch {
         // reported below
     }
-    line(Boolean(python), "playwright (for --by-element)", python ?? "not found next to shot-scraper");
+    line(Boolean(python), "playwright (for per-element captures)", python ?? "not found next to shot-scraper");
     // config
     line(configExists(paths), "config", configExists(paths) ? paths.config : "run `tunnelvision init`");
     // git

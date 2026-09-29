@@ -6,7 +6,7 @@ import { cropImage, cropRect, ELEMENT_IMAGE, ELEMENT_MANIFEST, PAGE_IMAGE, readE
 import { matchElements, matchOptions } from "./matching.js";
 /**
  * All PNGs under `dir`, returned as POSIX-style paths relative to `dir`.
- * Recurses so per-element hierarchies (`--by-element`) diff the same way flat
+ * Recurses so per-element hierarchies diff the same way flat
  * page captures do.
  */
 function listPngs(dir) {

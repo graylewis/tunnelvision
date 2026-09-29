@@ -129,7 +129,7 @@ async function init() {
 		$("tree").innerHTML = '<div class="empty">Need at least two captured versions to diff.</div>';
 		return;
 	}
-	const opt = (v) => `<option value="${esc(v.key)}">${esc(v.key)}${v.byElement ? " · by-element" : ""} — ${esc(new Date(v.capturedAt).toLocaleString())}</option>`;
+	const opt = (v) => `<option value="${esc(v.key)}">${esc(v.key)}${v.byElement ? "" : " · pages only"} — ${esc(new Date(v.capturedAt).toLocaleString())}</option>`;
 	const html = versions.map(opt).reverse().join("");
 	$("from").innerHTML = html;
 	$("to").innerHTML = html;
@@ -237,7 +237,7 @@ function causeSource(cause) {
 	return { fileName: state.data.repoRoot.replace(/\/$/, "") + "/" + cause.path, lineNumber: cause.line, columnNumber: 1, path: `${cause.path}:${cause.line}` };
 }
 
-const VIA = { direct: "sets it", inherited: "inherited", var: "via var()", jsx: "JSX line", "knock-on": "knock-on" };
+const VIA = { direct: "sets it", inherited: "inherited", var: "via var()", jsx: "JSX line", copy: "copy", "knock-on": "knock-on" };
 
 /**
  * Normalise a source location from an element's `component`. Accepts `{ path }`,
@@ -564,7 +564,7 @@ function renderCause(cause) {
 		if (node) html += imageGrid(`${rep.page}/${node.dir}/element.png`, node, `${rep.page}/${node.fromDir ?? node.dir}/element.png`);
 		html += propsTable(rep.props);
 	}
-	const order = { direct: 0, inherited: 1, var: 1, jsx: 1, "knock-on": 2 };
+	const order = { direct: 0, inherited: 1, var: 1, jsx: 1, copy: 1, "knock-on": 2 };
 	const effects = [...cause.effects].sort((a, b) => order[a.via] - order[b.via] || b.size - a.size);
 	html += `<figcaption>affected elements</figcaption><ul class="effects">` + effects.map((e) =>
 		`<li><a class="el" data-goto="${esc(elementKey(e))}">${esc(e.page + "/" + e.dir)}</a> <span class="via">${esc(VIA[e.via])}</span>` +

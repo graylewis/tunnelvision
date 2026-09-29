@@ -1,7 +1,7 @@
 import fs from "node:fs";
 
 /**
- * Style data recorded for every element in `--by-element` captures: the
+ * Style data recorded for every element in per-element captures: the
  * computed value of each tracked property, and the declaration that won it.
  * `correlate.ts` joins these against changed lines to find what caused a
  * visual change (see docs/adr/0001-property-level-correlation.md).

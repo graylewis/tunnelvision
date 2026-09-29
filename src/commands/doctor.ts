@@ -59,14 +59,14 @@ export async function doctor(opts: DoctorOptions): Promise<number> {
 		console.log(pc.dim("      pip install shot-scraper && shot-scraper install"));
 	}
 
-	// Playwright (used directly for --by-element captures)
+	// Playwright (used directly for per-element captures)
 	let python: string | null = null;
 	try {
 		python = findPlaywrightPython();
 	} catch {
 		// reported below
 	}
-	line(Boolean(python), "playwright (for --by-element)", python ?? "not found next to shot-scraper");
+	line(Boolean(python), "playwright (for per-element captures)", python ?? "not found next to shot-scraper");
 
 	// config
 	line(configExists(paths), "config", configExists(paths) ? paths.config : "run `tunnelvision init`");

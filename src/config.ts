@@ -12,7 +12,7 @@ export interface DiffConfig {
 	maxDiffPercent: number;
 }
 
-/** How `--by-element` diffs decide which elements correspond between snapshots. */
+/** How per-element diffs decide which elements correspond between snapshots. */
 export interface MatchConfig {
 	/**
 	 * Attributes that deliberately identify an element (test ids and the like),
@@ -28,7 +28,7 @@ export interface MatchConfig {
 	ignoreIds: string[];
 }
 
-/** Style data recorded per element in `--by-element` captures. */
+/** Style data recorded per element in per-element captures. */
 export interface StylesConfig {
 	/** Computed CSS properties whose changes are traced back to the declarations that set them. */
 	properties: string[];
@@ -77,10 +77,10 @@ export interface Config {
 	/** Capture at a specific device-pixel scale factor (e.g. 3). Overrides retina when > 0. */
 	scaleFactor?: number;
 	authFile: string;
-	/** Pages captured at once in `--by-element` mode. */
+	/** Pages captured at once in per-element captures. */
 	concurrency: number;
 	/**
-	 * Keep elements in `--by-element` captures that paint nothing (clipped away
+	 * Keep elements in per-element captures that paint nothing (clipped away
 	 * by an ancestor's overflow or clip-path, inside a transparent ancestor, or
 	 * off the page), cropped by their full box. Off by default: their crops show
 	 * whatever is painted over them, so their changes are other elements'.
@@ -182,8 +182,8 @@ export interface Overrides {
 	scaleFactor?: number;
 	auth?: string;
 	concurrency?: number;
-	/** Capture/diff every visible block-level element individually. */
-	byElement?: boolean;
+	/** Capture one full-page screenshot per page instead of every visible block-level element. */
+	onlyPages?: boolean;
 }
 
 export function applyOverrides(config: Config, o: Overrides): Config {

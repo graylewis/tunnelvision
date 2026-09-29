@@ -4,7 +4,7 @@ import { PNG } from "pngjs";
 import type { ComponentFile } from "./reactsource.js";
 
 /**
- * Extract, plan, and address the per-element hierarchy used by `--by-element`.
+ * Extract, plan, and address the per-element hierarchy captured by default.
  *
  * We ask the browser (via the Playwright driver in `playwright.ts`) for a tree of
  * all *visible block-level* elements on the page, preserving DOM nesting.
@@ -100,6 +100,8 @@ export interface RawElement {
 	react: ReactInfo | null;
 	/** Computed values of the tracked properties. */
 	computed?: Record<string, string>;
+	/** The element's own text (see `ElementNode.text`). */
+	text?: string;
 	children: RawElement[];
 }
 
@@ -121,6 +123,12 @@ export interface ElementNode {
 	identity?: ElementIdentity;
 	/** Resolved React source locations, when React rendered the element. */
 	component?: ComponentFile;
+	/**
+	 * The element's own text: what it renders, inline descendants included but
+	 * not the text of descendants that are elements in their own right, with
+	 * whitespace collapsed. Missing in captures made before it was recorded.
+	 */
+	text?: string;
 	children: ElementNode[];
 }
 
@@ -392,6 +400,25 @@ new Promise((resolve) => {
       for (const name of TRACKED_PROPERTIES) out[name] = cs.getPropertyValue(name);
       return out;
     }
+    // Painted text inside \`el\`, skipping descendants that are elements of
+    // their own (\`emitted\`) since their text is theirs. Joined as rendered,
+    // with a space where a line break or a nested element splits it.
+    const emitted = new Set();
+    const MAX_TEXT = 10000;
+    function ownText(el) {
+      const hidden = getComputedStyle(el).visibility === "hidden";
+      let s = "";
+      for (const n of el.childNodes) {
+        if (n.nodeType === 3) {
+          if (!hidden) s += n.nodeValue;
+        } else if (n.nodeType === 1) {
+          const tagU = n.tagName.toUpperCase();
+          if (emitted.has(n) || tagU === "BR") s += " ";
+          else if (!SKIP.has(tagU) && !paintsNothing(n)) s += ownText(n);
+        }
+      }
+      return s;
+    }
     function walk(el, parentSel) {
       const out = [];
       for (const child of el.children) {
@@ -405,6 +432,8 @@ new Promise((resolve) => {
           ? { x: r.x + window.scrollX, y: r.y + window.scrollY, width: r.width, height: r.height }
           : paintedBox(child, r));
         if (box) {
+          emitted.add(child);
+          const children = walk(child, sel);
           out.push({
             tag: child.tagName.toLowerCase(),
             id: child.id || null,
@@ -422,7 +451,8 @@ new Promise((resolve) => {
             box,
             react: reactInfo(child),
             computed: computed(child),
-            children: walk(child, sel)
+            text: ownText(child).replace(/\\s+/g, " ").trim().slice(0, MAX_TEXT),
+            children
           });
         } else {
           for (const g of walk(child, sel)) out.push(g);
@@ -482,6 +512,7 @@ export function assignDirs(nodes: RawElement[], parentDir = ""): ElementNode[] {
 			rect: node.rect,
 			box: node.box ?? node.rect,
 			react: node.react ?? null,
+			...(node.text !== undefined ? { text: node.text } : {}),
 			// Source-derived fields are filled in once frames are resolved (see shoot).
 			identity: {
 				attributes: node.attributes ?? {},

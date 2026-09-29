@@ -39,7 +39,7 @@ export interface CaptureContext {
 	version: VersionInfo;
 	pages: Page[];
 	outputDir: string;
-	/** Capture every visible block-level element individually. */
+	/** Capture every visible block-level element individually (unless `--only-pages`). */
 	byElement: boolean;
 }
 
@@ -72,7 +72,7 @@ export async function prepareCapture(opts: ShootOptions): Promise<CaptureContext
 	const version = resolveVersion(opts.root);
 	const outputDir = versionDir(paths, version.key);
 
-	return { paths, config, version, pages, outputDir, byElement: Boolean(opts.byElement) };
+	return { paths, config, version, pages, outputDir, byElement: !opts.onlyPages };
 }
 
 /** Fail fast if the base URL is not reachable. */

@@ -7,7 +7,7 @@ import type { RawElement } from "./elements.js";
 import type { RawStyles } from "./styles.js";
 
 /**
- * Drive Playwright directly for `--by-element` captures. shot-scraper can't
+ * Drive Playwright directly for per-element captures. shot-scraper can't
  * measure elements and screenshot them from the same page load (its
  * `javascript` command has no viewport or screenshot support), so we run a
  * small driver script on the Python/Playwright install that shot-scraper
@@ -18,8 +18,9 @@ import type { RawStyles } from "./styles.js";
 const DRIVER = fileURLToPath(new URL("../assets/capture.py", import.meta.url));
 
 const INSTALL_HINT =
-	"--by-element needs the Python Playwright that shot-scraper uses.\n" +
-	"Install shot-scraper (and run `shot-scraper install`) in the environment on your PATH.";
+	"Per-element captures need the Python Playwright that shot-scraper uses.\n" +
+	"Install shot-scraper (and run `shot-scraper install`) in the environment on your PATH,\n" +
+	"or pass --only-pages to capture whole pages with shot-scraper alone.";
 
 export interface PageJob {
 	url: string;

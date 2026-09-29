@@ -128,6 +128,7 @@ const VIA = {
     inherited: "inherited from an ancestor this line styles",
     var: "through a custom property this line sets",
     jsx: "this is the element's JSX line",
+    copy: "this line has the element's changed copy",
     "knock-on": "moved or resized by a change this line made",
 };
 const MAX_LISTED = 25;
@@ -311,7 +312,7 @@ export async function updatePr(opts) {
     }
     const data = buildDiff(paths, opts, from, to);
     if (!data.pages.some((p) => p.byElement)) {
-        throw new Error("update-pr needs per-element captures. Re-capture both versions with `--by-element`.");
+        throw new Error("update-pr needs per-element captures. Re-capture both versions without `--only-pages`.");
     }
     const lines = await gh.commentableLines(pr.number);
     const config = applyOverrides(configExists(paths) ? loadConfig(paths) : DEFAULT_CONFIG, opts);

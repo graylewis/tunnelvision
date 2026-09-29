@@ -147,10 +147,10 @@ export function deleteSnapshotRef(root: string, key: string): void {
 export interface FileChanges {
 	/** The file's path before the change (differs from its key on renames). */
 	oldPath: string;
-	/** 1-based line numbers added in the new version. */
-	added: Set<number>;
-	/** 1-based line numbers deleted from the old version. */
-	deleted: Set<number>;
+	/** Lines added in the new version: 1-based line number → the line's text. */
+	added: Map<number, string>;
+	/** Lines deleted from the old version: 1-based line number → the line's text. */
+	deleted: Map<number, string>;
 }
 
 /** Strip git's `a/` / `b/` prefix, or return null for `/dev/null`. */
@@ -161,8 +161,9 @@ function diffPath(raw: string, prefix: string): string | null {
 }
 
 /**
- * Parse a unified diff (any context size) into the lines it changed, keyed by
- * each file's new path. Deleted files are keyed by their old path.
+ * Parse a unified diff (any context size) into the lines it changed, and
+ * their text, keyed by each file's new path. Deleted files are keyed by their
+ * old path.
  */
 export function parseUnifiedDiff(text: string): Map<string, FileChanges> {
 	const out = new Map<string, FileChanges>();
@@ -175,7 +176,7 @@ export function parseUnifiedDiff(text: string): Map<string, FileChanges> {
 	const open = (): FileChanges | null => {
 		const key = newPath ?? oldPath;
 		if (!key) return null;
-		const changes = out.get(key) ?? { oldPath: oldPath ?? key, added: new Set<number>(), deleted: new Set<number>() };
+		const changes = out.get(key) ?? { oldPath: oldPath ?? key, added: new Map<number, string>(), deleted: new Map<number, string>() };
 		out.set(key, changes);
 		return changes;
 	};
@@ -188,10 +189,10 @@ export function parseUnifiedDiff(text: string): Map<string, FileChanges> {
 	for (const line of text.split("\n")) {
 		if (current && (oldLeft > 0 || newLeft > 0)) {
 			if (line.startsWith("+")) {
-				current.added.add(newLine++);
+				current.added.set(newLine++, line.slice(1));
 				newLeft--;
 			} else if (line.startsWith("-")) {
-				current.deleted.add(oldLine++);
+				current.deleted.set(oldLine++, line.slice(1));
 				oldLeft--;
 			} else if (line.startsWith(" ")) {
 				oldLine++;

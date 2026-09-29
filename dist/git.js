@@ -130,8 +130,9 @@ function diffPath(raw, prefix) {
     return p.startsWith(prefix) ? p.slice(prefix.length) : p;
 }
 /**
- * Parse a unified diff (any context size) into the lines it changed, keyed by
- * each file's new path. Deleted files are keyed by their old path.
+ * Parse a unified diff (any context size) into the lines it changed, and
+ * their text, keyed by each file's new path. Deleted files are keyed by their
+ * old path.
  */
 export function parseUnifiedDiff(text) {
     const out = new Map();
@@ -144,7 +145,7 @@ export function parseUnifiedDiff(text) {
         const key = newPath ?? oldPath;
         if (!key)
             return null;
-        const changes = out.get(key) ?? { oldPath: oldPath ?? key, added: new Set(), deleted: new Set() };
+        const changes = out.get(key) ?? { oldPath: oldPath ?? key, added: new Map(), deleted: new Map() };
         out.set(key, changes);
         return changes;
     };
@@ -155,11 +156,11 @@ export function parseUnifiedDiff(text) {
     for (const line of text.split("\n")) {
         if (current && (oldLeft > 0 || newLeft > 0)) {
             if (line.startsWith("+")) {
-                current.added.add(newLine++);
+                current.added.set(newLine++, line.slice(1));
                 newLeft--;
             }
             else if (line.startsWith("-")) {
-                current.deleted.add(oldLine++);
+                current.deleted.set(oldLine++, line.slice(1));
                 oldLeft--;
             }
             else if (line.startsWith(" ")) {

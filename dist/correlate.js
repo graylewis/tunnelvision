@@ -9,6 +9,10 @@ import { readStyleManifest } from "./styles.js";
 const VISUAL = new Set(["changed", "size-mismatch"]);
 const STYLESHEET = /\.(css|scss|sass|less|styl|pcss|postcss)$/i;
 export const LAYOUT_PROPERTIES = new Set(["width", "height", "min-width", "min-height", "max-width", "max-height"]);
+/** Words too common to say which line some copy came from, unless nothing else changed. */
+const STOP_WORDS = new Set(["the", "and", "for", "you", "your", "are", "with", "this", "that", "from", "our", "was", "has", "have", "its"]);
+/** More changed lines than this containing an element's new copy is a coincidence, not a cause. */
+const MAX_COPY_LINES = 5;
 function walk(nodes, visit, parent = null) {
     nodes.forEach((n, i) => {
         visit(n, parent, i > 0 ? nodes[i - 1] : null);
@@ -18,6 +22,34 @@ function walk(nodes, visit, parent = null) {
 function declText(rule, ref) {
     const d = rule.decls[ref[1]];
     return `${rule.selector} { ${d.name}: ${d.value}${d.important ? " !important" : ""} }`;
+}
+/** The words of `text`, lowercased: runs of letters and digits. */
+function words(text) {
+    return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+/** The words of `to` that `from` doesn't have as many of. */
+function gained(from, to) {
+    const left = new Map();
+    for (const w of from)
+        left.set(w, (left.get(w) ?? 0) + 1);
+    const out = new Set();
+    for (const w of to) {
+        const n = left.get(w) ?? 0;
+        if (n > 0)
+            left.set(w, n - 1);
+        else
+            out.add(w);
+    }
+    return [...out];
+}
+/** The words worth searching changed lines for: the distinctive ones, or all of them if none are. */
+function searchTerms(ws) {
+    const distinctive = ws.filter((w) => w.length >= 3 && !STOP_WORDS.has(w) && !/^\d+$/.test(w));
+    return distinctive.length ? distinctive : ws;
+}
+/** `text` in quotes, shortened for a note. */
+function quote(text) {
+    return JSON.stringify(text.length > 40 ? `${text.slice(0, 39)}…` : text);
 }
 /** The winning rule's selector, to say which rule took over. */
 function winnerSelector(styles, el, prop) {
@@ -51,6 +83,16 @@ export function correlate(input) {
     }
     const isChanged = (side, p, line) => side === "RIGHT" ? Boolean(added.get(p)?.has(line)) : Boolean(deleted.get(p)?.lines.has(line));
     const targetPath = (side, p) => (side === "RIGHT" ? p : (deleted.get(p)?.path ?? p));
+    // Changed lines copy could be on, with their words: anything but stylesheets.
+    const copyLines = { LEFT: [], RIGHT: [] };
+    for (const [p, c] of input.changes) {
+        for (const [side, lines, sidePath] of [["RIGHT", c.added, p], ["LEFT", c.deleted, c.oldPath]]) {
+            if (STYLESHEET.test(sidePath))
+                continue;
+            for (const [line, text] of lines)
+                copyLines[side].push({ path: sidePath, line, text, words: new Set(words(text)) });
+        }
+    }
     const diffByTo = new Map();
     const diffByFrom = new Map();
     for (const d of input.diffs)
@@ -121,6 +163,36 @@ export function correlate(input) {
             }
             return out;
         };
+        /**
+         * Changed lines on `side` holding `terms`: those with the most of them,
+         * narrowed to the files that rendered `node` if any of those qualify,
+         * then to those most made of `text`'s words (copy, rather than code
+         * that happens to share a word with it).
+         */
+        const copyLoc = (side, node, terms, text) => {
+            let best = 0;
+            let found = [];
+            for (const l of copyLines[side]) {
+                const score = terms.filter((t) => l.words.has(t)).length;
+                if (score > best)
+                    [best, found] = [score, [l]];
+                else if (score > 0 && score === best)
+                    found.push(l);
+            }
+            const near = new Set([node.component?.source, ...(node.component?.components ?? []).map((c) => c.source)]
+                .map((src) => (src && !src.generated ? repoPath(src.fileName) : null))
+                .filter(Boolean));
+            const own = found.filter((l) => near.has(l.path));
+            if (own.length)
+                found = own;
+            const inText = new Set(text);
+            const share = (l) => [...l.words].filter((w) => inText.has(w)).length / l.words.size;
+            const top = Math.max(0, ...found.map(share));
+            found = found.filter((l) => share(l) === top);
+            if (found.length > MAX_COPY_LINES)
+                return [];
+            return found.map((l) => ({ side, path: l.path, line: l.line, kind: "copy", via: "copy", text: l.text.trim() }));
+        };
         const selectorLoc = (side, styles, el, prop) => {
             const ref = styles && el?.winners[prop]?.decl;
             const rule = ref && styles?.rules[ref[0]];
@@ -139,7 +211,9 @@ export function correlate(input) {
             if (onRight.length)
                 for (const c of onLeft)
                     absorbed.add(`${c.path}:${c.line}`);
-            entry.hits.push(...(onRight.length ? onRight : onLeft));
+            // A line already found (copy on the element's JSX line, say) keeps what it was found as first.
+            const seen = new Set(entry.hits.map((c) => `${c.side}:${c.path}:${c.line}`));
+            entry.hits.push(...(onRight.length ? onRight : onLeft).filter((c) => !seen.has(`${c.side}:${c.path}:${c.line}`)));
         };
         const area = (n, scale) => (n ? Math.round(n.box.width * scale) * Math.round(n.box.height * scale) : 0);
         const sizeOf = (d, a, b) => d.mismatchedPixels ?? Math.max(area(a, page.from.manifest.scale), area(b, page.to.manifest.scale));
@@ -183,9 +257,22 @@ export function correlate(input) {
                     }
                 }
             }
+            const notes = [];
+            if (a.text !== undefined && b.text !== undefined && a.text !== b.text) {
+                const before = words(a.text);
+                const after = words(b.text);
+                const hits = entry.hits.length;
+                consider(entry, copyLoc("LEFT", a, searchTerms(gained(after, before)), before), copyLoc("RIGHT", b, searchTerms(gained(before, after)), after));
+                if (entry.hits.length > hits)
+                    entry.own = true;
+                else
+                    notes.push(`copy changed (${quote(a.text)} → ${quote(b.text)}) but no changed line has it`);
+            }
             consider(entry, [jsx("LEFT", a, "jsx")], [jsx("RIGHT", b, "jsx")]);
             if (switched.length)
-                entry.note = `winner changed (${switched.slice(0, 3).join("; ")}${switched.length > 3 ? "; …" : ""})`;
+                notes.push(`winner changed (${switched.slice(0, 3).join("; ")}${switched.length > 3 ? "; …" : ""})`);
+            if (notes.length)
+                entry.note = notes.join("; ");
         });
         walk(page.from.manifest.elements, (a) => {
             if (page.match.fromTo.has(a))
@@ -327,7 +414,7 @@ export function correlate(input) {
         for (const [side, lines, sidePath] of [["RIGHT", c.added, p], ["LEFT", c.deleted, c.oldPath]]) {
             if (!stylesheet(sidePath))
                 continue;
-            for (const line of lines) {
+            for (const line of lines.keys()) {
                 if (used.has(`${side}:${p}:${line}`) || (side === "LEFT" && absorbed.has(`${sidePath}:${line}`)))
                     continue;
                 invisible.push({ path: p, line, side, reason: inRule(side, sidePath, line) ? "no-effect" : "not-exercised" });

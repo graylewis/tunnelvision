@@ -32,8 +32,7 @@ under `.tunnelvision/`, keyed by the git commit they were taken at.
 
 ### For the best experience
 
-Tracing visual changes back to the lines that caused them (`--by-element`)
-works best when your app provides both of the following:
+Tracing visual changes back to the lines that caused them works best when your app provides both of the following:
 
 - **React 19+ in a development build.** React 19 records where each element's
   JSX was written, which tunnelvision uses to find its `file:line`. React 18
@@ -109,23 +108,27 @@ tunnelvision review          # captures again and shows a visual diff
 --auth <file>           auth context file
 --threshold <n>         pixelmatch colour threshold (0-1)
 --max-diff-percent <n>  page mismatch % cutoff for pass/fail
---by-element            capture/diff every element individually (see below)
---concurrency <n>       pages captured at once with --by-element (default 4)
+--only-pages            capture one screenshot per page instead of every element (see below)
+--concurrency <n>       pages captured at once in per-element captures (default 4)
 --json                  print a machine-readable report
 --report <path>         write JSON report (use - for stdout)
 ```
 
-## Per-element captures (`--by-element`)
+## Per-element captures
 
-By default tunnelvision captures and diffs one full-page screenshot per page.
-With `--by-element`, it instead captures **every visible block-level element**
+By default tunnelvision captures **every visible block-level element**
 individually and stores them as a directory tree that mirrors the page's DOM
-hierarchy:
+hierarchy. That's what lets it trace each visual change to the line of code
+that caused it.
+
+With `--only-pages`, it captures and diffs one full-page screenshot per page
+instead, through shot-scraper alone. There are no per-element diffs, style
+data or causes, and the inspector and `update-pr` have nothing per element to
+show:
 
 ```bash
-tunnelvision shoot --by-element
-tunnelvision review --by-element
-tunnelvision diff --by-element <from> <to>
+tunnelvision shoot --only-pages
+tunnelvision review --only-pages
 ```
 
 How it works:
@@ -172,8 +175,8 @@ How it works:
   `diffs/<from>__<to>/<page>/.../element.png`. A styling tweak to a single
   component shows up as a change on just that element (plus the full page),
   instead of one big page-level diff. Diffing auto-detects the stored layout, so
-  `--by-element` on `diff` is optional as long as both versions were captured
-  that way.
+  `diff` takes no flag for it: pages captured per element in both versions are
+  diffed per element.
 
 ### Tracing changes to the lines that caused them
 
@@ -300,8 +303,8 @@ neither do production builds. In those cases component names are still
 recorded but `source` is `null`. Elements not rendered by React get no
 `component`.
 
-> **Note:** Both versions being compared must have been captured with
-> `--by-element` for the per-element diff to line up. Captures made before
+> **Note:** Both versions being compared must have been captured per element
+> (without `--only-pages`) for the per-element diff to line up. Captures made before
 > element images were cropped on demand (with an `element.png` per element and
 > no `scale` in `elements.json`) aren't matched per element; re-shoot them.
 
@@ -312,9 +315,9 @@ npx tunnelvision inspector            # http://127.0.0.1:4173
 npx tunnelvision inspector --open --port 8080
 ```
 
-Starts a local server with a single-page UI for browsing `--by-element` diffs:
+Starts a local server with a single-page UI for browsing per-element diffs:
 
-- pick any two captured versions (defaults to the two newest by-element ones);
+- pick any two captured versions (defaults to the two newest per-element ones);
 - each page expands into its element tree; nodes are coloured by status
   (changed / added / removed / size mismatch) with mismatch % and a badge
   counting changed descendants; "changed only" and a text filter narrow it down;
@@ -345,7 +348,7 @@ tunnelvision update-pr                # push images + comment on the current bra
 tunnelvision update-pr --pr 12 <from> <to>
 ```
 
-Annotates a GitHub pull request with the `--by-element` diff. There are two
+Annotates a GitHub pull request with the per-element diff. There are two
 modes (`--mode`, or `updatePr.mode` in config):
 
 - **`code-first`** (default): every changed line in the PR that
@@ -419,7 +422,7 @@ git-ignored.
 }
 ```
 
-`match` controls how `--by-element` diffs pair elements between versions (see
+`match` controls how per-element diffs pair elements between versions (see
 [How elements are matched](#how-elements-are-matched-between-versions)).
 `attributes` lists deliberate identifiers, strongest first; they're recorded at
 capture time, so re-shoot after changing this list. `ignoreIds` adds regular
@@ -456,8 +459,8 @@ base URL and fails fast if it can't be reached.
 .tunnelvision/
   config.json
   auth.json                         # git-ignored secret
-  versions/<key>/<page>.png         # screenshots, plus meta.json & shots.yml
-  versions/<key>/<page>/            # --by-element: page.png, elements.json, styles.json
+  versions/<key>/<page>/            # page.png, elements.json, styles.json
+  versions/<key>/<page>.png         # --only-pages screenshots, plus meta.json & shots.yml
   diffs/<from>__<to>/<page>.png      # pixelmatch diff images
 ```
 

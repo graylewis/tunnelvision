@@ -14,7 +14,7 @@ export const DEFAULT_CONFIG = {
     diff: {
         threshold: 0.1,
         includeAA: false,
-        maxDiffPercent: 0.1,
+        maxDiffPercent: 0.03,
     },
     match: {
         attributes: ["data-testid", "data-test", "data-cy", "data-qa"],

@@ -40,6 +40,14 @@ def selectors(tree):
         yield from selectors(node["children"])
 
 
+def leaves(tree):
+    for node in tree:
+        if node["children"]:
+            yield from leaves(node["children"])
+        else:
+            yield node["selector"]
+
+
 def ancestors(selector):
     """Selectors of an element's ancestors, nearest first, ending at <html>."""
     parts = selector.split(" > ")
@@ -63,7 +71,13 @@ def decls(style):
 
 
 async def read_styles(page, tree):
-    """Matched rules for every element in `tree`, deduplicated into a rule table."""
+    """
+    Matched rules for every element in `tree`, deduplicated into a rule table.
+
+    Only the tree's leaves are queried: each answer already carries the matched
+    rules of every ancestor (`inherited`, nearest first), so an ancestor's own
+    answer is read off that chain. Elements no leaf covers are queried directly.
+    """
     cdp = await page.context.new_cdp_session(page)
     headers = {}
     cdp.on("CSS.styleSheetAdded", lambda e: headers.__setitem__(e["header"]["styleSheetId"], e["header"]))
@@ -83,7 +97,30 @@ async def read_styles(page, tree):
                 return None
 
     sels = list(selectors(tree))
-    results = await asyncio.gather(*(matched(s) for s in sels))
+    in_tree = set(sels)
+    answers = {}
+    leaf_sels = list(leaves(tree))
+    for sel, res in zip(leaf_sels, await asyncio.gather(*(matched(s) for s in leaf_sels))):
+        if not res:
+            continue
+        answers[sel] = res
+        chain, up = res.get("inherited", []), ancestors(sel)
+        # A chain that doesn't line up with the selector's ancestors (the
+        # flat tree differs from the DOM, e.g. slotted content) can't be trusted.
+        if len(chain) != len(up):
+            continue
+        for i, anc in enumerate(up):
+            if anc in in_tree and anc not in answers:
+                answers[anc] = {
+                    "matchedCSSRules": chain[i].get("matchedCSSRules", []),
+                    "inlineStyle": chain[i].get("inlineStyle"),
+                    "inherited": chain[i + 1:],
+                }
+    missing = [s for s in sels if s not in answers]
+    for sel, res in zip(missing, await asyncio.gather(*(matched(s) for s in missing))):
+        if res:
+            answers[sel] = res
+    results = [answers.get(s) for s in sels]
 
     async def owner_attrs(header):
         if not header.get("ownerNode"):
@@ -99,7 +136,8 @@ async def read_styles(page, tree):
     # tunnelvision's own <style> (animations frozen by the stabilize script) isn't the app's CSS.
     ours = {sid for sid, attrs in owners.items() if "data-tunnelvision" in attrs}
 
-    rules, index, used_sheets = [], {}, set()
+    # A dict, not a set, so sheets come out in first-use order on every run.
+    rules, index, used_sheets = [], {}, {}
 
     def rule_id(rule):
         sheet = rule.get("styleSheetId")
@@ -122,7 +160,7 @@ async def read_styles(page, tree):
                 r["layers"] = layers
             index[key] = len(rules)
             rules.append(r)
-            used_sheets.add(sheet)
+            used_sheets[sheet] = None
         return index[key]
 
     def inline_id(style, owner):

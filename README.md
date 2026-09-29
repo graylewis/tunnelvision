@@ -409,7 +409,7 @@ git-ignored.
   "authFile": ".tunnelvision/auth.json",
   "concurrency": 4,
   "includeHidden": false,
-  "diff": { "threshold": 0.1, "includeAA": false, "maxDiffPercent": 0.1 },
+  "diff": { "threshold": 0.1, "includeAA": false, "maxDiffPercent": 0.03 },
   "match": {
     "attributes": ["data-testid", "data-test", "data-cy", "data-qa"],
     "ignoreIds": ["^tmp-"]

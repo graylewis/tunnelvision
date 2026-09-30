@@ -63,6 +63,35 @@ tunnelvision review          # first run captures a baseline
 tunnelvision review          # captures again and shows a visual diff
 ```
 
+### With a coding agent
+
+tunnelvision ships two [Agent Skills](https://agentskills.io) that do the
+setup and check it end to end. Install them into your project, then use them as
+slash commands (or just ask for what they do):
+
+```bash
+npx tunnelvision skills      # writes .agents/skills/, links .claude/skills/ — commit both
+```
+
+One copy goes to `.agents/skills/`, which Cursor, Gemini CLI, OpenCode and
+GitHub Copilot read. Claude Code only reads `.claude/skills/`, so each skill
+gets a symlink there (a junction on Windows).
+
+- **`/setup-tunnelvision`** runs `doctor`, installs shot-scraper into a venv if
+  it's missing (with the Playwright pin), finds or writes a sitemap, offers the
+  source-map and React settings that make cause-tracing work, runs `init` and
+  captures a baseline.
+- **`/test-tunnelvision`** makes a throwaway branch with a dozen known changes
+  (a custom property, a padding tweak, a deleted rule, a JSX class, one word of
+  copy, a removed component, …), captures and diffs it, and grades the result:
+  which planted changes were found and traced to the right line, and what was
+  reported that wasn't planted. It names the two usual sources of false
+  positives — animations that outlast `settle`, and regions that hadn't loaded
+  when one side was captured and so show up as deletions — and proposes the
+  per-page `wait`, `waitFor` or `settle` overrides that fix them.
+
+Re-run `tunnelvision skills` after upgrading to pick up new versions.
+
 ## How it works
 
 - **Sitemap discovery** — recursively searches the project for `sitemap*.xml`
@@ -93,6 +122,7 @@ tunnelvision review          # captures again and shows a visual diff
 | `tunnelvision doctor` | Check shot-scraper, git, config and sitemap. |
 | `tunnelvision clean` | Prune versions (`--keep <n>`), diffs (`--diffs`), or everything (`--all`). |
 | `tunnelvision install-hook` | Install an opt-in git `post-commit` hook that runs `review`. |
+| `tunnelvision skills` | Install the agent skills (`/setup-tunnelvision`, `/test-tunnelvision`) into `.agents/skills/`, linked from `.claude/skills/`. |
 | `tunnelvision inspector` | Open a local web UI to explore per-element diffs as a tree (see below). |
 | `tunnelvision update-pr` | Comment on a GitHub PR with per-element diffs, anchored at each element's source line (see below). |
 

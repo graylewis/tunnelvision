@@ -15,7 +15,8 @@ export const DEFAULT_SETTLE_MS = 500;
  * 1. Scroll down a step at a time, then back to the top, so every
  *    scroll-triggered reveal (framer-motion `whileInView`, IntersectionObserver
  *    fade-ins, lazy images) fires. These are usually one-shot, so they stay
- *    revealed once we're back at the top.
+ *    revealed once we're back at the top. Each step waits 300ms, so a page
+ *    busy with other captures still renders a frame there for its reveals.
  * 2. Wait `settleMs` for the animations those reveals started to finish.
  *    JS-driven ones (framer-motion's `motion.div`) aren't affected by the next
  *    step, so pages with long ones need a longer settle.
@@ -44,7 +45,7 @@ async () => {
 	for (let i = 0, y = 0; i < 200 && y < scroller.scrollHeight - window.innerHeight; i++) {
 		y += step;
 		window.scrollTo({ top: y, behavior: "instant" });
-		await sleep(100);
+		await sleep(300);
 	}
 	window.scrollTo({ top: 0, behavior: "instant" });
 	// Let the reveals the scroll triggered finish before freezing things.

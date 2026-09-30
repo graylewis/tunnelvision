@@ -11,6 +11,7 @@ import { clean } from "./commands/clean.js";
 import { installHook } from "./commands/installHook.js";
 import { inspector } from "./commands/inspector.js";
 import { DEFAULT_IMAGE_BRANCH, updatePr } from "./commands/updatePr.js";
+import { DEFAULT_SKILLS_TARGET, skills } from "./commands/skills.js";
 const ROOT = process.cwd();
 function num(v) {
     const n = Number(v);
@@ -133,6 +134,11 @@ program
     .description("Install an opt-in git post-commit hook that runs `review`")
     .option("--force", "append to an existing post-commit hook")
     .action((opts) => run(() => installHook({ root: ROOT, force: opts.force })));
+program
+    .command("skills")
+    .description("Install the agent skills (/setup-tunnelvision, /test-tunnelvision) into this project")
+    .option("--dir <path>", "where to put them, relative to the project; .claude/skills links to them", DEFAULT_SKILLS_TARGET)
+    .action((opts) => run(() => skills({ root: ROOT, dir: opts.dir })));
 program
     .command("inspector")
     .description("Start a local web UI for exploring per-element diffs as a visual tree")

@@ -4,14 +4,43 @@ import pc from "picocolors";
 import { execFileSync } from "node:child_process";
 import { isGitRepo } from "../git.js";
 const MARKER = "# >>> tunnelvision post-commit >>>";
-const HOOK_BODY = `#!/bin/sh
+// Run the project-local binary via the project's package manager. The hook
+// only fires when node_modules/.bin/tunnelvision exists, and the no-install
+// flags back that up so a commit never fetches tunnelvision from the registry.
+// pnpm uses `exec` because `pnpx` is an alias for `pnpm dlx`, which always
+// downloads and ignores the local install.
+const RUNNERS = {
+    npm: { bin: "npx", command: "npx --no tunnelvision" },
+    pnpm: { bin: "pnpm", command: "pnpm exec tunnelvision" },
+    bun: { bin: "bunx", command: "bunx --no-install tunnelvision" },
+};
+function detectRunner(root) {
+    try {
+        const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+        const name = typeof pkg.packageManager === "string" ? pkg.packageManager.split("@")[0] : "";
+        if (name in RUNNERS)
+            return RUNNERS[name];
+    }
+    catch {
+        // No readable package.json — fall through to lockfile detection.
+    }
+    const has = (f) => fs.existsSync(path.join(root, f));
+    if (has("bun.lock") || has("bun.lockb"))
+        return RUNNERS.bun;
+    if (has("pnpm-lock.yaml"))
+        return RUNNERS.pnpm;
+    return RUNNERS.npm;
+}
+function hookBody(runner) {
+    return `#!/bin/sh
 ${MARKER}
 # Runs a visual review after each commit. Remove this block to disable.
-if command -v tunnelvision >/dev/null 2>&1; then
-  tunnelvision review || true
+if [ -x node_modules/.bin/tunnelvision ] && command -v ${runner.bin} >/dev/null 2>&1; then
+  ${runner.command} review || true
 fi
 # <<< tunnelvision post-commit <<<
 `;
+}
 function gitDir(root) {
     try {
         const out = execFileSync("git", ["rev-parse", "--git-dir"], {
@@ -37,6 +66,8 @@ export async function installHook(opts) {
     const hooksDir = path.join(gd, "hooks");
     fs.mkdirSync(hooksDir, { recursive: true });
     const hookPath = path.join(hooksDir, "post-commit");
+    const runner = detectRunner(opts.root);
+    const body = hookBody(runner);
     if (fs.existsSync(hookPath)) {
         const existing = fs.readFileSync(hookPath, "utf8");
         if (existing.includes(MARKER)) {
@@ -49,14 +80,14 @@ export async function installHook(opts) {
             return 1;
         }
         // Append our block to the existing hook.
-        const appended = `${existing.replace(/\n*$/, "\n")}\n${HOOK_BODY.replace(/^#!\/bin\/sh\n/, "")}`;
+        const appended = `${existing.replace(/\n*$/, "\n")}\n${body.replace(/^#!\/bin\/sh\n/, "")}`;
         fs.writeFileSync(hookPath, appended, "utf8");
     }
     else {
-        fs.writeFileSync(hookPath, HOOK_BODY, "utf8");
+        fs.writeFileSync(hookPath, body, "utf8");
     }
     fs.chmodSync(hookPath, 0o755);
     console.log(pc.green(`✓ installed post-commit hook at ${path.relative(opts.root, hookPath)}`));
-    console.log(pc.dim("  It runs `tunnelvision review` after each commit. Delete the block to disable."));
+    console.log(pc.dim(`  It runs \`${runner.command} review\` after each commit. Delete the block to disable.`));
     return 0;
 }

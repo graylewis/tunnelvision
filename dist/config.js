@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { resolvePaths } from "./paths.js";
+import { existingConfig, resolvePaths } from "./paths.js";
 import { DEFAULT_SETTLE_MS } from "./stabilize.js";
 import { DEFAULT_TRACKED_PROPERTIES } from "./styles.js";
 export const DEFAULT_CONFIG = {
@@ -40,25 +40,31 @@ function withDefaults(partial) {
     };
 }
 export function configExists(paths) {
-    return fs.existsSync(paths.config);
+    return existingConfig(paths) !== null;
 }
+/**
+ * Read the config from `tunnelvision.json` at the project root, or from the
+ * legacy `.tunnelvision/config.json` when only that exists (`doctor` suggests
+ * the move). Missing fields take their defaults.
+ */
 export function loadConfig(paths) {
-    if (!fs.existsSync(paths.config)) {
+    const file = existingConfig(paths);
+    if (!file) {
         throw new Error(`No tunnelvision config found at ${paths.config}. Run \`tunnelvision init\` first.`);
     }
     let raw;
     try {
-        raw = fs.readFileSync(paths.config, "utf8");
+        raw = fs.readFileSync(file, "utf8");
     }
     catch (err) {
-        throw new Error(`Could not read config at ${paths.config}: ${err.message}`);
+        throw new Error(`Could not read config at ${file}: ${err.message}`);
     }
     let parsed;
     try {
         parsed = JSON.parse(raw);
     }
     catch (err) {
-        throw new Error(`Config at ${paths.config} is not valid JSON: ${err.message}`);
+        throw new Error(`Config at ${file} is not valid JSON: ${err.message}`);
     }
     return withDefaults(parsed);
 }
@@ -66,7 +72,6 @@ export function saveConfig(paths, config) {
     // Default tracked properties aren't written out, so they keep up with new versions.
     const { styles, ...rest } = config;
     const saved = styles.properties === DEFAULT_CONFIG.styles.properties ? rest : config;
-    fs.mkdirSync(paths.dir, { recursive: true });
     fs.writeFileSync(paths.config, `${JSON.stringify(saved, null, 2)}\n`, "utf8");
 }
 export function applyOverrides(config, o) {

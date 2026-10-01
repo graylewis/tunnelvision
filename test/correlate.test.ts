@@ -66,6 +66,19 @@ function styles(side: Side): StyleManifest {
 
 type Line = number | [number, string];
 
+interface Extra {
+	dir: string;
+	/** Position among its siblings; last by default. */
+	index?: number;
+	/** Its own JSX line, in src/App.jsx unless `jsxFile` says otherwise. */
+	jsx?: number;
+	jsxFile?: string;
+	/** The src/App.jsx line its component was called from. */
+	calledFrom?: number;
+	/** The src/App.jsx line the component around that one was called from. */
+	outerCalledFrom?: number;
+}
+
 function input(opts: {
 	from: Side;
 	to: Side;
@@ -74,6 +87,14 @@ function input(opts: {
 	grown?: string[];
 	/** Each element's own text, before and after. */
 	text?: Record<string, [string, string]>;
+	/** Elements whose box moved down in the target. */
+	moved?: string[];
+	/** Elements whose box is shorter in the target. */
+	shrunk?: string[];
+	/** Elements only the target has, as children of the element their path names. */
+	added?: Extra[];
+	/** Elements only the baseline has. */
+	removed?: Extra[];
 	/** Changed line numbers, or `[line, text]` where the text matters. */
 	changes: Record<string, { added?: Line[]; deleted?: Line[] }>;
 }): CorrelateInput {
@@ -81,7 +102,23 @@ function input(opts: {
 	const b = tree();
 	for (const n of all(b)) {
 		if (opts.grown?.includes(n.dir)) n.rect = n.box = { ...n.box, height: n.box.height + 6 };
+		if (opts.moved?.includes(n.dir)) n.rect = n.box = { ...n.box, y: n.box.y + 6 };
+		if (opts.shrunk?.includes(n.dir)) n.rect = n.box = { ...n.box, height: n.box.height - 6 };
 	}
+	const extras = (root: ElementNode[], list: Extra[] = []) => {
+		for (const x of list) {
+			const n = node(x.dir, [], x.jsx);
+			if (x.jsxFile) n.component!.source = { ...n.component!.source!, fileName: x.jsxFile, path: `${x.jsxFile}:${x.jsx}:1` };
+			const called = (name: string, line: number) => ({ name, source: { fileName: "src/App.jsx", lineNumber: line, columnNumber: 1, path: `src/App.jsx:${line}:1` } });
+			if (x.calledFrom) n.component!.components = [called("Badge", x.calledFrom), ...(x.outerCalledFrom ? [called("Layout", x.outerCalledFrom)] : [])];
+			const parentDir = x.dir.split("/").slice(0, -1).join("/");
+			const siblings = parentDir ? all(root).find((p) => p.dir === parentDir)!.children : root;
+			siblings.splice(x.index ?? siblings.length, 0, n);
+		}
+		return new Set(list.map((x) => x.dir));
+	};
+	const onlyB = extras(b, opts.added);
+	const onlyA = extras(a, opts.removed);
 	for (const [dir, [before, after]] of Object.entries(opts.text ?? {})) {
 		all(a).find((n) => n.dir === dir)!.text = before;
 		all(b).find((n) => n.dir === dir)!.text = after;
@@ -89,16 +126,22 @@ function input(opts: {
 	const match: ElementMatch = { fromTo: new Map(), toFrom: new Map(), matchedBy: new Map(), moved: new Set() };
 	const byDir = new Map(all(a).map((n) => [n.dir, n]));
 	for (const n of all(b)) {
+		if (onlyB.has(n.dir)) continue;
 		const partner = byDir.get(n.dir)!;
 		match.fromTo.set(partner, n);
 		match.toFrom.set(n, partner);
 	}
 	const manifest = (elements: ElementNode[]): ElementManifest => ({ version: 3, url: "/", extractedAt: "", scale: 1, elements });
-	const diffs: PageDiff[] = all(b).map((n) => ({
-		filename: `index/${n.dir}/element.png`,
-		status: opts.changed[n.dir] ?? "unchanged",
-		mismatchedPixels: opts.changed[n.dir] ? 50 : 0,
-	}));
+	const diffs: PageDiff[] = [
+		...all(b).map((n): PageDiff => ({
+			filename: `index/${n.dir}/element.png`,
+			status: onlyB.has(n.dir) ? "added" : (opts.changed[n.dir] ?? "unchanged"),
+			mismatchedPixels: opts.changed[n.dir] ? 50 : 0,
+		})),
+		...all(a)
+			.filter((n) => onlyA.has(n.dir))
+			.map((n): PageDiff => ({ filename: `index/${n.dir}/element.png`, status: "removed" })),
+	];
 	const lines = (ls: Line[] = []) => new Map(ls.map((l): [number, string] => (typeof l === "number" ? [l, ""] : l)));
 	const changes = new Map<string, FileChanges>(
 		Object.entries(opts.changes).map(([p, c]) => [p, { oldPath: p, added: lines(c.added), deleted: lines(c.deleted) }]),
@@ -543,4 +586,205 @@ test("a class kept on an edited line isn't what changed", () => {
 		"src/App.jsx": { deleted: [[14, 'className="text-meta grid"']], added: [[14, 'className="text-meta grid gap-2"']] },
 	});
 	assert.deepEqual(kept.causes, []);
+});
+
+// New and removed elements: the card's JSX is on src/App.jsx:12, `main` has none.
+
+const none = { rules: [], elements: {} };
+
+test("a new element with no cause is linked to its parent's JSX line, and what it pushed are its knock-on effects", () => {
+	const result = correlate(
+		input({
+			from: none,
+			to: none,
+			changed: { "main/card": "size-mismatch", "main/card/inner": "changed", "main/after": "changed" },
+			grown: ["main/card"],
+			moved: ["main/card/inner"],
+			added: [{ dir: "main/card/badge", index: 0, jsx: 30 }],
+			changes: { "src/config.ts": { added: [[4, "{ title: 'Media' },"]] } },
+		}),
+	);
+	assert.deepEqual(result.causes, []);
+	assert.deepEqual(result.unexplained, []);
+	assert.equal(result.renderSites?.length, 1);
+	const [site] = result.renderSites!;
+	assert.deepEqual([site.path, site.line, site.side], ["src/App.jsx", 12, "RIGHT"]);
+	assert.deepEqual(
+		site.effects.map((e) => [e.dir, e.via]),
+		[
+			["main/card", "knock-on"],
+			["main/card/badge", "new"],
+			["main/card/inner", "knock-on"],
+			["main/after", "knock-on"],
+		],
+	);
+	assert.equal(site.representative?.dir, "main/card/badge");
+});
+
+test("a new element whose own JSX line changed is caused by it", () => {
+	const result = correlate(
+		input({
+			from: none,
+			to: none,
+			changed: { "main/card": "size-mismatch" },
+			grown: ["main/card"],
+			added: [{ dir: "main/card/badge", jsx: 14 }],
+			changes: { "src/App.jsx": { added: [14] } },
+		}),
+	);
+	assert.deepEqual(result.renderSites, []);
+	assert.deepEqual(
+		result.causes.map((c) => [c.path, c.line, c.effects.map((e) => [e.dir, e.via])]),
+		[["src/App.jsx", 14, [["main/card", "knock-on"], ["main/card/badge", "jsx"]]]],
+	);
+});
+
+test("a new component's call site is its cause, though its own JSX line is in an unchanged file", () => {
+	const result = correlate(
+		input({
+			from: none,
+			to: none,
+			changed: {},
+			added: [{ dir: "main/card/badge", jsx: 3, jsxFile: "src/Badge.jsx", calledFrom: 20 }],
+			changes: { "src/App.jsx": { added: [20] } },
+		}),
+	);
+	assert.deepEqual(result.renderSites, []);
+	assert.deepEqual(
+		result.causes.map((c) => [c.path, c.line, c.effects.map((e) => e.dir)]),
+		[["src/App.jsx", 20, ["main/card/badge"]]],
+	);
+});
+
+test("an edited call site further up the component chain isn't a new element's cause", () => {
+	const result = correlate(
+		input({
+			from: none,
+			to: none,
+			changed: {},
+			added: [{ dir: "main/card/badge", jsx: 3, jsxFile: "src/Badge.jsx", calledFrom: 20, outerCalledFrom: 40 }],
+			changes: { "src/App.jsx": { added: [40] } },
+		}),
+	);
+	assert.deepEqual(result.causes, []);
+	assert.deepEqual(
+		result.renderSites?.map((s) => [s.line, s.effects.map((e) => e.dir)]),
+		[[12, ["main/card/badge"]]],
+	);
+});
+
+test("new elements inside a new element are explained by it", () => {
+	const result = correlate(
+		input({
+			from: none,
+			to: none,
+			changed: {},
+			added: [{ dir: "main/card/badge", jsx: 30 }, { dir: "main/card/badge/icon", jsx: 31 }],
+			changes: {},
+		}),
+	);
+	assert.deepEqual(
+		result.renderSites?.map((s) => [s.line, s.effects.map((e) => [e.dir, e.via])]),
+		[[12, [["main/card/badge", "new"], ["main/card/badge/icon", "inside"]]]],
+	);
+});
+
+test("a new element whose parent has no JSX line is still explained, with no render site", () => {
+	const result = correlate(
+		input({ from: none, to: none, changed: { main: "changed" }, added: [{ dir: "main/banner" }], changes: {} }),
+	);
+	assert.deepEqual(result.unexplained, []);
+	assert.deepEqual(
+		result.renderSites?.map((s) => [s.path, s.effects.map((e) => [e.dir, e.via])]),
+		[[undefined, [["main", "knock-on"], ["main/banner", "new"]]]],
+	);
+});
+
+test("new elements rendered by the same parent line are grouped, across pages", () => {
+	const page = (slug: string) => {
+		const one = input({ from: none, to: none, changed: {}, added: [{ dir: "main/card/badge", jsx: 30 }], changes: {} });
+		return { ...one.pages[0], slug, diffs: one.diffs.map((d) => ({ ...d, filename: d.filename.replace(/^index\//, `${slug}/`) })) };
+	};
+	const [a, b] = [page("index"), page("about")];
+	const result = correlate({ ...input({ from: none, to: none, changed: {}, changes: {} }), pages: [a, b], diffs: [...a.diffs, ...b.diffs] });
+	assert.deepEqual(
+		result.renderSites?.map((s) => [s.line, s.effects.map((e) => e.page)]),
+		[[12, ["index", "about"]]],
+	);
+});
+
+test("a removed element is linked to its baseline parent's JSX line, and what moved up are its knock-on effects", () => {
+	const result = correlate(
+		input({
+			from: none,
+			to: none,
+			changed: { "main/card/inner": "changed" },
+			moved: ["main/card/inner"],
+			removed: [{ dir: "main/card/old", index: 0, jsx: 13 }],
+			changes: { "src/config.ts": { deleted: [4] } },
+		}),
+	);
+	assert.deepEqual(result.unexplained, []);
+	assert.deepEqual(
+		result.renderSites?.map((s) => [s.path, s.line, s.side, s.effects.map((e) => [e.dir, e.via])]),
+		[["src/App.jsx", 12, "LEFT", [["main/card/inner", "knock-on"], ["main/card/old", "removed"]]]],
+	);
+});
+
+test("a container with a new element and a caused change is a knock-on effect of both", () => {
+	const result = correlate(
+		input({
+			from: { rules: [rule(".inner", 5, "color", "black")], elements: { "main/card/inner": { computed: { color: "black" }, winners: { color: winner(0) } } } },
+			to: { rules: [rule(".inner", 5, "color", "navy")], elements: { "main/card/inner": { computed: { color: "navy" }, winners: { color: winner(0) } } } },
+			changed: { "main/card": "changed", "main/card/inner": "changed" },
+			added: [{ dir: "main/card/badge", jsx: 30 }],
+			changes: { "src/styles.css": { added: [5], deleted: [5] } },
+		}),
+	);
+	assert.deepEqual(
+		result.causes.map((c) => c.effects.map((e) => [e.dir, e.via])),
+		[[["main/card", "knock-on"], ["main/card/inner", "direct"]]],
+	);
+	assert.deepEqual(
+		result.renderSites?.map((s) => s.effects.map((e) => [e.dir, e.via])),
+		[[["main/card", "knock-on"], ["main/card/badge", "new"]]],
+	);
+});
+
+test("an element that shrank in a parent that kept its size was squeezed by a later sibling that grew", () => {
+	const result = correlate(
+		input({
+			from: none,
+			to: none,
+			changed: { "main/card": "size-mismatch", "main/after": "size-mismatch" },
+			grown: ["main/after"],
+			added: [{ dir: "main/after/link", jsx: 40 }],
+			changes: {},
+			shrunk: ["main/card"],
+		}),
+	);
+	assert.deepEqual(result.unexplained, []);
+	assert.deepEqual(
+		result.renderSites?.map((s) => s.effects.map((e) => [e.dir, e.via])),
+		[[["main/card", "knock-on"], ["main/after", "knock-on"], ["main/after/link", "new"]]],
+	);
+});
+
+test("a sibling that grew doesn't squeeze one whose parent resized too", () => {
+	// The parent's own change has no cause, so nothing above explains the card either.
+	const result = correlate(
+		input({
+			from: { rules: [rule("main", 5, "padding-top", "1px")], elements: { main: { computed: { "padding-top": "1px" }, winners: { "padding-top": winner(0) } } } },
+			to: { rules: [rule("main", 5, "padding-top", "2px")], elements: { main: { computed: { "padding-top": "2px" }, winners: { "padding-top": winner(0) } } } },
+			changed: { main: "size-mismatch", "main/card": "size-mismatch", "main/after": "size-mismatch" },
+			grown: ["main", "main/after"],
+			added: [{ dir: "main/after/link", jsx: 40 }],
+			changes: {},
+			shrunk: ["main/card"],
+		}),
+	);
+	assert.deepEqual(
+		result.unexplained.map((u) => u.dir),
+		["main", "main/card"],
+	);
 });

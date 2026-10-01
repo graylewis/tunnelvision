@@ -17,7 +17,7 @@ Ask the user one question at a time, only when a step needs a decision.
 
 Stop and say what's missing rather than working around it:
 
-- `.tunnelvision/config.json` exists (else `/setup-tunnelvision`).
+- `tunnelvision.json` exists at the project root (else `/setup-tunnelvision`).
 - `shot-scraper --version` works (venv active?).
 - The app answers at `baseUrl` from the config (`curl -sI`). It must be the **dev server with hot reload**, not a production build, or the planted changes won't be served.
 - `git status --porcelain` is empty. Ask the user to commit or stash; don't stash for them.
@@ -139,7 +139,7 @@ Give the user, in this order:
 2. **Dev tools detected** — always include this section, even if it's just "none found". List each dev tool overlay found in steps 1, 2 or 5, say whether tunnelvision hides it automatically (only Astro and TanStack) or it got through, and whether it showed up in the captures. Point out clearly any that got through: they'll add noise to every future review until they're turned off for captures. Note that tunnelvision only hides Astro and TanStack overlays, so tools you didn't spot may still sneak through.
 3. **Recall table** — manifest row, outcome, note.
 4. **False positives** — element, page, class, evidence (what you saw in the image), proposed remedy.
-5. **Config changes** — the exact `.tunnelvision/config.json` additions you'd make. Offer to apply them and re-run: `diff --threshold` re-uses the stored captures; `wait`/`settle`/`waitFor` changes need `shoot` again on the test commit, then another diff. Do one iteration if the user agrees, and report whether the false positives went away.
+5. **Config changes** — the exact `tunnelvision.json` additions you'd make. Offer to apply them and re-run: `diff --threshold` re-uses the stored captures; `wait`/`settle`/`waitFor` changes need `shoot` again on the test commit, then another diff. Do one iteration if the user agrees, and report whether the false positives went away.
 
 Be plain about failures: a missed subtle change or a noisy page is the result, not something to soften.
 

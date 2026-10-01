@@ -1,7 +1,7 @@
 import pc from "picocolors";
-import { configExists } from "../config.js";
-import { resolvePaths } from "../paths.js";
+import { CONFIG_FILE, existingConfig, resolvePaths } from "../paths.js";
 import { isGitRepo } from "../git.js";
+import { hookInstalled } from "./installHook.js";
 import { checkShotScraper } from "../shotscraper.js";
 import { discoverPages } from "../pagesource.js";
 import { FRAMEWORK_NAMES } from "../fileroutes.js";
@@ -64,10 +64,21 @@ export async function doctor(opts) {
     }
     line(Boolean(python), "playwright (for per-element captures)", python ?? "not found next to shot-scraper");
     // config
-    line(configExists(paths), "config", configExists(paths) ? paths.config : "run `tunnelvision init`");
+    const config = existingConfig(paths);
+    line(Boolean(config), "config", config ?? "run `tunnelvision init`");
+    if (config === paths.legacyConfig) {
+        console.log(pc.dim(`      it's git-ignored there; \`tunnelvision init\` moves it to ${CONFIG_FILE} so it can be committed`));
+    }
     // git
     const git = isGitRepo(opts.root);
     line(git, "git repo", git ? "versions keyed by commit SHA" : "will use timestamp keys");
+    // post-commit hook: opt-in, so its absence isn't a failure
+    if (git) {
+        const hook = hookInstalled(opts.root);
+        const mark = hook ? pc.green("✓") : pc.dim("·");
+        const detail = hook ? "reviews each commit in the background" : "not installed; `tunnelvision install-hook` reviews each commit in the background";
+        console.log(`  ${mark} post-commit hook${pc.dim(`  ${detail}`)}`);
+    }
     // pages: Next.js / Astro routes, else the sitemap
     try {
         const source = discoverPages(opts.root);

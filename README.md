@@ -2,13 +2,13 @@
 tunnelvision is an app that allows you to review visual changes to your git repo just like code changes. each code change is mapped
 directly to the visual consequences of that change, and presented to you with screenshots of exactly what changed. 
 
-tunnelvision is installed directly into your repo, and all of the artifacts necessary for use are stored in `.tunnelvision`
+tunnelvision is installed directly into your repo. its config is `tunnelvision.json` at the repo root, which you commit; the captures, diffs and auth context it produces are stored in `.tunnelvision`, which is git-ignored.
 
 ### steps to set up:
 1. install shot-scraper, ensure that it's on your path
 2. install tunnelvision into your repo.
 3. ensure that you have a valid sitemap.xml or tunnelvision.json "sitemap" field. Next.js and Astro projects don't need one: their pages are read from their file-based routes (see "Where pages come from" below).
-4. `npx tunnelvision init` in your repo.
+4. `npx tunnelvision init` in your repo, and commit the `tunnelvision.json` it writes.
 5. `npx tunnelvision review` to create a baseline 'commit' of how your app looks.
 6. whenever you want to review your changes, use `npx tunnelvision review` to create a new point-in-time, and generate a diff for you or your agent`
 7. optionally, use `npx tunnelvision inspector` for a lightweight web interface.
@@ -81,7 +81,7 @@ npm install --save-dev tunnelvision   # or -g for global
 ## Quick start
 
 ```bash
-tunnelvision init            # prompts for your base URL, writes .tunnelvision/config.json
+tunnelvision init            # prompts for your base URL, writes tunnelvision.json (commit it)
 # start your app so it's serving at the base URL, then:
 tunnelvision review          # first run captures a baseline
 # make a change, commit, then:
@@ -174,14 +174,14 @@ i18n prefixes. If you use a base path, put it in `baseUrl`.
 
 | Command | What it does |
 | --- | --- |
-| `tunnelvision init` | Scaffold `.tunnelvision/config.json` and add `.tunnelvision/` to `.gitignore`. |
+| `tunnelvision init` | Write `tunnelvision.json` at the project root (commit it) and add `.tunnelvision/` to `.gitignore`. Moves a config from the old `.tunnelvision/config.json` location if it finds one. |
 | `tunnelvision shoot` | Capture screenshots of every page for the current version. |
 | `tunnelvision diff [from] [to]` | Diff two versions. Defaults to current-vs-previous. |
 | `tunnelvision review` | Capture the current version, then diff it against the previous one. |
 | `tunnelvision auth <url>` | Log in via a browser and save an auth context for authenticated screenshots. |
-| `tunnelvision doctor` | Check shot-scraper, git, config and pages (Next.js routes or sitemap). |
+| `tunnelvision doctor` | Check shot-scraper, git, config, the post-commit hook and pages (Next.js routes or sitemap). |
 | `tunnelvision clean` | Prune versions (`--keep <n>`), diffs (`--diffs`), or everything (`--all`). |
-| `tunnelvision install-hook` | Install an opt-in git `post-commit` hook that runs `review`. |
+| `tunnelvision install-hook` | Install an opt-in git `post-commit` hook that runs `review` in the background and notifies you when it's done (see below). |
 | `tunnelvision skills` | Install the agent skills (`/setup-tunnelvision`, `/test-tunnelvision`) into `.agents/skills/`, linked from `.claude/skills/`. |
 | `tunnelvision inspector` | Open a local web UI to explore per-element diffs as a tree (see below). |
 | `tunnelvision update-pr` | Comment on a GitHub PR with per-element diffs, anchored at each element's source line (see below). |
@@ -408,6 +408,7 @@ recorded but `source` is `null`. Elements not rendered by React get no
 ```bash
 npx tunnelvision inspector            # http://127.0.0.1:4173
 npx tunnelvision inspector --open --port 8080
+npx tunnelvision inspector --open --from abc1234 --to def5678
 ```
 
 Starts a local server with a single-page UI for browsing per-element diffs:
@@ -434,6 +435,37 @@ header re-runs the diff at a different pixelmatch colour threshold, which is
 useful when subtle, low-contrast changes (like white corners on a light grey
 background) aren't being caught. Use ↑/↓ to move and ←/→ to
 collapse or expand.
+
+`--from` and `--to` pick the pair the opened page starts on. If the port is
+already serving this project's inspector, `--open` opens that one instead of
+starting another; if another project's inspector has it, a free port is used.
+
+### Reviewing every commit (`install-hook`)
+
+```bash
+npx tunnelvision install-hook
+```
+
+Adds a block to `.git/hooks/post-commit` that runs `tunnelvision review --notify`
+in the background after each commit, so `git commit` returns straight away. The
+hook prints a notice that a review is running, its output goes to
+`.tunnelvision/review.log`, and a desktop notification says when it's done:
+how many elements changed, with buttons to **Open in inspector** (at that
+commit against the previous capture) and, when [sandhog](../tunnelvis-sandhog)
+is installed, **Open in sandhog**. A review that fails (say, your app isn't
+running) sends a notification too. Reviews from quick successive commits wait
+for each other and run in order.
+
+On macOS, notification buttons need a small helper app, which tunnelvision
+compiles with Swift the first time (into
+`~/Library/Application Support/tunnelvision/`). `install-hook` builds it and
+sends a first notification so macOS asks for permission up front. Without
+Swift (`xcode-select --install`), and on Linux (`notify-send`), notifications
+have no buttons. Run `install-hook` again to update a hook installed by an
+older version.
+
+The review captures whatever your app is serving when it runs, so let it finish
+before editing files the app serves, or the capture may include those edits.
 
 ## Pull request comments (`update-pr`)
 
@@ -493,7 +525,13 @@ tunnelvision shoot   # auth.json is used automatically if present
 The auth context (`.tunnelvision/auth.json`) holds live session cookies and is
 git-ignored.
 
-## Configuration (`.tunnelvision/config.json`)
+## Configuration (`tunnelvision.json`)
+
+The config lives at the project root and is meant to be committed, so everyone
+(and every agent) captures the same pages the same way. Everything tunnelvision
+produces goes under the git-ignored `.tunnelvision/`. A config at the previous
+location, `.tunnelvision/config.json`, is still read; `tunnelvision init` moves
+it to the root.
 
 ```json
 {
@@ -542,7 +580,7 @@ JS-driven animations that ignore it, such as a plain `motion.div`, aren't
 frozen, so if they're still moving at capture time (and show up as
 unexplained visual changes), raise `settle` for the whole site or per page.
 
-Precedence: **CLI flags > `config.json` > built-in defaults**.
+Precedence: **CLI flags > `tunnelvision.json` > built-in defaults**.
 
 ## CI
 
@@ -554,12 +592,14 @@ base URL and fails fast if it can't be reached.
 ## Layout
 
 ```
-.tunnelvision/
-  config.json
-  auth.json                         # git-ignored secret
+tunnelvision.json                   # committed config
+.tunnelvision/                      # git-ignored
+  auth.json                         # secret
   versions/<key>/<page>/            # page.png, elements.json, styles.json
   versions/<key>/<page>.png         # --only-pages screenshots, plus meta.json & shots.yml
   diffs/<from>__<to>/<page>.png      # pixelmatch diff images
+  review.log                        # output of the last background review (install-hook)
+  inspector.log                     # output of inspectors opened from notifications
 ```
 
 ## License

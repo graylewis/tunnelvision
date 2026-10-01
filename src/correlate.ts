@@ -37,10 +37,19 @@ import { readStyleManifest, type DeclRef, type ElementStyles, type SourceLoc, ty
  * passed to a component, a `cn()` call), not just on the element's own JSX
  * line, which for a shared component is inside the component.
  *
+ * A new element is caused by its own JSX line, or the call-site line of the
+ * component that rendered it, if that line changed. Otherwise it's explained
+ * by being new, and linked to its render site: its parent's JSX line, which
+ * holds the `.map()` or conditional that rendered it and usually didn't
+ * change (the data it maps over did). New elements inside it are explained
+ * by it. Removed elements likewise, on the baseline's side. Their text isn't
+ * searched for, see docs/adr/0004-new-elements-explained-by-render-site.md.
+ *
  * Elements that changed without any tracked property changing are knock-on
- * effects of the nearest ancestor or earlier sibling that has a cause. What's
- * left over is reported as unexplained visual changes, and changed stylesheet
- * lines that caused nothing as invisible changes. Terms as in CONTEXT.md.
+ * effects of the nearest ancestor or earlier sibling that has a cause or is
+ * new or removed. What's left over is reported as unexplained visual changes,
+ * and changed stylesheet lines that caused nothing as invisible changes.
+ * Terms as in CONTEXT.md.
  */
 
 /** Diff sides, as GitHub names them: LEFT is the baseline (deleted lines), RIGHT the target (added lines). */
@@ -54,7 +63,8 @@ export interface PropChange {
 	own?: true;
 }
 
-export type EffectVia = "direct" | "inherited" | "var" | "jsx" | "copy" | "knock-on";
+/** `new` / `removed`: the new or removed element itself; `inside`: a new or removed element inside it. */
+export type EffectVia = "direct" | "inherited" | "var" | "jsx" | "copy" | "knock-on" | "new" | "removed" | "inside";
 
 /** A visual change a cause produced. */
 export interface Effect {
@@ -99,6 +109,21 @@ export interface UnexplainedChange {
 	note?: string;
 }
 
+/**
+ * New or removed elements with no cause, grouped by their render site, with
+ * the elements inside them and their knock-on effects.
+ */
+export interface RenderSite {
+	/** The parent's JSX line, repository-relative in the target; absent when the parent has none. */
+	path?: string;
+	line?: number;
+	/** RIGHT for new elements; LEFT for removed ones, rendered by the baseline's parent. */
+	side: Side;
+	effects: Effect[];
+	/** The effect shown for it: the largest new or removed element that isn't an outlier. */
+	representative?: Effect;
+}
+
 /** A changed stylesheet line that caused no visual change on any captured element. */
 export interface InvisibleChange {
 	path: string;
@@ -110,6 +135,8 @@ export interface InvisibleChange {
 
 export interface Correlation {
 	causes: Cause[];
+	/** Missing in reports made before render sites existed. */
+	renderSites?: RenderSite[];
 	unexplained: UnexplainedChange[];
 	invisible: InvisibleChange[];
 	/** Pages whose captures have no style data, so only JSX lines could be causes. */
@@ -302,10 +329,31 @@ export function correlate(input: CorrelateInput): Correlation {
 	const byNode = new Map<ElementNode, Changed>();
 	/** Per page: target node → parent and previous sibling, for knock-on effects. */
 	const family = new Map<ElementNode, { parent: ElementNode | null; prev: ElementNode | null }>();
+	/** The same for baseline nodes, for removed elements. */
+	const fromFamily = new Map<ElementNode, { parent: ElementNode | null; prev: ElementNode | null }>();
+	/** Target node → its baseline counterpart. */
+	const toFrom = new Map<ElementNode, ElementNode>();
 	/** Old-side lines whose new-side counterpart was taken as the cause, as `path:line`. */
 	const absorbed = new Set<string>();
 	/** Lines that sit inside a rule some element matched, per side, for invisible changes. */
 	const ruleLines: Record<Side, Map<string, Array<[number, number]>>> = { LEFT: new Map(), RIGHT: new Map() };
+
+	const jsx = (side: Side, node: ElementNode | null | undefined, via: EffectVia): Candidate | null => {
+		const src: ComponentSource | null | undefined = node?.component?.source;
+		if (!src || src.generated) return null;
+		const p = repoPath(src.fileName);
+		return p ? { side, path: p, line: src.lineNumber, kind: "jsx", via } : null;
+	};
+	/**
+	 * Where the component that rendered `node` was called from. Only the
+	 * nearest: an edited `<Layout>` line further up didn't add everything in
+	 * it, and elements inside a new component are explained by its root.
+	 */
+	const callSite = (side: Side, node: ElementNode): Candidate | null => {
+		const src = node.component?.components[0]?.source;
+		const p = src && !src.generated ? repoPath(src.fileName) : null;
+		return p && src ? { side, path: p, line: src.lineNumber, kind: "jsx", via: "jsx" } : null;
+	};
 
 	for (const page of input.pages) {
 		const fromStyles = page.from.styles;
@@ -322,18 +370,15 @@ export function correlate(input: CorrelateInput): Correlation {
 		}
 
 		const bySelector: Record<Side, Map<string, ElementNode>> = { LEFT: new Map(), RIGHT: new Map() };
-		walk(page.from.manifest.elements, (n) => bySelector.LEFT.set(n.selector, n));
+		walk(page.from.manifest.elements, (n, parent, prev) => {
+			bySelector.LEFT.set(n.selector, n);
+			fromFamily.set(n, { parent, prev });
+		});
 		walk(page.to.manifest.elements, (n, parent, prev) => {
 			bySelector.RIGHT.set(n.selector, n);
 			family.set(n, { parent, prev });
 		});
-
-		const jsx = (side: Side, node: ElementNode | undefined, via: EffectVia): Candidate | null => {
-			const src: ComponentSource | null | undefined = node?.component?.source;
-			if (!src || src.generated) return null;
-			const p = repoPath(src.fileName);
-			return p ? { side, path: p, line: src.lineNumber, kind: "jsx", via } : null;
-		};
+		for (const [b, a] of page.match.toFrom) toFrom.set(b, a);
 
 		/** Where a declaration was written. Inline styles point at their element's JSX line. */
 		const declLoc = (side: Side, styles: StyleManifest, ref: DeclRef, kind: CauseKind, via: EffectVia): Candidate | null => {
@@ -444,7 +489,7 @@ export function correlate(input: CorrelateInput): Correlation {
 			byNode.set(b, entry);
 
 			if (!a) {
-				consider(entry, [], [jsx("RIGHT", b, "jsx")]);
+				consider(entry, [], [jsx("RIGHT", b, "jsx"), callSite("RIGHT", b)]);
 				return;
 			}
 			const sa = fromStyles?.elements[a.dir];
@@ -498,45 +543,104 @@ export function correlate(input: CorrelateInput): Correlation {
 			if (!d) return;
 			const entry: Changed = { page: page.slug, node: a, status: d.status, props: [], own: false, size: sizeOf(d, a, undefined), hits: [] };
 			changed.push(entry);
-			consider(entry, [jsx("LEFT", a, "jsx")], []);
+			byNode.set(a, entry);
+			consider(entry, [jsx("LEFT", a, "jsx"), callSite("LEFT", a)], []);
 		});
+	}
+
+	// New and removed elements with no cause are explained by being new or
+	// removed, and the new or removed elements inside them by them.
+	/** What a change resolves to: changed lines, or the new or removed element it's inside or a knock-on effect of. */
+	type Reason = Candidate | { element: Changed };
+	const reasonKey = (r: Reason) =>
+		"element" in r ? `element:${r.element.page}:${r.element.status}:${r.element.node.dir}` : `${r.side}:${r.path}:${r.line}`;
+	/** The reasons each change resolves to: its own hits, its new or removed element, or those of its knock-on source. */
+	const resolved = new Map<Changed, Reason[]>();
+	for (const entry of changed) if (entry.hits.length) resolved.set(entry, entry.hits);
+	const entryOf = (n: ElementNode | null | undefined) => (n ? byNode.get(n) : undefined);
+	const fresh = (e: Changed) => e.status === "added" || e.status === "removed";
+	const parentOf = (e: Changed) => (e.status === "removed" ? fromFamily : family).get(e.node)?.parent ?? null;
+	/** New or removed elements inside another one that explains them. */
+	const inside = new Set<Changed>();
+	// Parents come before their children in `changed`, so an outer element is resolved first.
+	for (const entry of changed) {
+		if (!fresh(entry) || resolved.has(entry)) continue;
+		const up = entryOf(parentOf(entry));
+		if (up && up.status === entry.status && resolved.has(up)) {
+			resolved.set(entry, resolved.get(up)!);
+			inside.add(entry);
+		} else {
+			resolved.set(entry, [{ element: entry }]);
+		}
 	}
 
 	// Knock-on effects: changes with no cause and no change of their own come
 	// from nearby changes that have one, going by geometry:
 	//   - an element that moved or resized was pushed: by the nearest earlier
-	//     sibling (of it or an ancestor) that resized, else by the nearest
-	//     ancestor that moved, resized or changed itself;
+	//     sibling (of it or an ancestor) that resized or is new or removed,
+	//     else by the nearest ancestor that moved, resized or changed itself;
+	//     failing both, one that resized in a parent that didn't was squeezed
+	//     by siblings on either side that resized or are new or removed;
 	//   - an element whose box stayed put changed because of its content:
-	//     its descendants' causes.
+	//     its descendants' reasons, removed children included.
 	// Either falls back to the other. Knock-on effects can explain each other,
 	// so this repeats until nothing new is resolved.
 	const children = new Map<ElementNode, ElementNode[]>();
 	for (const [n, f] of family) if (f.parent) children.set(f.parent, [...(children.get(f.parent) ?? []), n]);
-	/** The causes each change resolves to: its own hits, or those of its knock-on source. */
-	const resolved = new Map<Changed, Candidate[]>();
-	for (const entry of changed) if (entry.hits.length) resolved.set(entry, entry.hits);
-	const entryOf = (n: ElementNode | null | undefined) => (n ? byNode.get(n) : undefined);
+	const fromChildren = new Map<ElementNode, ElementNode[]>();
+	for (const [n, f] of fromFamily) if (f.parent) fromChildren.set(f.parent, [...(fromChildren.get(f.parent) ?? []), n]);
 	const resized = (e: Changed) =>
 		Boolean(e.fromNode && (e.fromNode.rect.width !== e.node.rect.width || e.fromNode.rect.height !== e.node.rect.height));
 	const moved = (e: Changed) => Boolean(e.fromNode && (e.fromNode.rect.x !== e.node.rect.x || e.fromNode.rect.y !== e.node.rect.y));
+	const removed = (n: ElementNode) => {
+		const e = entryOf(n);
+		return e?.status === "removed" ? e : undefined;
+	};
 
-	const pushedBy = (node: ElementNode): Candidate[] | undefined => {
+	const pushedBy = (node: ElementNode): Reason[] | undefined => {
 		for (let n: ElementNode | null = node; n; n = family.get(n)?.parent ?? null) {
 			for (let s = family.get(n)?.prev ?? null; s; s = family.get(s)?.prev ?? null) {
 				const e = entryOf(s);
-				if (e && resized(e) && resolved.has(e)) return resolved.get(e);
+				if (e && (resized(e) || e.status === "added") && resolved.has(e)) return resolved.get(e);
+			}
+			// Earlier siblings that were removed, which only the baseline has.
+			const a = toFrom.get(n);
+			for (let s = (a && fromFamily.get(a)?.prev) ?? null; s; s = fromFamily.get(s)?.prev ?? null) {
+				const e = removed(s);
+				if (e && resolved.has(e)) return resolved.get(e);
 			}
 			const up = entryOf(family.get(n)?.parent);
 			if (up && resolved.has(up) && (moved(up) || resized(up) || up.own)) return resolved.get(up);
 		}
 		return undefined;
 	};
-	const fromContent = (n: ElementNode): Candidate[] => {
-		const out: Candidate[] = [];
+	const sameSize = (a: ElementNode, b: ElementNode) => a.rect.width === b.rect.width && a.rect.height === b.rect.height;
+	/** A parent that kept its size shared space out among its children, so a sibling that grew (or came or went) took it. */
+	const squeezedBy = (entry: Changed): Reason[] | undefined => {
+		const parent = family.get(entry.node)?.parent;
+		const before = parent && toFrom.get(parent);
+		if (!parent || !before || !sameSize(before, parent) || !resized(entry)) return undefined;
+		const out: Reason[] = [];
+		for (const s of children.get(parent) ?? []) {
+			const e = entryOf(s);
+			if (e && e !== entry && (resized(e) || e.status === "added")) out.push(...(resolved.get(e) ?? []));
+		}
+		for (const s of fromChildren.get(before) ?? []) {
+			const e = removed(s);
+			if (e) out.push(...(resolved.get(e) ?? []));
+		}
+		return out.length ? out : undefined;
+	};
+	const fromContent = (n: ElementNode): Reason[] => {
+		const out: Reason[] = [];
 		for (const child of children.get(n) ?? []) {
 			const e = entryOf(child);
 			out.push(...((e && resolved.get(e)) ?? fromContent(child)));
+		}
+		const a = toFrom.get(n);
+		for (const child of (a && fromChildren.get(a)) ?? []) {
+			const e = removed(child);
+			if (e) out.push(...(resolved.get(e) ?? []));
 		}
 		return out;
 	};
@@ -551,14 +655,25 @@ export function correlate(input: CorrelateInput): Correlation {
 				const below = fromContent(entry.node);
 				return below.length ? below : undefined;
 			};
-			const found = geometry ? (pushedBy(entry.node) ?? content()) : (content() ?? pushedBy(entry.node));
+			const found = geometry ? (pushedBy(entry.node) ?? squeezedBy(entry) ?? content()) : (content() ?? pushedBy(entry.node));
 			if (found) {
-				resolved.set(entry, [...new Map(found.map((c) => [`${c.side}:${c.path}:${c.line}`, c])).values()]);
+				resolved.set(entry, [...new Map(found.map((r) => [reasonKey(r), r])).values()]);
 				knockOn.add(entry);
 				progress = true;
 			}
 		}
 	}
+
+	const effectOf = (entry: Changed, via: EffectVia): Effect => ({
+		page: entry.page,
+		dir: entry.node.dir,
+		...(entry.fromNode && entry.fromNode.dir !== entry.node.dir ? { fromDir: entry.fromNode.dir } : {}),
+		status: entry.status,
+		props: entry.props,
+		via,
+		size: entry.size,
+	});
+	const has = (effects: Effect[], entry: Changed) => effects.some((e) => e.page === entry.page && e.dir === entry.node.dir && e.status === entry.status);
 
 	const causes = new Map<string, Cause>();
 	const keyOf = (c: Candidate) => `${c.side}:${targetPath(c.side, c.path)}:${c.line}`;
@@ -569,23 +684,37 @@ export function correlate(input: CorrelateInput): Correlation {
 			cause = { path: targetPath(c.side, c.path), line: c.line, side: c.side, kind: c.kind, text: c.text, effects: [] };
 			causes.set(key, cause);
 		}
-		if (cause.effects.some((e) => e.page === entry.page && e.dir === entry.node.dir)) return;
-		cause.effects.push({
-			page: entry.page,
-			dir: entry.node.dir,
-			...(entry.fromNode && entry.fromNode.dir !== entry.node.dir ? { fromDir: entry.fromNode.dir } : {}),
-			status: entry.status,
-			props: entry.props,
-			via,
-			size: entry.size,
-		});
+		if (!has(cause.effects, entry)) cause.effects.push(effectOf(entry, via));
+	};
+
+	// A new or removed element's render site is its parent's JSX line. Those
+	// without one are grouped by their own JSX line, else listed by themselves.
+	const sites = new Map<string, RenderSite>();
+	const addSiteEffect = (element: Changed, entry: Changed, via: EffectVia) => {
+		const side: Side = element.status === "removed" ? "LEFT" : "RIGHT";
+		const at = jsx(side, parentOf(element), "jsx");
+		const own = at ? null : jsx(side, element.node, "jsx");
+		const key = at ? keyOf(at) : own ? `own:${keyOf(own)}` : `element:${element.page}:${element.status}:${element.node.dir}`;
+		let site = sites.get(key);
+		if (!site) {
+			site = { ...(at ? { path: targetPath(side, at.path), line: at.line } : {}), side, effects: [] };
+			sites.set(key, site);
+		}
+		if (!has(site.effects, entry)) site.effects.push(effectOf(entry, via));
 	};
 
 	const unexplained: UnexplainedChange[] = [];
 	for (const entry of changed) {
 		const found = resolved.get(entry);
 		if (found) {
-			for (const c of found) addEffect(c, entry, knockOn.has(entry) ? "knock-on" : c.via);
+			for (const r of found) {
+				if ("element" in r) {
+					const via = r.element === entry ? (entry.status === "removed" ? "removed" : "new") : inside.has(entry) ? "inside" : "knock-on";
+					addSiteEffect(r.element, entry, via);
+				} else {
+					addEffect(r, entry, knockOn.has(entry) ? "knock-on" : inside.has(entry) ? "inside" : r.via);
+				}
+			}
 		} else {
 			unexplained.push({
 				page: entry.page,
@@ -596,6 +725,10 @@ export function correlate(input: CorrelateInput): Correlation {
 				...(entry.note ? { note: entry.note } : {}),
 			});
 		}
+	}
+	for (const site of sites.values()) {
+		const elements = site.effects.filter((e) => e.via === "new" || e.via === "removed");
+		site.representative = pickRepresentative(elements.length ? elements : site.effects, (e) => e.size);
 	}
 
 	// Cross-reference effects that share an element, and pick each cause's screenshot.
@@ -636,7 +769,10 @@ export function correlate(input: CorrelateInput): Correlation {
 
 	const sorted = [...causes.values()].sort((x, y) => x.path.localeCompare(y.path) || x.line - y.line || x.side.localeCompare(y.side));
 	invisible.sort((x, y) => x.path.localeCompare(y.path) || x.line - y.line);
-	return { causes: sorted, unexplained, invisible, withoutStyles };
+	const renderSites = [...sites.values()].sort(
+		(x, y) => (x.path ?? "\uffff").localeCompare(y.path ?? "\uffff") || (x.line ?? 0) - (y.line ?? 0) || x.side.localeCompare(y.side),
+	);
+	return { causes: sorted, renderSites, unexplained, invisible, withoutStyles };
 }
 
 /** Correlation input for the per-element pages of a `diffVersions` report, with each side's style data. */

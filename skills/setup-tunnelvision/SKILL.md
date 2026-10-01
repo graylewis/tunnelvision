@@ -1,13 +1,13 @@
 ---
 name: setup-tunnelvision
-description: Set up tunnelvision in this project — install shot-scraper if it's missing, check where Pages come from (Next.js/Astro routes or the sitemap) and the source-map settings, run `tunnelvision init`, and capture a baseline. Use when the user asks to set up, install, initialise or configure tunnelvision, or to take a first baseline capture.
+description: Set up tunnelvision in this project — install shot-scraper if it's missing, check where Pages come from (Next.js/Astro routes or the sitemap) and the source-map settings, run `tunnelvision init`, capture a baseline, and offer the post-commit hook. Use when the user asks to set up, install, initialise or configure tunnelvision, or to take a first baseline capture.
 ---
 
 # Set up tunnelvision
 
 Get this project from "tunnelvision is in `package.json`" to "a baseline Version is captured", fixing whatever `tunnelvision doctor` complains about on the way.
 
-Vocabulary: a **Version** is one capture of every page, keyed by the git commit it was taken at (suffixed `-dirty` for uncommitted work). A **Page** is one URL from the app's Next.js or Astro routes, or from the sitemap. Everything lives under `.tunnelvision/`.
+Vocabulary: a **Version** is one capture of every page, keyed by the git commit it was taken at (suffixed `-dirty` for uncommitted work). A **Page** is one URL from the app's Next.js or Astro routes, or from the sitemap. The config is `tunnelvision.json` at the project root and is committed; captures, diffs and the auth context live under `.tunnelvision/`, which is git-ignored.
 
 Work through the steps in order. Ask the user one question at a time, only when a step needs a decision you can't make from the repo. Don't delete files or start long-running processes without asking.
 
@@ -23,7 +23,7 @@ If `node_modules/.bin/tunnelvision` doesn't exist, install it as a dev dependenc
 tunnelvision doctor
 ```
 
-It reports, one line each: `shot-scraper`, `playwright (for per-element captures)`, `config`, `git repo`, `next.js routes`, `astro routes` or `sitemap`, and a `!` warning about CSS source maps when they're needed and off. Fix each ✗ with the matching step below, then re-run the doctor until it prints `All good.` (the `config` line stays ✗ until step 6 — that's expected).
+It reports, one line each: `shot-scraper`, `playwright (for per-element captures)`, `config`, `git repo`, `post-commit hook`, `next.js routes`, `astro routes` or `sitemap`, and a `!` warning about CSS source maps when they're needed and off. Fix each ✗ with the matching step below, then re-run the doctor until it prints `All good.` (the `config` line stays ✗ until step 6 — that's expected). The `post-commit hook` line is informational (`·` when it isn't installed) and never fails the doctor; step 9 deals with it.
 
 ## 3. shot-scraper
 
@@ -76,13 +76,15 @@ Pick the base URL: read the dev script in `package.json` (Vite defaults to `http
 tunnelvision init --base-url <url>
 ```
 
-`--base-url` skips the interactive prompt. If `.tunnelvision/config.json` already exists, init exits 1 and says so — keep the existing config rather than passing `--force`, unless the user wants a reset. init also adds `.tunnelvision/` to `.gitignore`.
+`--base-url` skips the interactive prompt. init writes `tunnelvision.json` at the project root and adds `.tunnelvision/` to `.gitignore`. If `tunnelvision.json` already exists, init exits 1 and says so — keep the existing config rather than passing `--force`, unless the user wants a reset. If the doctor found a config at the old location, `.tunnelvision/config.json`, init moves it to `tunnelvision.json` with its settings intact instead of asking for a base URL.
 
-Defaults worth knowing (all in `.tunnelvision/config.json`): viewport 1280×800, `wait` 1000 ms before each capture, `settle` 500 ms for animations after the scroll pass, `concurrency` 4, `diff.threshold` 0.1, `diff.maxDiffPercent` 0.03. Per-page overrides go under `pages["/path"]` (`wait`, `waitFor`, `settle`, `maxDiffPercent`). Don't tune these now; `/test-tunnelvision` finds out whether they need it.
+`tunnelvision.json` is meant to be committed: it holds the settings the whole team shares (base URL, viewport, waits, per-page overrides), and `.tunnelvision/` is git-ignored because it's a local cache. Make sure no `.gitignore` rule covers `tunnelvision.json` (a broad `*.json` rule would; add `!tunnelvision.json` below it).
+
+Defaults worth knowing (all in `tunnelvision.json`): viewport 1280×800, `wait` 1000 ms before each capture, `settle` 500 ms for animations after the scroll pass, `concurrency` 4, `diff.threshold` 0.1, `diff.maxDiffPercent` 0.03. Per-page overrides go under `pages["/path"]` (`wait`, `waitFor`, `settle`, `maxDiffPercent`). Don't tune these now; `/test-tunnelvision` finds out whether they need it.
 
 ## 7. Commit the setup
 
-Steps 3–6 may have touched `.gitignore`, `package.json`, the sitemap and the Vite config. A baseline taken now would be keyed `<sha>-dirty`. tunnelvision copes with that (it snapshots the dirty tree so later diffs still find the changed lines), but a clean key is easier to reason about, so offer to commit the setup changes first. Don't commit without asking.
+Steps 3–6 may have touched `.gitignore`, `package.json`, the sitemap and the Vite config, and created `tunnelvision.json`, which belongs in the repo. A baseline taken now would be keyed `<sha>-dirty`. tunnelvision copes with that (it snapshots the dirty tree so later diffs still find the changed lines), but a clean key is easier to reason about, so offer to commit the setup changes first. Don't commit without asking.
 
 ## 8. Capture the baseline
 
@@ -102,10 +104,21 @@ Report back:
 - any pages that failed;
 - what was changed in the repo during setup.
 
-## 9. What's next
+## 9. Post-commit hook
+
+tunnelvision can review every commit on its own: a git `post-commit` hook runs `tunnelvision review --notify` in the background, and a desktop notification says when the result is ready (with buttons to open it on macOS). It's opt-in, so check and ask.
+
+The doctor's `post-commit hook` line says whether it's installed (it looks for the tunnelvision block in `.git/hooks/post-commit`). If it's `✓`, say so and move on. If it's `·  not installed`, ask the user, in one question, whether they'd like it set up: explain that each commit then starts a background review of the app at the base URL, that the commit itself isn't slowed down or blocked, and that the block can be removed from `.git/hooks/post-commit` to turn it off. If they say yes:
+
+```sh
+tunnelvision install-hook
+```
+
+If a `post-commit` hook from something else already exists, install-hook exits 1 and asks for `--force`, which appends the tunnelvision block to it without touching the rest. Show the user the existing hook and confirm before re-running with `--force`. On macOS, install-hook also builds the notifier and sends a first notification, so the permission prompt comes up now rather than after the first commit; tell the user to allow it. If they say no, don't install it, and don't ask again.
+
+## 10. What's next
 
 Suggest, briefly:
 
 - `/test-tunnelvision` — makes a throwaway branch of known visual changes and checks that tunnelvision finds exactly those, catching flaky animations and slow-loading regions before they produce false positives in real reviews.
-- `tunnelvision review` after the next change — captures and diffs against the previous Version in one go.
-- `tunnelvision install-hook` — runs `review` after every commit.
+- `tunnelvision review` after the next change — captures and diffs against the previous Version in one go. With the hook installed, this happens after every commit.

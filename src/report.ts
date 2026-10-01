@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
-import type { Correlation } from "./correlate.js";
+import type { Correlation, RenderSite } from "./correlate.js";
 import type { DiffReport, PageStatus } from "./diffengine.js";
 
 const STATUS_STYLE: Record<PageStatus, (s: string) => string> = {
@@ -69,7 +69,7 @@ const MAX_PROPS = 3;
 /** Changed lines and the visual changes they caused. */
 function printCorrelation(c: Correlation): void {
 	const { causes, unexplained, invisible, withoutStyles } = c;
-	if (causes.length === 0 && unexplained.length === 0 && invisible.length === 0) return;
+	if (causes.length === 0 && !c.renderSites?.length && unexplained.length === 0 && invisible.length === 0) return;
 	console.log("");
 	console.log(pc.bold("  Causes"));
 	if (causes.length === 0) console.log(pc.dim("    No changed line explains a visual change."));
@@ -82,6 +82,7 @@ function printCorrelation(c: Correlation): void {
 		console.log(`    ${pc.cyan(where)}  ${pc.dim(cause.text ?? cause.kind)}`);
 		console.log(pc.dim(`      → ${n} element${n === 1 ? "" : "s"}${propText}`));
 	}
+	printRenderSites(c.renderSites ?? []);
 	const notExercised = invisible.filter((i) => i.reason === "not-exercised").length;
 	const extras = [
 		unexplained.length ? `${unexplained.length} unexplained visual change${unexplained.length === 1 ? "" : "s"}` : "",
@@ -92,6 +93,29 @@ function printCorrelation(c: Correlation): void {
 		withoutStyles.length ? `${withoutStyles.length} page(s) without style data (re-capture to trace CSS)` : "",
 	].filter(Boolean);
 	if (extras.length) console.log(pc.dim(`    ${extras.join("  •  ")}  — see \`tunnelvision inspector\``));
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** New and removed elements with no cause, by render site. */
+function printRenderSites(sites: RenderSite[]): void {
+	if (!sites.length) return;
+	console.log("");
+	console.log(pc.bold("  New and removed elements"));
+	let without = 0;
+	for (const site of sites) {
+		if (!site.path) {
+			without += site.effects.filter((e) => e.via === "new" || e.via === "removed").length;
+			continue;
+		}
+		const count = (via: string) => site.effects.filter((e) => e.via === via).length;
+		const pages = new Set(site.effects.map((e) => e.page)).size;
+		const what = [count("new") ? `${count("new")} new` : "", count("removed") ? `${count("removed")} removed` : ""].filter(Boolean).join(", ");
+		const rest = [count("inside") ? `${count("inside")} inside them` : "", count("knock-on") ? plural(count("knock-on"), "knock-on effect") : ""].filter(Boolean);
+		console.log(`    ${pc.cyan(`${site.path}:${site.line}${site.side === "LEFT" ? " (baseline)" : ""}`)}  ${pc.dim("render site")}`);
+		console.log(pc.dim(`      → ${what} element${count("new") + count("removed") === 1 ? "" : "s"} on ${plural(pages, "page")}${rest.length ? `, ${rest.join(", ")}` : ""}`));
+	}
+	if (without) console.log(pc.dim(`    ${plural(without, "new or removed element")} without a render site`));
 }
 
 export function writeJsonReport(report: DiffReport, outPath: string): void {

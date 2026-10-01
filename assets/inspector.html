@@ -212,12 +212,20 @@ function indexData() {
 	const c = state.data.correlation;
 	state.causesOf = new Map();
 	state.unexplainedOf = new Map();
+	state.sitesOf = new Map();
 	if (!c) return;
 	c.causes.forEach((cause, i) => {
 		state.items.set("c:" + i, { key: "c:" + i, cause });
 		for (const effect of cause.effects) {
 			const k = effect.page + "/" + effect.dir;
 			state.causesOf.set(k, [...(state.causesOf.get(k) ?? []), { cause, effect, key: "c:" + i }]);
+		}
+	});
+	(c.renderSites ?? []).forEach((site, i) => {
+		state.items.set("r:" + i, { key: "r:" + i, site });
+		for (const effect of site.effects) {
+			const k = effect.page + "/" + effect.dir;
+			state.sitesOf.set(k, [...(state.sitesOf.get(k) ?? []), { site, effect, key: "r:" + i }]);
 		}
 	});
 	c.unexplained.forEach((u, i) => {
@@ -237,7 +245,13 @@ function causeSource(cause) {
 	return { fileName: state.data.repoRoot.replace(/\/$/, "") + "/" + cause.path, lineNumber: cause.line, columnNumber: 1, path: `${cause.path}:${cause.line}` };
 }
 
-const VIA = { direct: "sets it", inherited: "inherited", var: "via var()", jsx: "JSX line", copy: "copy", "knock-on": "knock-on" };
+const VIA = { direct: "sets it", inherited: "inherited", var: "via var()", jsx: "JSX line", copy: "copy", "knock-on": "knock-on", new: "new", removed: "removed", inside: "inside" };
+
+/** A render site's location, or what to call it when the parent has no JSX line. */
+function siteWhere(site, short) {
+	if (!site.path) return "no render site";
+	return `${short ? site.path.split("/").pop() : site.path}:${site.line}${site.side === "LEFT" ? " (baseline)" : ""}`;
+}
 
 /**
  * Normalise a source location from an element's `component`. Accepts `{ path }`,
@@ -294,6 +308,13 @@ function renderCauses() {
 	for (const [cause, i] of causes) {
 		const where = `${cause.path.split("/").pop()}:${cause.line}${cause.side === "LEFT" ? " (deleted)" : ""}`;
 		row("c:" + i, "changed", `${esc(where)} <span class="cause-text">${esc(cause.text ?? cause.kind)}</span>`, `<span class="badge" title="elements affected">${cause.effects.length}</span>`);
+	}
+	const sites = (c.renderSites ?? []).map((site, i) => [site, i]).filter(([x]) => match(x.path ?? "", ...x.effects.map((e) => e.page + "/" + e.dir)));
+	if (sites.length) group("New and removed elements", sites.length);
+	for (const [site, i] of sites) {
+		const elements = site.effects.filter((e) => e.via === "new" || e.via === "removed");
+		const label = site.path ? esc(siteWhere(site, true)) : esc(elements[0].page + "/" + elements[0].dir) + ' <span class="cause-text">no render site</span>';
+		row("r:" + i, site.side === "LEFT" ? "removed" : "added", label, `<span class="badge" title="new or removed elements">${elements.length}</span>`);
 	}
 	const unexplained = c.unexplained.map((u, i) => [u, i]).filter(([u]) => match(u.page, u.dir));
 	if (unexplained.length) group("Unexplained visual changes", unexplained.length);
@@ -454,6 +475,7 @@ function renderDetail() {
 	const pill = (s) => `<span class="status-pill s-${s}">${esc(s)}</span>`;
 
 	if (item.cause) return renderCause(item.cause);
+	if (item.site) return renderSite(item.site);
 	if (item.unexplained) {
 		const u = item.unexplained;
 		$("detail").innerHTML = `<h2>${esc(u.page + "/" + u.dir)}${pill(u.status)}</h2>` +
@@ -504,13 +526,18 @@ function renderDetail() {
 
 	const causedBy = state.causesOf.get(page.slug + "/" + n.dir) ?? [];
 	const unexplained = state.unexplainedOf.get(page.slug + "/" + n.dir);
+	const sitesOf = state.sitesOf.get(page.slug + "/" + n.dir) ?? [];
+	if (sitesOf.length) {
+		dl += `<dt>${causedBy.length ? "also" : "explained by"}</dt><dd><ul class="effects">` + sitesOf.map(({ site, effect, key }) =>
+			`<li><a class="el" data-goto="${esc(key)}">${esc(siteWhere(site))}</a> <span class="via">${esc(VIA[effect.via])}</span> <span class="hint">${effect.via === "new" || effect.via === "removed" ? "rendered here" : "new or removed element"}</span></li>`).join("") + `</ul></dd>`;
+	}
 	if (causedBy.length) {
 		dl += `<dt>caused by</dt><dd><ul class="effects">` + causedBy.map(({ cause, effect, key }) =>
 			`<li><a class="el" data-goto="${esc(key)}">${esc(cause.path + ":" + cause.line)}</a> <span class="via">${esc(VIA[effect.via])}</span> <span class="hint">${esc(cause.text ?? "")}</span></li>`).join("") + `</ul></dd>`;
 	} else if (unexplained) {
 		dl += `<dt>caused by</dt><dd><span class="hint">no changed line explains it${unexplained.note ? " — " + esc(unexplained.note) : ""}</span></dd>`;
 	}
-	const props = causedBy[0]?.effect.props ?? unexplained?.props ?? [];
+	const props = causedBy[0]?.effect.props ?? sitesOf[0]?.effect.props ?? unexplained?.props ?? [];
 
 	let html = `<h2>${label(n)}${pill(n.status)}</h2><dl>${dl}</dl>` + propsTable(props) + imageGrid(`${page.slug}/${n.dir}/element.png`, n, `${page.slug}/${n.fromDir ?? n.dir}/element.png`);
 
@@ -564,12 +591,34 @@ function renderCause(cause) {
 		if (node) html += imageGrid(`${rep.page}/${node.dir}/element.png`, node, `${rep.page}/${node.fromDir ?? node.dir}/element.png`);
 		html += propsTable(rep.props);
 	}
-	const order = { direct: 0, inherited: 1, var: 1, jsx: 1, copy: 1, "knock-on": 2 };
+	const order = { direct: 0, inherited: 1, var: 1, jsx: 1, copy: 1, inside: 1, "knock-on": 2 };
 	const effects = [...cause.effects].sort((a, b) => order[a.via] - order[b.via] || b.size - a.size);
 	html += `<figcaption>affected elements</figcaption><ul class="effects">` + effects.map((e) =>
 		`<li><a class="el" data-goto="${esc(elementKey(e))}">${esc(e.page + "/" + e.dir)}</a> <span class="via">${esc(VIA[e.via])}</span>` +
 		(e.props.some((p) => p.own) ? ` <span class="hint">${esc(e.props.filter((p) => p.own).map((p) => p.name).slice(0, 4).join(", "))}</span>` : "") +
 		(e.alsoCausedBy ? ` <span class="hint">also ${esc(e.alsoCausedBy.join(", "))}</span>` : "") + `</li>`).join("") + `</ul>`;
+	$("detail").innerHTML = html;
+}
+
+/** New or removed elements with no cause, linked to the parent JSX line that rendered them. */
+function renderSite(site) {
+	const rep = site.representative;
+	const elements = site.effects.filter((e) => e.via === "new" || e.via === "removed");
+	let html = `<h2>${esc(siteWhere(site))}</h2><dl>` +
+		(site.path ? `<dt>render site</dt><dd>${sourceLink(causeSource(site))}</dd>` : "") +
+		`<dt>${site.side === "LEFT" ? "removed" : "new"}</dt><dd>${elements.length} element${elements.length === 1 ? "" : "s"}, ${site.effects.length} affected in all</dd></dl>` +
+		`<p class="hint">No changed line explains ${elements.length === 1 ? "this element" : "these elements"}: ${site.path
+			? "this is the parent's JSX line that rendered them (a .map(), a conditional, a slot). It may not have changed; the data it renders likely did."
+			: "the parent has no JSX line to link to."}</p>`;
+	if (rep) {
+		const node = state.items.get(elementKey(rep))?.node;
+		html += `<figcaption>representative · <a class="el" data-goto="${esc(elementKey(rep))}">${esc(rep.page + "/" + rep.dir)}</a></figcaption>`;
+		if (node) html += imageGrid(`${rep.page}/${node.dir}/element.png`, node, `${rep.page}/${node.fromDir ?? node.dir}/element.png`);
+	}
+	const order = { new: 0, removed: 0, inside: 1, "knock-on": 2 };
+	const effects = [...site.effects].sort((a, b) => order[a.via] - order[b.via] || b.size - a.size);
+	html += `<figcaption>affected elements</figcaption><ul class="effects">` + effects.map((e) =>
+		`<li><a class="el" data-goto="${esc(elementKey(e))}">${esc(e.page + "/" + e.dir)}</a> <span class="via">${esc(VIA[e.via])}</span></li>`).join("") + `</ul>`;
 	$("detail").innerHTML = html;
 }
 

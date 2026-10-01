@@ -167,6 +167,21 @@ function openBrowser(url) {
     const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
     spawn(cmd, args, { stdio: "ignore", detached: true }).on("error", () => { }).unref();
 }
+/** True when an inspector for `root` is already serving at `link`. */
+async function servesProject(link, root) {
+    try {
+        const res = await fetch(`${link}/api/versions`, { signal: AbortSignal.timeout(2000) });
+        const body = (await res.json());
+        return body.root === root;
+    }
+    catch {
+        return false;
+    }
+}
+function displayLink(host, port) {
+    const shownHost = host === "0.0.0.0" || host === "::" ? "localhost" : host;
+    return `http://${shownHost}:${port}`;
+}
 export async function inspector(opts) {
     const paths = resolvePaths(opts.root);
     if (!fs.existsSync(paths.versions)) {
@@ -250,19 +265,39 @@ export async function inspector(opts) {
     });
     const host = opts.host ?? "127.0.0.1";
     const port = opts.port ?? 4173;
-    await new Promise((resolve, reject) => {
+    const query = opts.from && opts.to
+        ? `/?${new URLSearchParams({ from: opts.from, to: opts.to })}`
+        : "";
+    const listen = (p) => new Promise((resolve, reject) => {
         server.once("error", reject);
-        server.listen(port, host, () => resolve());
+        server.listen(p, host, () => resolve());
     });
+    try {
+        await listen(port);
+    }
+    catch (err) {
+        if (err.code !== "EADDRINUSE")
+            throw err;
+        // This project's inspector is already running there: use it.
+        const existing = displayLink(host, port);
+        if (await servesProject(existing, paths.root)) {
+            console.log(pc.dim(`An inspector for this project is already running at ${existing}`));
+            if (opts.open)
+                openBrowser(existing + query);
+            return 0;
+        }
+        // Another project's inspector has the port: take any free one.
+        console.log(pc.yellow(`Port ${port} is in use; using a free port instead.`));
+        await listen(0);
+    }
     const address = server.address();
     const actualPort = typeof address === "object" && address ? address.port : port;
-    const shownHost = host === "0.0.0.0" || host === "::" ? "localhost" : host;
-    const link = `http://${shownHost}:${actualPort}`;
+    const link = displayLink(host, actualPort);
     console.log(pc.bold("tunnelvision inspector") + pc.dim(` → ${path.relative(process.cwd(), paths.dir) || paths.dir}`));
     console.log(`  ${pc.cyan(link)}`);
     console.log(pc.dim("  press Ctrl+C to stop"));
     if (opts.open)
-        openBrowser(link);
+        openBrowser(link + query);
     // Keep running until interrupted.
     await new Promise((resolve) => {
         const stop = () => server.close(() => resolve());

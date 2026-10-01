@@ -47,7 +47,7 @@ A changed line that explains a visual change: a declaration, selector or custom-
 _Avoid_: Culprit, source (source already means an element's JSX location)
 
 **Knock-on effect**:
-A visual change on an element whose own tracked properties didn't change, attributed to the nearest ancestor or earlier sibling that did change.
+A visual change on an element whose own tracked properties didn't change, attributed to the nearest ancestor or earlier sibling that did change or is new, or to a sibling that grew, came or went inside a parent that kept its size.
 _Avoid_: Displacement, side effect
 
 **Direct effect**:
@@ -59,11 +59,22 @@ A visual change where a cause first lands: a direct effect other than by inherit
 _Avoid_: Direct change, root change, primary change
 
 **Downstream change**:
-A visual change with causes that is not an origin: every cause reaches it as a knock-on effect or by inheritance below an origin.
+An explained visual change that is not an origin: every cause reaches it as a knock-on effect or by inheritance below an origin, and every new or removed element it's explained by, as a knock-on effect.
 _Avoid_: Follow-on change, secondary change
 
+**New element**:
+An element in the target with no counterpart in the baseline. It is explained by being new, even with no cause, and so are the new elements inside it.
+_Avoid_: Added change
+
+**Removed element**:
+An element in the baseline with no counterpart in the target, explained by being removed, as a new element is by being new.
+
+**Render site**:
+The JSX line of a new or removed element's parent (the baseline's parent, for a removed one), where the element was rendered (by a `.map()`, a conditional, a slot); an element with no cause is linked to it when the parent has one. It needn't be a changed line, so it is never a cause.
+_Avoid_: Generator, origin, cause
+
 **Unexplained visual change**:
-A visual change with no cause among the changed lines.
+A visual change with no cause among the changed lines that isn't a new or removed element or a knock-on effect of one.
 
 **Invisible change**:
 A changed line in a stylesheet that caused no visual change on any captured element, either because it had no effect or because it wasn't exercised (a hover state, another breakpoint, a page that wasn't captured).

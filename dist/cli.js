@@ -95,7 +95,7 @@ withDiffOptions(program
     json: opts.json,
     report: opts.report,
 })));
-withDiffOptions(withCaptureOptions(program.command("review").description("Capture the current version, then diff it against the previous"))).action((opts) => run(() => review({
+withDiffOptions(withCaptureOptions(program.command("review").description("Capture the current version, then diff it against the previous")).option("--notify", "send a desktop notification when done, with buttons to open the result")).action((opts) => run(() => review({
     root: ROOT,
     baseUrl: opts.baseUrl,
     width: opts.width,
@@ -111,6 +111,7 @@ withDiffOptions(withCaptureOptions(program.command("review").description("Captur
     maxDiffPercent: opts.maxDiffPercent,
     json: opts.json,
     report: opts.report,
+    notify: opts.notify,
 })));
 program
     .command("auth")
@@ -131,7 +132,7 @@ program
     .action((opts) => run(() => clean({ root: ROOT, keep: opts.keep, diffsOnly: opts.diffs, all: opts.all })));
 program
     .command("install-hook")
-    .description("Install an opt-in git post-commit hook that runs `review`")
+    .description("Install an opt-in git post-commit hook that runs `review` in the background and notifies you when it's done")
     .option("--force", "append to an existing post-commit hook")
     .action((opts) => run(() => installHook({ root: ROOT, force: opts.force })));
 program
@@ -145,6 +146,8 @@ program
     .option("--port <n>", "port to listen on", num, 4173)
     .option("--host <host>", "interface to bind", "127.0.0.1")
     .option("--open", "open the inspector in your browser")
+    .option("--from <version>", "baseline version the opened page starts on")
+    .option("--to <version>", "target version the opened page starts on")
     .option("--threshold <n>", "pixelmatch colour threshold (0-1)", num)
     .option("--max-diff-percent <n>", "element mismatch % cutoff for changed", num)
     .action((opts) => run(() => inspector({
@@ -152,6 +155,8 @@ program
     port: opts.port,
     host: opts.host,
     open: opts.open,
+    from: opts.from,
+    to: opts.to,
     threshold: opts.threshold,
     maxDiffPercent: opts.maxDiffPercent,
 })));

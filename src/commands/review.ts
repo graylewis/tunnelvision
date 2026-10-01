@@ -1,16 +1,25 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import pc from "picocolors";
 import type { Overrides } from "../config.js";
-import { diffDir, versionDir } from "../paths.js";
-import { diffVersions } from "../diffengine.js";
+import { diffDir, versionDir, type Paths } from "../paths.js";
+import { diffVersions, type DiffReport } from "../diffengine.js";
 import { addCorrelation } from "../correlate.js";
 import { latestExcluding } from "../versions.js";
 import { printReport, writeJsonReport } from "../report.js";
+import { notify, type NotificationAction } from "../notify.js";
+import { findSandhog, sandhogLink } from "../sandhog.js";
 import { logSource, prepareCapture, runCapture } from "./shoot.js";
+
+const CLI = fileURLToPath(new URL("../cli.js", import.meta.url));
 
 export interface ReviewOptions extends Overrides {
 	root: string;
 	report?: string;
 	json?: boolean;
+	/** Send a desktop notification when the review finishes or fails. */
+	notify?: boolean;
 }
 
 /** Fail fast if the base URL is not reachable (mirrors shoot). */
@@ -29,10 +38,89 @@ async function assertReachable(baseUrl: string): Promise<void> {
 	}
 }
 
+function isAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "EPERM";
+	}
+}
+
+/**
+ * Wait until no other review is running in this project, then hold the lock
+ * until the returned function is called. Background reviews from quick
+ * successive commits run one after another, each diffing against the last.
+ */
+async function lockReviews(paths: Paths): Promise<() => void> {
+	const file = path.join(paths.dir, "review.lock");
+	let waiting = false;
+	for (;;) {
+		try {
+			fs.writeFileSync(file, String(process.pid), { flag: "wx" });
+			return () => fs.rmSync(file, { force: true });
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+		}
+		let pid = NaN;
+		try {
+			pid = Number(fs.readFileSync(file, "utf8"));
+		} catch {
+			continue; // Released in the meantime.
+		}
+		if (!Number.isInteger(pid) || !isAlive(pid)) {
+			// Left behind by a review that was killed.
+			fs.rmSync(file, { force: true });
+			continue;
+		}
+		if (!waiting) {
+			console.log(pc.dim(`  waiting for another review (pid ${pid}) to finish…`));
+			waiting = true;
+		}
+		await new Promise((r) => setTimeout(r, 1000));
+	}
+}
+
+interface Outcome {
+	code: number;
+	paths: Paths;
+	to: string;
+	pageCount: number;
+	failedCount: number;
+	/** Absent when this review established the baseline. */
+	diff?: { from: string; report: DiffReport };
+}
+
 export async function review(opts: ReviewOptions): Promise<number> {
+	try {
+		const outcome = await runReview(opts);
+		if (opts.notify) notifyReviewed(outcome);
+		return outcome.code;
+	} catch (err) {
+		if (opts.notify) {
+			notify({
+				title: "tunnelvision review failed",
+				subtitle: path.basename(opts.root),
+				body: (err as Error).message.split("\n")[0],
+			});
+		}
+		throw err;
+	}
+}
+
+async function runReview(opts: ReviewOptions): Promise<Outcome> {
 	const ctx = await prepareCapture(opts);
 	await assertReachable(ctx.config.baseUrl);
 
+	const release = await lockReviews(ctx.paths);
+	try {
+		return await reviewLocked(opts, ctx);
+	} finally {
+		release();
+	}
+}
+
+async function reviewLocked(opts: ReviewOptions, ctx: Awaited<ReturnType<typeof prepareCapture>>): Promise<Outcome> {
 	// Determine the baseline BEFORE capturing: the newest existing version that
 	// isn't the current key (the current version may not exist on disk yet).
 	const baseline = latestExcluding(ctx.paths, ctx.version.key);
@@ -46,6 +134,12 @@ export async function review(opts: ReviewOptions): Promise<number> {
 	}
 
 	const capture = await runCapture(ctx);
+	const result = {
+		paths: ctx.paths,
+		to: ctx.version.key,
+		pageCount: ctx.pages.length,
+		failedCount: capture.missing.length,
+	};
 	console.log(pc.green(`  ✓ ${capture.produced.length} captured`));
 	if (capture.missing.length > 0) {
 		console.log(pc.red(`  ✗ ${capture.missing.length} failed`));
@@ -56,7 +150,7 @@ export async function review(opts: ReviewOptions): Promise<number> {
 		console.log("");
 		console.log(pc.cyan("  Baseline established — nothing to diff against yet."));
 		console.log(pc.dim("  Run `review` again after your next change to see a diff."));
-		return capture.missing.length > 0 ? 1 : 0;
+		return { ...result, code: capture.missing.length > 0 ? 1 : 0 };
 	}
 
 	const report = diffVersions(
@@ -82,6 +176,52 @@ export async function review(opts: ReviewOptions): Promise<number> {
 	}
 
 	// Non-zero if capture failed OR visual changes were detected.
-	if (capture.missing.length > 0 || report.hasChanges) return 1;
-	return 0;
+	const code = capture.missing.length > 0 || report.hasChanges ? 1 : 0;
+	return { ...result, code, diff: { from: baseline.key, report } };
+}
+
+function summarize(report: DiffReport): string {
+	if (!report.hasChanges) return "No visual changes";
+	const counts = [
+		report.changedCount && `${report.changedCount} changed`,
+		report.addedCount && `${report.addedCount} added`,
+		report.removedCount && `${report.removedCount} removed`,
+	].filter(Boolean);
+	const causes = report.correlation?.causes.length;
+	return `${counts.join(", ") || "Visual changes"}${causes ? `, traced to ${causes} changed line${causes === 1 ? "" : "s"}` : ""}`;
+}
+
+function notifyReviewed(outcome: Outcome): void {
+	const project = path.basename(outcome.paths.root);
+	const failed = outcome.failedCount
+		? ` ${outcome.failedCount} page${outcome.failedCount === 1 ? "" : "s"} failed to capture.`
+		: "";
+	if (!outcome.diff) {
+		notify({
+			title: `tunnelvision · ${project}`,
+			subtitle: `Baseline captured at ${outcome.to}`,
+			body: `${outcome.pageCount} pages captured; the next review diffs against them.${failed}`,
+		});
+		return;
+	}
+	const { from, report } = outcome.diff;
+	const root = outcome.paths.root;
+	const actions: NotificationAction[] = [
+		{
+			id: "inspector",
+			title: "Open in inspector",
+			argv: [process.execPath, CLI, "inspector", "--open", "--from", from, "--to", outcome.to],
+			cwd: root,
+			log: path.join(outcome.paths.dir, "inspector.log"),
+		},
+	];
+	if (findSandhog()) {
+		actions.push({ id: "sandhog", title: "Open in sandhog", argv: ["/usr/bin/open", sandhogLink(root, from, outcome.to)] });
+	}
+	notify({
+		title: `tunnelvision · ${project}`,
+		subtitle: `${from} → ${outcome.to}`,
+		body: `${summarize(report)}.${failed}`,
+		actions,
+	});
 }

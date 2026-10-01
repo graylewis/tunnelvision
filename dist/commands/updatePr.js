@@ -130,6 +130,9 @@ const VIA = {
     jsx: "this is the element's JSX line",
     copy: "this line has the element's changed copy",
     "knock-on": "moved or resized by a change this line made",
+    new: "a new element",
+    removed: "a removed element",
+    inside: "inside a new or removed element this line caused",
 };
 const MAX_LISTED = 25;
 const MAX_PROPS = 6;
@@ -225,9 +228,12 @@ function codeFirstAnchors(data, lines) {
             cause,
         });
     }
+    const sites = c.renderSites ?? [];
+    const fresh = sites.reduce((n, s) => n + s.effects.filter((e) => e.via === "new" || e.via === "removed").length, 0);
     const parts = [
         `${c.causes.length} changed lines caused visual changes`,
         `${offDiff} outside the PR diff`,
+        `${fresh} new or removed elements from ${sites.length} render sites (inspector only)`,
         `${c.unexplained.length} unexplained and ${c.invisible.length} invisible changes (inspector only)`,
     ];
     return { anchors, summary: parts.join(" · ") };

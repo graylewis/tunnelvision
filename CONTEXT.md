@@ -9,7 +9,7 @@ One capture of every page, keyed by the git commit it was taken at (suffixed `-d
 _Avoid_: Snapshot, build
 
 **Page**:
-One URL from the sitemap, captured once per version.
+One URL from the app's file-based routes (Next.js and Astro) or, for any other app, from its sitemap, captured once per version.
 _Avoid_: Route, screen
 
 **Element**:
@@ -49,6 +49,18 @@ _Avoid_: Culprit, source (source already means an element's JSX location)
 **Knock-on effect**:
 A visual change on an element whose own tracked properties didn't change, attributed to the nearest ancestor or earlier sibling that did change.
 _Avoid_: Displacement, side effect
+
+**Direct effect**:
+A visual change a cause explains other than as a knock-on effect: the cause reaches the element through its own winning declarations (directly, by inheritance, or via a custom property), through a selector change, or through its own JSX or text.
+_Avoid_: Own change, primary change
+
+**Origin**:
+A visual change where a cause first lands: a direct effect other than by inheritance, or an inherited one where no captured ancestor is a direct effect of the same cause.
+_Avoid_: Direct change, root change, primary change
+
+**Downstream change**:
+A visual change with causes that is not an origin: every cause reaches it as a knock-on effect or by inheritance below an origin.
+_Avoid_: Follow-on change, secondary change
 
 **Unexplained visual change**:
 A visual change with no cause among the changed lines.

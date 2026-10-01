@@ -14,7 +14,7 @@ function joinBase(baseUrl, pathAndQuery) {
     const p = pathAndQuery.startsWith("/") ? pathAndQuery : `/${pathAndQuery}`;
     return `${base}${p}`;
 }
-/** Turn sitemap <loc> entries into concrete pages to screenshot. */
+/** Turn sitemap <loc> entries or route paths into concrete pages to screenshot. */
 export function resolvePages(locs, config) {
     const pathList = locs.map(pathOf);
     // Filenames are keyed off the path so the same page lines up across versions.

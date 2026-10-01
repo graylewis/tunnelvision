@@ -2,7 +2,7 @@ import type { Config } from "./config.js";
 import { assignFilenames } from "./slug.js";
 
 export interface Page {
-	/** The original <loc> from the sitemap. */
+	/** The original <loc> from the sitemap, or a Next.js route path. */
 	source: string;
 	/** Path-only portion used for slugging and re-hosting. */
 	pathAndQuery: string;
@@ -28,7 +28,7 @@ function joinBase(baseUrl: string, pathAndQuery: string): string {
 	return `${base}${p}`;
 }
 
-/** Turn sitemap <loc> entries into concrete pages to screenshot. */
+/** Turn sitemap <loc> entries or route paths into concrete pages to screenshot. */
 export function resolvePages(locs: string[], config: Config): Page[] {
 	const pathList = locs.map(pathOf);
 	// Filenames are keyed off the path so the same page lines up across versions.

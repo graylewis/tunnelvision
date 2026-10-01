@@ -1,13 +1,13 @@
 ---
 name: setup-tunnelvision
-description: Set up tunnelvision in this project — install shot-scraper if it's missing, check the sitemap and source-map settings, run `tunnelvision init`, and capture a baseline. Use when the user asks to set up, install, initialise or configure tunnelvision, or to take a first baseline capture.
+description: Set up tunnelvision in this project — install shot-scraper if it's missing, check where Pages come from (Next.js/Astro routes or the sitemap) and the source-map settings, run `tunnelvision init`, and capture a baseline. Use when the user asks to set up, install, initialise or configure tunnelvision, or to take a first baseline capture.
 ---
 
 # Set up tunnelvision
 
 Get this project from "tunnelvision is in `package.json`" to "a baseline Version is captured", fixing whatever `tunnelvision doctor` complains about on the way.
 
-Vocabulary: a **Version** is one capture of every page, keyed by the git commit it was taken at (suffixed `-dirty` for uncommitted work). A **Page** is one URL from the sitemap. Everything lives under `.tunnelvision/`.
+Vocabulary: a **Version** is one capture of every page, keyed by the git commit it was taken at (suffixed `-dirty` for uncommitted work). A **Page** is one URL from the app's Next.js or Astro routes, or from the sitemap. Everything lives under `.tunnelvision/`.
 
 Work through the steps in order. Ask the user one question at a time, only when a step needs a decision you can't make from the repo. Don't delete files or start long-running processes without asking.
 
@@ -23,7 +23,7 @@ If `node_modules/.bin/tunnelvision` doesn't exist, install it as a dev dependenc
 tunnelvision doctor
 ```
 
-It reports, one line each: `shot-scraper`, `playwright (for per-element captures)`, `config`, `git repo`, `sitemap`, and a `!` warning about CSS source maps when they're needed and off. Fix each ✗ with the matching step below, then re-run the doctor until it prints `All good.` (the `config` line stays ✗ until step 6 — that's expected).
+It reports, one line each: `shot-scraper`, `playwright (for per-element captures)`, `config`, `git repo`, `next.js routes`, `astro routes` or `sitemap`, and a `!` warning about CSS source maps when they're needed and off. Fix each ✗ with the matching step below, then re-run the doctor until it prints `All good.` (the `config` line stays ✗ until step 6 — that's expected).
 
 ## 3. shot-scraper
 
@@ -46,9 +46,11 @@ Re-run the doctor: both the `shot-scraper` and `playwright` lines should now be 
 
 ## 4. Sitemap
 
-tunnelvision takes its Pages from the one `sitemap*.xml` in the project (searched recursively, skipping `node_modules`, `.git`, build dirs and dot-dirs). Only the *path* of each `<loc>` is used; the host is replaced by the base URL.
+tunnelvision supports file-based routing for Next.js and Astro. In those projects it reads Pages from the route files (Next `app/` and `pages/`, Astro `src/pages/`), and the doctor prints a `next.js routes` or `astro routes` line instead of `sitemap`. Routes that need parameters (`[slug]`, `[...slug]`) are filled in from the sitemap's matching URLs if the project has exactly one sitemap. The doctor lists the dynamic routes left out, and any sitemap URLs that match no route file (rewrites, or routes injected by integrations like Starlight). If it lists some the user cares about, add concrete URLs for the dynamic routes to a sitemap as below; otherwise skip to step 5.
 
-- **None found**: work out the app's routes from the framework (Next `app/`/`pages/`, React Router / TanStack routes, Astro `src/pages/`, SvelteKit `src/routes/`, or just `/` for a single-page app), show the list to the user, and write `public/sitemap.xml` (or wherever static files live):
+Everywhere else tunnelvision takes its Pages from the one `sitemap*.xml` in the project (searched recursively, skipping `node_modules`, `.git`, build dirs and dot-dirs). Only the *path* of each `<loc>` is used; the host is replaced by the base URL.
+
+- **None found**: work out the app's routes from the framework (React Router / TanStack routes, SvelteKit `src/routes/`, or just `/` for a single-page app), show the list to the user, and write `public/sitemap.xml` (or wherever static files live):
   ```xml
   <?xml version="1.0" encoding="UTF-8"?>
   <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">

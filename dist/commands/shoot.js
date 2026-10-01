@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { applyOverrides, loadConfig } from "../config.js";
 import { resolvePaths, versionDir } from "../paths.js";
 import { resolveVersion, snapshotTree } from "../git.js";
-import { findSitemaps, parseSitemap } from "../sitemap.js";
+import { discoverPages } from "../pagesource.js";
 import { resolvePages } from "../pages.js";
 import { buildShotsYaml, requireShotScraper, runMulti } from "../shotscraper.js";
 import { capturePages } from "../playwright.js";
@@ -15,28 +15,22 @@ import { STYLE_MANIFEST_VERSION, writeStyleManifest } from "../styles.js";
 import { metaFromInfo, writeMeta } from "../versions.js";
 import { stabilizeScript } from "../stabilize.js";
 import { resolveComponents, SourceResolver } from "../reactsource.js";
-/** Load config + sitemap + resolve pages and the version key. Throws on fatal problems. */
+/** Load config + discover and resolve pages and the version key. Throws on fatal problems. */
 export async function prepareCapture(opts) {
     const paths = resolvePaths(opts.root);
     const base = loadConfig(paths);
     const config = applyOverrides(base, opts);
-    // Locate the sitemap.
-    const sitemaps = findSitemaps(opts.root);
-    if (sitemaps.length === 0) {
-        throw new Error(`No sitemap found under ${opts.root}. tunnelvision searches recursively for sitemap*.xml.`);
-    }
-    if (sitemaps.length > 1) {
-        const list = sitemaps.map((s) => `  - ${path.relative(opts.root, s)}`).join("\n");
-        throw new Error(`Multiple sitemaps found; please remove or consolidate so exactly one remains:\n${list}`);
-    }
-    const locs = parseSitemap(sitemaps[0]);
-    if (locs.length === 0) {
-        throw new Error(`Sitemap ${path.relative(opts.root, sitemaps[0])} contains no <loc> URLs.`);
-    }
-    const pages = resolvePages(locs, config);
+    const source = discoverPages(opts.root);
+    const pages = resolvePages(source.locs, config);
     const version = resolveVersion(opts.root);
     const outputDir = versionDir(paths, version.key);
-    return { paths, config, version, pages, outputDir, byElement: !opts.onlyPages };
+    return { paths, config, version, pages, source, outputDir, byElement: !opts.onlyPages };
+}
+/** Say where the pages came from, and anything left out. */
+export function logSource(ctx) {
+    console.log(pc.dim(`  pages from ${ctx.source.from}`));
+    for (const note of ctx.source.notes)
+        console.log(pc.yellow(`  ${note}`));
 }
 /** Fail fast if the base URL is not reachable. */
 async function assertReachable(baseUrl) {
@@ -232,6 +226,7 @@ export async function shoot(opts) {
     const ctx = await prepareCapture(opts);
     await assertReachable(ctx.config.baseUrl);
     console.log(pc.bold(`Shooting ${ctx.pages.length} pages`) + pc.dim(` → version ${ctx.version.key}`));
+    logSource(ctx);
     if (ctx.version.dirty) {
         console.log(pc.yellow("  working tree is dirty; stored under a -dirty key"));
     }

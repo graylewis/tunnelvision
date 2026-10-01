@@ -4,7 +4,7 @@ import { diffVersions } from "../diffengine.js";
 import { addCorrelation } from "../correlate.js";
 import { latestExcluding } from "../versions.js";
 import { printReport, writeJsonReport } from "../report.js";
-import { prepareCapture, runCapture } from "./shoot.js";
+import { logSource, prepareCapture, runCapture } from "./shoot.js";
 /** Fail fast if the base URL is not reachable (mirrors shoot). */
 async function assertReachable(baseUrl) {
     try {
@@ -24,6 +24,7 @@ export async function review(opts) {
     // isn't the current key (the current version may not exist on disk yet).
     const baseline = latestExcluding(ctx.paths, ctx.version.key);
     console.log(pc.bold(`Reviewing ${ctx.pages.length} pages`) + pc.dim(` → version ${ctx.version.key}`));
+    logSource(ctx);
     if (ctx.version.dirty) {
         console.log(pc.yellow("  working tree is dirty; stored under a -dirty key"));
     }

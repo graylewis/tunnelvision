@@ -7,7 +7,7 @@ tunnelvision is installed directly into your repo, and all of the artifacts nece
 ### steps to set up:
 1. install shot-scraper, ensure that it's on your path
 2. install tunnelvision into your repo.
-3. ensure that you have a valid sitemap.xml or tunnelvision.json "sitemap" field.
+3. ensure that you have a valid sitemap.xml or tunnelvision.json "sitemap" field. Next.js and Astro projects don't need one: their pages are read from their file-based routes (see "Where pages come from" below).
 4. `npx tunnelvision init` in your repo.
 5. `npx tunnelvision review` to create a baseline 'commit' of how your app looks.
 6. whenever you want to review your changes, use `npx tunnelvision review` to create a new point-in-time, and generate a diff for you or your agent`
@@ -25,8 +25,8 @@ if your app is behind an auth wall, use --auth to interactively log into your ap
 # agent-written docs
 ## tunnelvision
 
-Screenshot every page of your app from its sitemap, version the shots by git
-commit, and diff them visually with [pixelmatch](https://github.com/mapbox/pixelmatch).
+Screenshot every page of your app (from its Next.js or Astro routes, or its
+sitemap), version the shots by git commit, and diff them visually with [pixelmatch](https://github.com/mapbox/pixelmatch).
 
 tunnelvision is a Node/TypeScript CLI that wraps
 [shot-scraper](https://shot-scraper.datasette.io/) for capture. Install it in
@@ -117,14 +117,49 @@ gets a symlink there (a junction on Windows).
 
 Re-run `tunnelvision skills` after upgrading to pick up new versions.
 
+## Where pages come from
+
+tunnelvision supports file-based routing for **Next.js** and **Astro**. A
+project counts as one when it has the framework's config file
+(`next.config.*`, `astro.config.*`) or depends on the framework in
+`package.json`. Its pages are then read from its route files, and the sitemap
+is used only to fill in dynamic routes.
+
+| Framework | Route files | Not pages |
+| --- | --- | --- |
+| Next.js (App Router) | every `page.*` under `app/` (or `src/app/`) | route groups `(group)` and slots `@slot` add no URL segment; private folders `_x`, intercepting routes `(..)x` and `route.ts` handlers are skipped |
+| Next.js (Pages Router) | every page file under `pages/` (or `src/pages/`), `index` mapping to its folder | `api/`, `_app`, `_document`, `_error`, `404`, `500` |
+| Astro | every `.astro`, `.md`, `.mdx` and `.html` file under `src/pages/` (or `<srcDir>/pages/`), `index` mapping to its folder | `.js`/`.ts` endpoints, anything starting with `_`, `404`, `500` |
+
+Next's `pageExtensions` and Astro's `srcDir` are read from the config when
+they're written as literals. A root `app/` or `pages/` wins over the `src/`
+one, as in Next.
+
+**Dynamic routes** (`[slug]`, `[...slug]`, `[[...slug]]`, Astro's
+`post-[id]`) have no URLs of their own in the files, so they're filled in with
+the sitemap's matching URLs when the project has exactly one `sitemap*.xml`.
+Any dynamic route with no matching URLs is left out, and `shoot`, `review` and
+`doctor` say which. So do sitemap URLs that match no route file: rewrites,
+redirects, and routes added by integrations (like Starlight's docs) aren't in
+the route files. To capture one of those, the project has to drop back to the
+sitemap. That isn't configurable yet.
+
+Every other project takes its pages from its sitemap: tunnelvision searches
+the project recursively for `sitemap*.xml` (skipping `node_modules`, `.git`,
+build dirs). If it finds more than one, it stops rather than guess.
+
+Not supported: a framework app in a subfolder of the directory tunnelvision
+runs in (a monorepo's `apps/web`), and Next's `basePath`, Astro's `base` and
+i18n prefixes. If you use a base path, put it in `baseUrl`.
+
 ## How it works
 
-- **Sitemap discovery** — recursively searches the project for `sitemap*.xml`
-  (skipping `node_modules`, `.git`, build dirs). If more than one is found it
-  errors so nothing is guessed.
-- **Target URLs** — takes the *path* of each `<loc>` and prepends your configured
-  `baseUrl` (default `http://localhost:3000`), so you screenshot local dev
-  regardless of the host in the sitemap.
+- **Page discovery** — Next.js and Astro projects' pages come from their
+  file-based routes; everything else's from the one `sitemap*.xml`. See
+  [Where pages come from](#where-pages-come-from).
+- **Target URLs** — takes the *path* of each route or `<loc>` and prepends your
+  configured `baseUrl` (default `http://localhost:3000`), so you screenshot local
+  dev regardless of the host in the sitemap.
 - **Versioning** — each capture is stored under `.tunnelvision/versions/<key>/`.
   The key is the short git SHA of `HEAD` (suffixed `-dirty` when the working tree
   has uncommitted changes), or a timestamp when you're not in a git repo.
@@ -144,7 +179,7 @@ Re-run `tunnelvision skills` after upgrading to pick up new versions.
 | `tunnelvision diff [from] [to]` | Diff two versions. Defaults to current-vs-previous. |
 | `tunnelvision review` | Capture the current version, then diff it against the previous one. |
 | `tunnelvision auth <url>` | Log in via a browser and save an auth context for authenticated screenshots. |
-| `tunnelvision doctor` | Check shot-scraper, git, config and sitemap. |
+| `tunnelvision doctor` | Check shot-scraper, git, config and pages (Next.js routes or sitemap). |
 | `tunnelvision clean` | Prune versions (`--keep <n>`), diffs (`--diffs`), or everything (`--all`). |
 | `tunnelvision install-hook` | Install an opt-in git `post-commit` hook that runs `review`. |
 | `tunnelvision skills` | Install the agent skills (`/setup-tunnelvision`, `/test-tunnelvision`) into `.agents/skills/`, linked from `.claude/skills/`. |

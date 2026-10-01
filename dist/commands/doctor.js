@@ -3,7 +3,8 @@ import { configExists } from "../config.js";
 import { resolvePaths } from "../paths.js";
 import { isGitRepo } from "../git.js";
 import { checkShotScraper } from "../shotscraper.js";
-import { findSitemaps } from "../sitemap.js";
+import { discoverPages } from "../pagesource.js";
+import { FRAMEWORK_NAMES } from "../fileroutes.js";
 import { findPlaywrightPython } from "../playwright.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -67,16 +68,16 @@ export async function doctor(opts) {
     // git
     const git = isGitRepo(opts.root);
     line(git, "git repo", git ? "versions keyed by commit SHA" : "will use timestamp keys");
-    // sitemap
-    const sitemaps = findSitemaps(opts.root);
-    if (sitemaps.length === 1) {
-        line(true, "sitemap", path.relative(opts.root, sitemaps[0]));
+    // pages: Next.js / Astro routes, else the sitemap
+    try {
+        const source = discoverPages(opts.root);
+        const label = source.kind === "sitemap" ? "sitemap" : `${FRAMEWORK_NAMES[source.kind].toLowerCase()} routes`;
+        line(true, label, `${source.locs.length} pages from ${source.from}`);
+        for (const note of source.notes)
+            console.log(pc.dim(`      ${note}`));
     }
-    else if (sitemaps.length === 0) {
-        line(false, "sitemap", "none found (searched recursively for sitemap*.xml)");
-    }
-    else {
-        line(false, "sitemap", `${sitemaps.length} found — remove extras so exactly one remains`);
+    catch (err) {
+        line(false, "sitemap", err.message.split("\n")[0]);
     }
     // CSS source maps (tracing visual changes back to CSS lines)
     const css = cssSourcemapProblem(opts.root);

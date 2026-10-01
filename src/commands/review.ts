@@ -5,7 +5,7 @@ import { diffVersions } from "../diffengine.js";
 import { addCorrelation } from "../correlate.js";
 import { latestExcluding } from "../versions.js";
 import { printReport, writeJsonReport } from "../report.js";
-import { prepareCapture, runCapture } from "./shoot.js";
+import { logSource, prepareCapture, runCapture } from "./shoot.js";
 
 export interface ReviewOptions extends Overrides {
 	root: string;
@@ -40,6 +40,7 @@ export async function review(opts: ReviewOptions): Promise<number> {
 	console.log(
 		pc.bold(`Reviewing ${ctx.pages.length} pages`) + pc.dim(` → version ${ctx.version.key}`),
 	);
+	logSource(ctx);
 	if (ctx.version.dirty) {
 		console.log(pc.yellow("  working tree is dirty; stored under a -dirty key"));
 	}

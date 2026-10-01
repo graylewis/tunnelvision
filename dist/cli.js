@@ -120,7 +120,7 @@ program
     .action((url, opts) => run(() => auth({ root: ROOT, url, out: opts.out })));
 program
     .command("doctor")
-    .description("Check that shot-scraper, git, config and sitemap are ready")
+    .description("Check that shot-scraper, git, config and pages (routes or sitemap) are ready")
     .action(() => run(() => doctor({ root: ROOT })));
 program
     .command("clean")

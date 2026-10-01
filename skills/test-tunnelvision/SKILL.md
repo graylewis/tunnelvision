@@ -1,6 +1,6 @@
 ---
 name: test-tunnelvision
-description: Check that tunnelvision works on this app — make a throwaway branch with known subtle and significant visual changes, capture and diff it, then verify tunnelvision reported exactly those changes and nothing else. Flags false positives from animations and from regions that hadn't loaded. Use when the user asks to test, validate, or trust tunnelvision's setup, or asks why a review is noisy.
+description: Check that tunnelvision works on this app — make a throwaway branch with known subtle and significant visual changes, capture and diff it, then verify tunnelvision reported exactly those changes and nothing else. Flags false positives from animations, from regions that hadn't loaded, and from dev tool overlays (only Astro and TanStack ones are hidden automatically). Use when the user asks to test, validate, or trust tunnelvision's setup, or asks why a review is noisy.
 ---
 
 # Test tunnelvision on this app
@@ -23,6 +23,8 @@ Stop and say what's missing rather than working around it:
 - `git status --porcelain` is empty. Ask the user to commit or stash; don't stash for them.
 - Note the current branch (or detached SHA) — you'll return to it.
 
+Then check for **dev tool overlays**, which don't block the test but must be reported. Dev servers often float extra UI over the page (toolbars, badges, inspector pills, debug panels) that has nothing to do with the app's design. It lands in the screenshot, drifts between captures of identical code, and shows up as unexplained visual changes. tunnelvision hides these itself, but **only for Astro (the dev toolbar) and TanStack (Devtools, Query Devtools, Router Devtools)**. Anything else gets through. Look in `package.json` (and the framework config) for other dev overlays, for example the Next.js dev indicator, Nuxt DevTools, `vite-plugin-vue-devtools`, the Svelte inspector, `@vercel/toolbar`, `react-scan`, Sentry Spotlight, or Redux/Jotai/XState devtools panels. Write down each one, whether tunnelvision handles it, and whether it's on by default in dev. Section 6 reports them.
+
 Read `.tunnelvision/versions/*/meta.json` and pick the **baseline**: the Version whose `sha` matches `git rev-parse --short HEAD` and isn't `dirty`. If there isn't one, run `tunnelvision shoot` now so the comparison contains only what you're about to change.
 
 ## 2. Test branch and noise floor
@@ -34,7 +36,9 @@ tunnelvision shoot
 tunnelvision diff <baseline> <noise-key>
 ```
 
-Same code, new key, second capture. Anything this diff reports is **noise** — a change tunnelvision sees between two captures of identical code — and it's the cleanest evidence of the two false-positive classes below. Ideal output: every page `unchanged`, no Causes, no unexplained changes. Keep the list of noisy elements; step 5 subtracts them.
+Same code, new key, second capture. Anything this diff reports is **noise** — a change tunnelvision sees between two captures of identical code — and it's the cleanest evidence of the false-positive classes below. Ideal output: every page `unchanged`, no Causes, no unexplained changes. Keep the list of noisy elements; step 5 subtracts them.
+
+Also open a few `page.png` files from the noise-floor Version and look for dev tool overlays: a pill, badge, logo button or panel pinned to a viewport corner or edge, often sitting partway down a full-page screenshot. Look for them in `elements.json` too, as direct `<body>` children with dev-ish tags or classes (`nextjs-portal`, `vercel-live-feedback`, anything containing `devtools`, `toolbar`, `inspector`). An unhandled overlay can still show up here even if `package.json` looked clean, and the reverse holds too: an Astro or TanStack overlay that tunnelvision missed. Add anything you find to the list from step 1.
 
 ## 3. Plant the changes
 
@@ -86,7 +90,7 @@ For each row, find its `path:line` in `correlation.causes[]` (deleted lines have
 
 ### Precision — anything reported that wasn't planted?
 
-Every entry in `correlation.unexplained[]`, every Cause not in the manifest, and every `added`/`removed` element not explained by a planted removal is a false positive. First remove anything that also showed up in the step 2 noise floor. Then classify what's left into one of the two classes below or "genuine" (e.g. a knock-on you didn't predict — those are correct, not false positives).
+Every entry in `correlation.unexplained[]`, every Cause not in the manifest, and every `added`/`removed` element not explained by a planted removal is a false positive. First remove anything that also showed up in the step 2 noise floor. Then classify what's left into one of the three classes below or "genuine" (e.g. a knock-on you didn't predict — those are correct, not false positives).
 
 ### False-positive class A: animations
 
@@ -114,14 +118,28 @@ Signatures:
 
 Remedies: raise `wait` for that page (`pages["/path"].wait`, e.g. 3000) or globally; better, a `pages["/path"].waitFor` predicate on the last thing to load, e.g. `document.querySelectorAll('.orders tbody tr').length > 0` or `!document.querySelector('.skeleton')`; for images, `Array.from(document.images).every(i => i.complete)`. These need a recapture to take effect (`shoot`, not `diff`).
 
+### False-positive class C: dev tool overlays
+
+UI that a dev tool injects into the page, not part of the app. tunnelvision hides the Astro dev toolbar and TanStack's Devtools, Query Devtools and Router Devtools before capturing. Every other dev tool is captured like the app's own UI.
+
+Signatures:
+
+- An `unexplained` or `added`/`removed` element on **every page**, often in the noise floor too, with no planted change on it.
+- In `page.png`, a small fixed element in a viewport corner or edge, at a different spot or state in each capture (collapsed and expanded, or at a different scroll offset in the full-page shot).
+- A tag or class from the tool (`nextjs-portal`, `vercel-live-feedback`, `devtools`, `toolbar`, `inspector`), usually a direct `<body>` child, often a custom element with a shadow root.
+- Knock-on effects on the app's own elements are rare, since overlays are usually `position: fixed`. If you see them, the tool is injecting into the layout (a top bar pushing the page down).
+
+Remedies: turn the tool off for the dev server that tunnelvision captures, using the tool's own option or an env flag (e.g. Next's `devIndicators: false`, Nuxt's `devtools: { enabled: false }`, or rendering the devtools component only when an env var isn't set). tunnelvision has no config option for hiding arbitrary selectors. If the tool is common, suggest the user ask for it to be added to tunnelvision's built-in list (`DEVTOOLS_OVERLAY_SELECTORS` in `src/stabilize.ts`). Needs a recapture.
+
 ## 6. Report
 
 Give the user, in this order:
 
-1. **Verdict** — one line: found *n/m* planted changes, *k* false positives (A: …, B: …), noise floor clean / noisy.
-2. **Recall table** — manifest row, outcome, note.
-3. **False positives** — element, page, class, evidence (what you saw in the image), proposed remedy.
-4. **Config changes** — the exact `.tunnelvision/config.json` additions you'd make. Offer to apply them and re-run: `diff --threshold` re-uses the stored captures; `wait`/`settle`/`waitFor` changes need `shoot` again on the test commit, then another diff. Do one iteration if the user agrees, and report whether the false positives went away.
+1. **Verdict** — one line: found *n/m* planted changes, *k* false positives (A: …, B: …, C: …), noise floor clean / noisy.
+2. **Dev tools detected** — always include this section, even if it's just "none found". List each dev tool overlay found in steps 1, 2 or 5, say whether tunnelvision hides it automatically (only Astro and TanStack) or it got through, and whether it showed up in the captures. Point out clearly any that got through: they'll add noise to every future review until they're turned off for captures. Note that tunnelvision only hides Astro and TanStack overlays, so tools you didn't spot may still sneak through.
+3. **Recall table** — manifest row, outcome, note.
+4. **False positives** — element, page, class, evidence (what you saw in the image), proposed remedy.
+5. **Config changes** — the exact `.tunnelvision/config.json` additions you'd make. Offer to apply them and re-run: `diff --threshold` re-uses the stored captures; `wait`/`settle`/`waitFor` changes need `shoot` again on the test commit, then another diff. Do one iteration if the user agrees, and report whether the false positives went away.
 
 Be plain about failures: a missed subtle change or a noisy page is the result, not something to soften.
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { correlate, type CorrelateInput } from "../src/correlate.js";
+import { correlate, utilityClass, type CorrelateInput } from "../src/correlate.js";
 import type { PageDiff } from "../src/diffengine.js";
 import type { ElementManifest, ElementNode } from "../src/elements.js";
 import type { FileChanges } from "../src/git.js";
@@ -462,4 +462,85 @@ test("copy that too many changed lines have is a coincidence, not a cause", () =
 	);
 	assert.deepEqual(result.causes, []);
 	assert.equal(result.unexplained.length, 1);
+});
+
+// Utility class swaps are looked up by class name in changed lines.
+const gridColumns = (selector: string, value: string): StyleRule => ({ selector, loc: null, decls: [{ name: "grid-template-columns", value, loc: null }] });
+const gridSwap = (from: string, to: string, changes: Record<string, { added?: Line[]; deleted?: Line[] }>) =>
+	correlate(
+		input({
+			from: { rules: [gridColumns(from, "repeat(4, 1fr)")], elements: { "main/card": { computed: { "grid-template-columns": "4" }, winners: { "grid-template-columns": winner(0) } } } },
+			to: { rules: [gridColumns(to, "repeat(2, 1fr)")], elements: { "main/card": { computed: { "grid-template-columns": "2" }, winners: { "grid-template-columns": winner(0) } } } },
+			changed: { "main/card": "size-mismatch" },
+			changes,
+		}),
+	);
+const where = (result: ReturnType<typeof correlate>) => result.causes.map((c) => [c.path, c.line, c.side, c.kind]);
+
+test("a single-class selector names the class as written in markup", () => {
+	assert.equal(utilityClass(".md\\:grid-cols-4"), "md:grid-cols-4");
+	assert.equal(utilityClass(".\\32 xl\\:p-4"), "2xl:p-4");
+	assert.equal(utilityClass(".w-1\\/2"), "w-1/2");
+	assert.equal(utilityClass(".grid-cols-\\[repeat\\(2\\,1fr\\)\\]"), "grid-cols-[repeat(2,1fr)]");
+	assert.equal(utilityClass(".hover\\:underline:hover"), "hover:underline");
+	assert.equal(utilityClass(".dark\\:bg-black:where(.dark, .dark *)"), "dark:bg-black");
+	for (const s of [".a .b", ".a.b", "div.a", ".a > .b", ".a, .b", "default", "style attribute", "*"]) assert.equal(utilityClass(s), null, s);
+});
+
+test("a class swapped on a line other than the element's own is found by class name", () => {
+	const result = gridSwap(".md\\:grid-cols-4", ".md\\:grid-cols-2", {
+		"src/App.jsx": { deleted: [[14, '    className="grid md:grid-cols-4"']], added: [[14, '    className="grid md:grid-cols-2"']] },
+	});
+	assert.deepEqual(where(result), [["src/App.jsx", 14, "RIGHT", "jsx"]]);
+	assert.equal(result.causes[0].effects[0].via, "jsx");
+	assert.equal(result.causes[0].text, 'className="grid md:grid-cols-2"');
+});
+
+test("a class added at a component's call site is found there, though the lost class is in the component", () => {
+	const result = gridSwap(".rounded-md", ".rounded-full", {
+		"src/Footer.jsx": { deleted: [[210, 'className="h-10 sm:h-auto"']], added: [[210, 'className="h-10 rounded-full sm:h-auto"']] },
+	});
+	assert.deepEqual(where(result), [["src/Footer.jsx", 210, "RIGHT", "jsx"]]);
+});
+
+test("a class only removed is found on the deleted line", () => {
+	const result = gridSwap(".md\\:grid-cols-4", "*", { "src/App.jsx": { deleted: [[14, 'className="grid md:grid-cols-4"']], added: [[14, 'className="grid"']] } });
+	assert.deepEqual(where(result), [["src/App.jsx", 14, "LEFT", "jsx"]]);
+});
+
+test("compound and descendant selectors aren't looked up by class", () => {
+	const result = gridSwap(".card .cols-4", ".card .cols-2", { "src/App.jsx": { deleted: [[14, 'className="cols-4"']], added: [[14, 'className="cols-2"']] } });
+	assert.deepEqual(result.causes, []);
+	assert.equal(result.unexplained.length, 1);
+});
+
+test("when several files have the class, the element's own file wins", () => {
+	const result = gridSwap(".md\\:grid-cols-4", ".md\\:grid-cols-2", {
+		"src/Other.jsx": { added: [[3, '"md:grid-cols-2"']] },
+		"src/App.jsx": { added: [[14, 'className="grid md:grid-cols-2"']] },
+	});
+	assert.deepEqual(where(result), [["src/App.jsx", 14, "RIGHT", "jsx"]]);
+});
+
+test("a class that too many changed lines have is a coincidence, not a cause", () => {
+	const result = gridSwap(".md\\:grid-cols-4", ".md\\:grid-cols-2", {
+		"src/Other.jsx": { added: [1, 2, 3, 4, 5, 6].map((n): Line => [n, `<div className="md:grid-cols-2" />`]) },
+	});
+	assert.deepEqual(result.causes, []);
+});
+
+test("stylesheets aren't searched for class names", () => {
+	const result = gridSwap(".md\\:grid-cols-4", ".md\\:grid-cols-2", { "src/styles.css": { added: [[40, ".nav { @apply md:grid-cols-2 }"]] } });
+	assert.deepEqual(result.causes.filter((c) => c.kind === "jsx"), []);
+});
+
+test("a class kept on an edited line isn't what changed", () => {
+	const result = gridSwap(".text-meta", ".md\\:grid-cols-2", {
+		"src/App.jsx": { deleted: [[14, 'className="text-meta grid md:grid-cols-4"']], added: [[14, 'className="text-meta grid md:grid-cols-2"']] },
+	});
+	assert.deepEqual(where(result), [["src/App.jsx", 14, "RIGHT", "jsx"]]);
+	const kept = gridSwap(".text-meta", ".font-mono", {
+		"src/App.jsx": { deleted: [[14, 'className="text-meta grid"']], added: [[14, 'className="text-meta grid gap-2"']] },
+	});
+	assert.deepEqual(kept.causes, []);
 });

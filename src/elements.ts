@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { PNG } from "pngjs";
+import { FLOW_PROPERTIES } from "./logical.js";
 import type { ComponentFile } from "./reactsource.js";
 
 /**
@@ -98,7 +99,7 @@ export interface RawElement {
 	box: ElementRect;
 	/** Null when the element isn't rendered by React. */
 	react: ReactInfo | null;
-	/** Computed values of the tracked properties. */
+	/** Computed values of the tracked properties, plus `FLOW_PROPERTIES`. */
 	computed?: Record<string, string>;
 	/** The element's own text (see `ElementNode.text`). */
 	text?: string;
@@ -163,12 +164,14 @@ export const MANIFEST_VERSION = 3;
  * has loaded and settled. Returns an array of top-level block elements
  * (children of <body>), each with nested `children`. `attributes` are the
  * configured match attributes to record on each element, and `properties` the
- * tracked CSS properties whose computed values are recorded. `includeHidden`
+ * tracked CSS properties whose computed values are recorded (along with
+ * `writing-mode` and `direction`, which the cascade needs to map logical
+ * properties to physical ones). `includeHidden`
  * keeps elements with no painted pixels, cropped by their full box.
  */
 export function extractScript(attributes: string[], properties: string[], includeHidden = false): string {
 	return EXTRACT_JS.replace("__MATCH_ATTRIBUTES__", JSON.stringify(attributes))
-		.replace("__TRACKED_PROPERTIES__", JSON.stringify(properties))
+		.replace("__TRACKED_PROPERTIES__", JSON.stringify([...new Set([...properties, ...FLOW_PROPERTIES])]))
 		.replace("__INCLUDE_HIDDEN__", JSON.stringify(includeHidden));
 }
 

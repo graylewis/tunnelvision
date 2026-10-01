@@ -27,6 +27,16 @@ import { readStyleManifest, type DeclRef, type ElementStyles, type SourceLoc, ty
  * it was written (a JSX text line, a prop, a constants or translations file),
  * which the element's JSX line alone can't.
  *
+ * Likewise, when a property's winning rule switches to or from a
+ * single-class selector (a utility class: `.md\:grid-cols-4` to
+ * `.md\:grid-cols-2`), the class it lost is looked for among the tokens a
+ * file's deleted lines have more of than its added ones, and the class it
+ * gained the other way round, in any file but a stylesheet. A class that's on
+ * both sides of an edited line wasn't swapped there.
+ * That finds a class swap on whichever line wrote it (a `className` prop
+ * passed to a component, a `cn()` call), not just on the element's own JSX
+ * line, which for a shared component is inside the component.
+ *
  * Elements that changed without any tracked property changing are knock-on
  * effects of the nearest ancestor or earlier sibling that has a cause. What's
  * left over is reported as unexplained visual changes, and changed stylesheet
@@ -138,8 +148,8 @@ const STYLESHEET = /\.(css|scss|sass|less|styl|pcss|postcss)$/i;
 export const LAYOUT_PROPERTIES = new Set(["width", "height", "min-width", "min-height", "max-width", "max-height"]);
 /** Words too common to say which line some copy came from, unless nothing else changed. */
 const STOP_WORDS = new Set(["the", "and", "for", "you", "your", "are", "with", "this", "that", "from", "our", "was", "has", "have", "its"]);
-/** More changed lines than this containing an element's new copy is a coincidence, not a cause. */
-const MAX_COPY_LINES = 5;
+/** More changed lines than this containing an element's new copy or class is a coincidence, not a cause. */
+const MAX_MATCHING_LINES = 5;
 
 interface Candidate {
 	side: Side;
@@ -196,6 +206,27 @@ function gained(from: string[], to: string[]): string[] {
 	return [...out];
 }
 
+/** The tokens of a line of source that could be class names: runs between whitespace and quotes. */
+function tokens(text: string): string[] {
+	return text.split(/[\s"'`]+/).filter(Boolean);
+}
+
+/** `\:` to `:`, `\32 ` to `2`: a CSS identifier as written in markup. */
+function unescapeCss(ident: string): string {
+	return ident.replace(/\\([0-9a-fA-F]{1,6})[ \t\n\r\f]?|\\([\s\S])/g, (_, hex: string | undefined, ch: string | undefined) =>
+		hex ? String.fromCodePoint(parseInt(hex, 16)) : (ch ?? ""),
+	);
+}
+
+/** A single class, then any pseudo-classes and a pseudo-element: `.md\:p-4`, `.hover\:x:hover`, `.a::before`. */
+const SINGLE_CLASS = /^\.((?:\\[0-9a-fA-F]{1,6}[ \t\n\r\f]?|\\[^\n\r\f0-9a-fA-F]|[\w-]|[^\x00-\x7f])+)(?:::?[\w-]+(?:\([^()]*\))?)*$/;
+
+/** The class name a single-class selector targets, unescaped; null for any other selector. */
+export function utilityClass(selector: string): string | null {
+	const m = SINGLE_CLASS.exec(selector.trim());
+	return m ? unescapeCss(m[1]) : null;
+}
+
 /** The words worth searching changed lines for: the distinctive ones, or all of them if none are. */
 function searchTerms(ws: string[]): string[] {
 	const distinctive = ws.filter((w) => w.length >= 3 && !STOP_WORDS.has(w) && !/^\d+$/.test(w));
@@ -243,12 +274,21 @@ export function correlate(input: CorrelateInput): Correlation {
 		side === "RIGHT" ? Boolean(added.get(p)?.has(line)) : Boolean(deleted.get(p)?.lines.has(line));
 	const targetPath = (side: Side, p: string) => (side === "RIGHT" ? p : (deleted.get(p)?.path ?? p));
 
-	// Changed lines copy could be on, with their words: anything but stylesheets.
-	const copyLines: Record<Side, { path: string; line: number; text: string; words: Set<string> }[]> = { LEFT: [], RIGHT: [] };
+	// Changed lines copy or class names could be on, with their words: anything but stylesheets.
+	// `swapped` is the line's tokens the change added to its file (RIGHT) or removed from it (LEFT).
+	type SourceLine = { path: string; line: number; text: string; words: Set<string>; swapped: Set<string> };
+	const sourceLines: Record<Side, SourceLine[]> = { LEFT: [], RIGHT: [] };
+	const tokenCounts = (lines: Map<number, string>) => {
+		const out = new Map<string, number>();
+		for (const text of lines.values()) for (const t of tokens(text)) out.set(t, (out.get(t) ?? 0) + 1);
+		return out;
+	};
 	for (const [p, c] of input.changes) {
-		for (const [side, lines, sidePath] of [["RIGHT", c.added, p], ["LEFT", c.deleted, c.oldPath]] as const) {
+		const counts = { RIGHT: tokenCounts(c.added), LEFT: tokenCounts(c.deleted) };
+		for (const [side, other, lines, sidePath] of [["RIGHT", "LEFT", c.added, p], ["LEFT", "RIGHT", c.deleted, c.oldPath]] as const) {
 			if (STYLESHEET.test(sidePath)) continue;
-			for (const [line, text] of lines) copyLines[side].push({ path: sidePath, line, text, words: new Set(words(text)) });
+			const net = (t: string) => (counts[side].get(t) ?? 0) > (counts[other].get(t) ?? 0);
+			for (const [line, text] of lines) sourceLines[side].push({ path: sidePath, line, text, words: new Set(words(text)), swapped: new Set(tokens(text).filter(net)) });
 		}
 	}
 
@@ -321,6 +361,17 @@ export function correlate(input: CorrelateInput): Correlation {
 			return out;
 		};
 
+		/** The lines in `found` from the files that rendered `node` (its component and their callers), or all of them if none are. */
+		const nearest = (node: ElementNode, found: SourceLine[]): SourceLine[] => {
+			const near = new Set(
+				[node.component?.source, ...(node.component?.components ?? []).map((c) => c.source)]
+					.map((src) => (src && !src.generated ? repoPath(src.fileName) : null))
+					.filter(Boolean),
+			);
+			const own = found.filter((l) => near.has(l.path));
+			return own.length ? own : found;
+		};
+
 		/**
 		 * Changed lines on `side` holding `terms`: those with the most of them,
 		 * narrowed to the files that rendered `node` if any of those qualify,
@@ -329,25 +380,33 @@ export function correlate(input: CorrelateInput): Correlation {
 		 */
 		const copyLoc = (side: Side, node: ElementNode, terms: string[], text: string[]): Candidate[] => {
 			let best = 0;
-			let found: (typeof copyLines)[Side] = [];
-			for (const l of copyLines[side]) {
+			let found: SourceLine[] = [];
+			for (const l of sourceLines[side]) {
 				const score = terms.filter((t) => l.words.has(t)).length;
 				if (score > best) [best, found] = [score, [l]];
 				else if (score > 0 && score === best) found.push(l);
 			}
-			const near = new Set(
-				[node.component?.source, ...(node.component?.components ?? []).map((c) => c.source)]
-					.map((src) => (src && !src.generated ? repoPath(src.fileName) : null))
-					.filter(Boolean),
-			);
-			const own = found.filter((l) => near.has(l.path));
-			if (own.length) found = own;
+			found = nearest(node, found);
 			const inText = new Set(text);
 			const share = (l: (typeof found)[number]) => [...l.words].filter((w) => inText.has(w)).length / l.words.size;
 			const top = Math.max(0, ...found.map(share));
 			found = found.filter((l) => share(l) === top);
-			if (found.length > MAX_COPY_LINES) return [];
+			if (found.length > MAX_MATCHING_LINES) return [];
 			return found.map((l) => ({ side, path: l.path, line: l.line, kind: "copy", via: "copy", text: l.text.trim() }));
+		};
+
+		/**
+		 * Changed lines on `side` that added (RIGHT) or removed (LEFT) the class
+		 * `cls`, narrowed to the files that rendered `node` if any of those qualify.
+		 */
+		const classLoc = (side: Side, node: ElementNode, cls: string | null): Candidate[] => {
+			if (!cls) return [];
+			const found = nearest(
+				node,
+				sourceLines[side].filter((l) => l.swapped.has(cls)),
+			);
+			if (found.length > MAX_MATCHING_LINES) return [];
+			return found.map((l) => ({ side, path: l.path, line: l.line, kind: "jsx", via: "jsx", text: l.text.trim() }));
 		};
 
 		const selectorLoc = (side: Side, styles: StyleManifest | null, el: ElementStyles | undefined, prop: string): Candidate | null => {
@@ -409,6 +468,8 @@ export function correlate(input: CorrelateInput): Correlation {
 					if (selA !== selB) {
 						// A different rule won: its selector (or the markup that made it match) may be what changed.
 						consider(entry, [selectorLoc("LEFT", fromStyles, sa, prop)], [selectorLoc("RIGHT", toStyles, sb, prop)]);
+						// A utility class swapped in markup: the lost class on a deleted line, the gained one on an added line.
+						consider(entry, classLoc("LEFT", a, utilityClass(selA)), classLoc("RIGHT", b, utilityClass(selB)));
 						switched.push(`${prop}: ${selA} → ${selB}`);
 					}
 				}

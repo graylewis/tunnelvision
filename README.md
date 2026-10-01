@@ -258,6 +258,8 @@ visual changes each line caused.
   DevTools Protocol from the same load, the **winning declaration** of each:
   the rule that set it after the cascade (`!important`, layers, inline
   styles, inheritance), and the custom properties it goes through via `var()`.
+  Logical properties (`padding-inline`, Tailwind v4's `px-*`) compete with the
+  physical ones they map to, by the element's `writing-mode` and `direction`.
 - **Source lines** come from each stylesheet's source map, or, for CSS served
   unchanged (plain CSS, CSS Modules in Vite dev), from the file itself once
   its text is confirmed to match. With Vite and PostCSS, Tailwind or Sass, set
@@ -267,7 +269,10 @@ visual changes each line caused.
   winning declaration in each version: if that line (or a `var()` it uses, or
   the element's own JSX line, e.g. a `className` edit) is in the diff, it's a
   **cause**. Deleted lines are matched against the baseline, so removing a rule
-  is found too. A value that changed under an unchanged declaration (`width:
+  is found too. When the winning rule switches between utility classes
+  (`.md:grid-cols-4` to `.md:grid-cols-2`), the classes themselves are looked
+  for in changed lines outside stylesheets, so a class passed to a shared
+  component is found at the call site. A value that changed under an unchanged declaration (`width:
   100%` in a wider parent) is a result of layout, not a cause.
 - **Knock-on effects**: elements that moved or resized without a property of
   their own changing are attributed to the earlier sibling or ancestor that
@@ -488,8 +493,11 @@ at diff time, so it also affects existing captures.
 out to keep the defaults, which change with new versions). It's recorded at
 capture time.
 
-`wait` runs right after the page loads. Then tunnelvision scrolls through the
-page to fire scroll-triggered reveals (framer-motion `whileInView`,
+`wait` runs right after the page loads. Then tunnelvision hides framework
+dev overlays (the Astro dev toolbar and the TanStack Devtools, Query Devtools
+and Router Devtools floating UI), which otherwise land at a different spot in
+every capture and show up as unexplained visual changes on every page. Then it
+scrolls through the page to fire scroll-triggered reveals (framer-motion `whileInView`,
 IntersectionObserver fade-ins, lazy images), waits `settle` for the animations
 they start to finish, and freezes CSS animations and transitions before the
 screenshot. Every capture also emulates `prefers-reduced-motion: reduce`, so

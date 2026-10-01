@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { PNG } from "pngjs";
+import { FLOW_PROPERTIES } from "./logical.js";
 /**
  * The name an element's image goes by inside its directory. Only diff images
  * are written there; the element itself is cropped from `page.png` on demand.
@@ -19,12 +20,14 @@ export const MANIFEST_VERSION = 3;
  * has loaded and settled. Returns an array of top-level block elements
  * (children of <body>), each with nested `children`. `attributes` are the
  * configured match attributes to record on each element, and `properties` the
- * tracked CSS properties whose computed values are recorded. `includeHidden`
+ * tracked CSS properties whose computed values are recorded (along with
+ * `writing-mode` and `direction`, which the cascade needs to map logical
+ * properties to physical ones). `includeHidden`
  * keeps elements with no painted pixels, cropped by their full box.
  */
 export function extractScript(attributes, properties, includeHidden = false) {
     return EXTRACT_JS.replace("__MATCH_ATTRIBUTES__", JSON.stringify(attributes))
-        .replace("__TRACKED_PROPERTIES__", JSON.stringify(properties))
+        .replace("__TRACKED_PROPERTIES__", JSON.stringify([...new Set([...properties, ...FLOW_PROPERTIES])]))
         .replace("__INCLUDE_HIDDEN__", JSON.stringify(includeHidden));
 }
 const EXTRACT_JS = `

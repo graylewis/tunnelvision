@@ -1,3 +1,4 @@
+import { physicalName, type Flow } from "./logical.js";
 import { INHERITED, type DeclRef, type RawDecl, type RawMatched, type RawRule, type RawStyles, type ElementStyles, type Winner } from "./styles.js";
 
 /**
@@ -18,6 +19,10 @@ import { INHERITED, type DeclRef, type RawDecl, type RawMatched, type RawRule, t
  *
  * `inherit` is followed like an inherited property. Other CSS-wide keywords
  * (`unset`, `revert`, ...) are marked uncertain rather than modelled.
+ *
+ * Logical and physical longhands for the same box side cascade together
+ * (`padding-inline-start` and `padding-left`, say): a declaration of either
+ * sets both, mapped by the element's own `writing-mode` and `direction`.
  */
 
 const KEYWORDS = new Set(["initial", "unset", "revert", "revert-layer"]);
@@ -32,6 +37,8 @@ interface Candidate {
 
 const sides = (pre: string, post = "") => ["top", "right", "bottom", "left"].map((s) => `${pre}-${s}${post}`);
 const corners = ["top-left", "top-right", "bottom-right", "bottom-left"].map((c) => `border-${c}-radius`);
+const ends = (pre: string, post = "") => [`${pre}-start${post}`, `${pre}-end${post}`];
+const borderParts = (pre: string) => [`${pre}-width`, `${pre}-style`, `${pre}-color`];
 
 /**
  * Longhands of common shorthands. CDP expands shorthands itself, except when
@@ -61,11 +68,27 @@ const SHORTHANDS: Record<string, string[]> = {
 	"text-decoration": ["text-decoration-line"],
 	"place-items": ["align-items"],
 	"place-content": ["justify-content"],
+	// Logical shorthands (Tailwind v4 writes `px-*` as `padding-inline: calc(var(--spacing) * n)`).
+	...Object.fromEntries(
+		["margin", "padding", "inset"].flatMap((p) => [
+			[`${p}-block`, ends(`${p}-block`)],
+			[`${p}-inline`, ends(`${p}-inline`)],
+		]),
+	),
+	...Object.fromEntries(
+		["block", "inline"].flatMap((axis) => [
+			...["width", "style", "color"].map((part) => [`border-${axis}-${part}`, ends(`border-${axis}`, `-${part}`)]),
+			[`border-${axis}`, [...ends(`border-${axis}`, "-width"), ...ends(`border-${axis}`, "-style"), ...ends(`border-${axis}`, "-color")]],
+			...["start", "end"].map((edge) => [`border-${axis}-${edge}`, borderParts(`border-${axis}-${edge}`)]),
+		]),
+	),
 };
 
-function sets(decl: RawDecl, prop: string): boolean {
+/** Whether `decl` sets `prop`, directly, through a shorthand, or through the logical property that maps to it. */
+function sets(decl: RawDecl, prop: string, flow: Flow): boolean {
 	if (decl.name === prop) return true;
-	return (decl.longhands ?? SHORTHANDS[decl.name] ?? []).includes(prop);
+	const target = physicalName(prop, flow) ?? prop;
+	return [decl.name, ...(decl.longhands ?? SHORTHANDS[decl.name] ?? [])].some((n) => n === prop || (physicalName(n, flow) ?? n) === target);
 }
 
 /**
@@ -93,7 +116,7 @@ export class Cascade {
 	constructor(private readonly styles: RawStyles) {}
 
 	/** The winner for `prop` among one set of matched rules, or null. */
-	private winnerAmong(ruleIds: number[], prop: string): Candidate | null {
+	private winnerAmong(ruleIds: number[], prop: string, flow: Flow): Candidate | null {
 		let best: Candidate | null = null;
 		const layers = layerOrder(ruleIds.map((id) => this.styles.rules[id]));
 		ruleIds.forEach((ruleId, position) => {
@@ -101,7 +124,7 @@ export class Cascade {
 			if (!rule) return;
 			const layer = rule.layers?.length ? layers.get(rule.layers.join(".")) : undefined;
 			rule.decls.forEach((decl, declIndex) => {
-				if (!sets(decl, prop)) return;
+				if (!sets(decl, prop, flow)) return;
 				const inline = rule.inline !== undefined;
 				// Normal: [0, inline, position, index]. Important: [1, tier, -layer, position, index].
 				const rank = decl.important
@@ -114,11 +137,11 @@ export class Cascade {
 	}
 
 	/** The winning declaration for `prop` on `matched`, walking ancestors when it inherits. */
-	private resolve(matched: RawMatched, prop: string): { found: Candidate; inherited: boolean } | { found: null; uncertain: boolean } {
+	private resolve(matched: RawMatched, prop: string, flow: Flow): { found: Candidate; inherited: boolean } | { found: null; uncertain: boolean } {
 		const inherits = prop.startsWith("--") || INHERITED.has(prop);
 		const levels = [matched.rules, ...matched.inherited];
 		for (let depth = 0; depth < levels.length; depth++) {
-			const found = this.winnerAmong(levels[depth], prop);
+			const found = this.winnerAmong(levels[depth], prop, flow);
 			if (!found) {
 				if (!inherits) break;
 				continue;
@@ -134,22 +157,26 @@ export class Cascade {
 	/**
 	 * Resolve the winner of each property in `props` for the element at
 	 * `selector`. Elements CDP didn't report, and properties nothing declares,
-	 * have no winner.
+	 * have no winner. `computed` also carries the element's `writing-mode` and
+	 * `direction` (see `FLOW_PROPERTIES`), which map logical properties to
+	 * physical ones; without them the default horizontal, left-to-right flow
+	 * is assumed.
 	 */
 	resolveElement(selector: string, props: string[], computed: Record<string, string>): ElementStyles {
 		const matched = this.styles.nodes[selector];
 		const out: ElementStyles = { computed: {}, winners: {} };
+		const flow: Flow = { writingMode: computed["writing-mode"], direction: computed.direction };
 		for (const prop of props) {
 			out.computed[prop] = computed[prop] ?? "";
 			if (!matched) continue;
-			const r = this.resolve(matched, prop);
+			const r = this.resolve(matched, prop, flow);
 			if (!r.found) {
 				if (r.uncertain) out.winners[prop] = { uncertain: true };
 				continue;
 			}
 			const winner: Winner = { decl: r.found.ref };
 			if (r.inherited) winner.inherited = true;
-			const via = this.varChain(matched, r.found.decl.value);
+			const via = this.varChain(matched, r.found.decl.value, flow);
 			if (via.length) winner.via = via;
 			out.winners[prop] = winner;
 		}
@@ -157,14 +184,14 @@ export class Cascade {
 	}
 
 	/** Custom property declarations `value` depends on through `var()`, outermost first. */
-	private varChain(matched: RawMatched, value: string, seen = new Set<string>()): DeclRef[] {
+	private varChain(matched: RawMatched, value: string, flow: Flow, seen = new Set<string>()): DeclRef[] {
 		const out: DeclRef[] = [];
 		for (const [, name] of value.matchAll(VAR_REF)) {
 			if (seen.has(name)) continue;
 			seen.add(name);
-			const r = this.resolve(matched, name);
+			const r = this.resolve(matched, name, flow);
 			if (!r.found) continue;
-			out.push(r.found.ref, ...this.varChain(matched, r.found.decl.value, seen));
+			out.push(r.found.ref, ...this.varChain(matched, r.found.decl.value, flow, seen));
 		}
 		return out;
 	}

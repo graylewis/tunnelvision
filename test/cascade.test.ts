@@ -108,3 +108,62 @@ test("a var() cycle terminates", () => {
 		[0, 1],
 	]);
 });
+
+// Logical properties cascade together with the physical ones they map to.
+const decl = (name: string, value: string, longhands?: string[]) => ({ name, value, range, ...(longhands ? { longhands } : {}) });
+const ruleOf = (selector: string, ...decls: ReturnType<typeof decl>[]): RawStyles["rules"][number] => ({ sheet: "s", selector, selectorRange: null, decls });
+const reset = ruleOf("*", decl("padding", "0", ["padding-top", "padding-right", "padding-bottom", "padding-left"]));
+const winnerRule = (c: Cascade, prop: string, computed: Record<string, string> = {}) => c.resolveElement("el", [prop], computed).winners[prop]?.decl?.[0];
+
+test("a later logical declaration beats an earlier physical one", () => {
+	const c = synthetic([reset, ruleOf(".container", decl("padding-inline", "2rem", ["padding-inline-start", "padding-inline-end"]))]);
+	assert.equal(winnerRule(c, "padding-left"), 1);
+	assert.equal(winnerRule(c, "padding-right"), 1);
+	assert.equal(winnerRule(c, "padding-top"), 0);
+});
+
+test("a later physical declaration beats an earlier logical one", () => {
+	const c = synthetic([ruleOf(".a", decl("padding-inline-start", "1rem")), ruleOf(".b", decl("padding-left", "0"))]);
+	assert.equal(winnerRule(c, "padding-left"), 1);
+});
+
+test("logical shorthands CDP can't expand (var() values) still set their sides", () => {
+	const c = synthetic([reset, ruleOf(".px-6", decl("padding-inline", "calc(var(--spacing) * 6)")), ruleOf(".border-y", decl("border-block-width", "var(--w)"))]);
+	assert.equal(winnerRule(c, "padding-left"), 1);
+	assert.equal(winnerRule(c, "padding-right"), 1);
+	assert.equal(winnerRule(c, "border-top-width"), 2);
+	assert.equal(winnerRule(c, "border-left-width"), undefined);
+});
+
+test("right-to-left maps inline-start to the right", () => {
+	const c = synthetic([reset, ruleOf(".ps-4", decl("padding-inline-start", "1rem"))]);
+	assert.equal(winnerRule(c, "padding-left", { direction: "ltr" }), 1);
+	assert.equal(winnerRule(c, "padding-right", { direction: "rtl" }), 1);
+	assert.equal(winnerRule(c, "padding-left", { direction: "rtl" }), 0);
+});
+
+test("vertical writing modes map inline to top and bottom, block to the sides", () => {
+	const c = synthetic([
+		reset,
+		ruleOf(".v", decl("padding-inline-start", "1rem"), decl("padding-block-start", "2rem"), decl("inline-size", "10px")),
+	]);
+	const vertical = { "writing-mode": "vertical-rl", direction: "ltr" };
+	assert.equal(winnerRule(c, "padding-top", vertical), 1);
+	assert.equal(winnerRule(c, "padding-right", vertical), 1);
+	assert.equal(winnerRule(c, "padding-left", vertical), 0);
+	assert.equal(winnerRule(c, "height", vertical), 1);
+	assert.equal(winnerRule(c, "width", vertical), undefined);
+});
+
+test("logical corners map by block side then inline side", () => {
+	const c = synthetic([ruleOf(".r", decl("border-start-end-radius", "4px"))]);
+	assert.equal(winnerRule(c, "border-top-right-radius"), 0);
+	assert.equal(winnerRule(c, "border-top-left-radius", { direction: "rtl" }), 0);
+	assert.equal(winnerRule(c, "border-top-right-radius", { "writing-mode": "vertical-rl" }), undefined);
+	assert.equal(winnerRule(c, "border-bottom-right-radius", { "writing-mode": "vertical-rl" }), 0);
+});
+
+test("a tracked logical property is set by the physical declaration it maps to", () => {
+	const c = synthetic([ruleOf(".pl", decl("padding-left", "4px"))]);
+	assert.equal(winnerRule(c, "padding-inline-start"), 0);
+});

@@ -159,7 +159,7 @@ function summarize(report) {
 function notifyReviewed(outcome) {
     const project = path.basename(outcome.paths.root);
     const failed = outcome.failedCount
-        ? ` ${outcome.failedCount} page${outcome.failedCount === 1 ? "" : "s"} failed to capture.`
+        ? ` ${outcome.failedCount} element${outcome.failedCount === 1 ? "" : "s"} failed to capture.`
         : "";
     if (!outcome.diff) {
         notify({

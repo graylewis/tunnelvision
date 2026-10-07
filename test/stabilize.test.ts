@@ -18,7 +18,7 @@ test("stabilize script hides every dev overlay selector", () => {
 	const end = js.indexOf(";", start);
 	const list = JSON.parse(js.slice(js.indexOf("[", start), js.lastIndexOf("]", end) + 1)) as string[];
 	assert.deepEqual(list, DEVTOOLS_OVERLAY_SELECTORS);
-	for (const sel of ["astro-dev-toolbar", ".tsqd-parent-container", ".TanStackRouterDevtools", "#tanstack-devtools-panel"]) {
+	for (const sel of ["astro-dev-toolbar", ".tsqd-parent-container", ".TanStackRouterDevtools", "#tanstack-devtools-panel", "nextjs-portal"]) {
 		assert.ok(list.includes(sel), `missing ${sel}`);
 	}
 });

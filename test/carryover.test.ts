@@ -7,6 +7,7 @@ import { PNG } from "pngjs";
 import { assembleStyles, planElements, REDIRECT_RECORD } from "../src/carryover.js";
 import { changedSelectors, EVERYTHING, scanBlocks, selectorAt, staticSelector } from "../src/changedrules.js";
 import { compareSamples } from "../src/commands/fingerprint.js";
+import { fingerprintScript, stripDevStamps } from "../src/fingerprint.js";
 import { DEFAULT_CONFIG } from "../src/config.js";
 import { diffVersions } from "../src/diffengine.js";
 import type { ElementManifest, ElementNode, RawElement } from "../src/elements.js";
@@ -341,4 +342,27 @@ test("compareSamples: names the attributes that varied", () => {
 	assert.deepEqual([...(v?.attributes ?? [])], ["data-t"]);
 	assert.equal(v?.text, 2);
 	assert.deepEqual([...(v?.resources ?? [])], ["a.js"]);
+});
+
+test("stripDevStamps: drops Vite's ?t= and Next's ?v= stamps, nothing else", () => {
+	assert.equal(stripDevStamps("/src/a.ts?t=1728300000000"), "/src/a.ts");
+	assert.equal(stripDevStamps("/_next/static/css/app/layout.css?v=1728300000000"), "/_next/static/css/app/layout.css");
+	assert.equal(
+		stripDevStamps("http://localhost:3000/_next/static/chunks/main.js?v=1728300000000&dpl=abc"),
+		"http://localhost:3000/_next/static/chunks/main.js?dpl=abc",
+	);
+	assert.equal(
+		stripDevStamps("/_next/a.png?v=1728300000000 1x, /_next/b.png?v=1728300000001 2x"),
+		"/_next/a.png 1x, /_next/b.png 2x",
+	);
+	// Only Next's own URLs, and only timestamps.
+	assert.equal(stripDevStamps("/assets/a.css?v=1728300000000"), "/assets/a.css?v=1728300000000");
+	assert.equal(stripDevStamps("/_next/a.css?v=2"), "/_next/a.css?v=2");
+	assert.equal(stripDevStamps("/_next/image?url=%2Fa.png&w=640&q=75"), "/_next/image?url=%2Fa.png&w=640&q=75");
+});
+
+test("fingerprintScript: the in-page script parses", () => {
+	assert.doesNotThrow(() => new Function(`return (${fingerprintScript(["x"])})`));
+	assert.ok(!fingerprintScript().includes("__CLEAN__") && !fingerprintScript().includes("__OVERLAYS__"));
+	assert.ok(fingerprintScript().includes("nextjs-portal"), "dev overlays are left out of the fingerprint");
 });

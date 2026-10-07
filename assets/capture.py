@@ -245,14 +245,23 @@ def normal_url(url):
     return urlunsplit((parts.scheme, parts.netloc.lower(), parts.path.rstrip("/") or "/", parts.query, ""))
 
 
-# Vite adds `?t=<timestamp>` to modules it has hot-reloaded; the same code
-# otherwise. Kept in step with HMR_STAMP in src/fingerprint.ts.
+# Dev servers stamp resource URLs afresh on every load of the same code: Vite
+# adds `?t=<ms>` to modules it has hot-reloaded, Next `?v=<ms>` to everything
+# under /_next/. Kept in step with stripDevStamps in src/fingerprint.ts.
 HMR_STAMP = re.compile(r"([?&])t=\d{10,}&?")
+NEXT_URL = re.compile(r"(/_next/[^?#\s]*)\?([^#\s]*)")
+NEXT_STAMP = re.compile(r"v=\d{10,}")
 HASHED_TYPES = {"script", "stylesheet", "image", "font", "media"}
 
 
+def _unstamp_next(m):
+    kept = [p for p in m.group(2).split("&") if p and not NEXT_STAMP.fullmatch(p)]
+    return m.group(1) + ("?" + "&".join(kept) if kept else "")
+
+
 def resource_key(url):
-    return HMR_STAMP.sub(lambda m: m.group(1), url).rstrip("?&")
+    url = HMR_STAMP.sub(lambda m: m.group(1), url)
+    return NEXT_URL.sub(_unstamp_next, url).rstrip("?&")
 
 
 def digest(data):

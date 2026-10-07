@@ -16,9 +16,17 @@ export const DEFAULT_SETTLE_MS = 500;
  *   also match when a wrapper uses a different host.
  * - TanStack Router Devtools: `.TanStackRouterDevtools` is the core's root
  *   in every framework wrapper.
+ * - Next.js dev overlay: `<nextjs-portal>` holds, in its shadow root, the
+ *   indicator pill, the dev tools menu (route, bundler, preferences), the
+ *   compiling toast and the error overlay. The App Router appends it to
+ *   `<body>`, the Pages Router wraps it in `<script data-nextjs-dev-overlay>`.
+ *   `#__next-build-watcher` is the Pages Router's build indicator before
+ *   Next 15.
  */
 export const DEVTOOLS_OVERLAY_SELECTORS = [
     "astro-dev-toolbar",
+    "nextjs-portal",
+    "#__next-build-watcher",
     '[aria-label^="Open TanStack Devtools"]',
     '[aria-label="TanStack Devtools"]',
     "#tanstack-devtools-panel",

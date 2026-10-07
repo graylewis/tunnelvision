@@ -524,7 +524,8 @@ the framework's versions; when either changes, captures run normally and
 
 Things that differ between loads of the same code are left out of the
 fingerprint: `<script>` elements (their code is hashed as a resource),
-`?t=` HMR stamps, the order of inline style declarations, a few known dev-mode
+dev servers' cache-busting stamps (Vite's `?t=`, Next's `?v=` on `/_next/`
+URLs), the order of inline style declarations, a few known dev-mode
 attributes (Astro's `server-render-time`), and whatever `tunnelvision
 fingerprint --save` finds (`cheatMode.ignoreAttributes`). It waits up to 5s
 for entrance animations to finish first. Audio and video are identified by
@@ -640,8 +641,8 @@ the default, `validatedWith` records the versions it was validated with, and
 `ignoreAttributes` lists attributes left out of the render fingerprint.
 
 `wait` runs right after the page loads. Then tunnelvision hides framework
-dev overlays (the Astro dev toolbar and the TanStack Devtools, Query Devtools
-and Router Devtools floating UI), which otherwise land at a different spot in
+dev overlays (the Astro dev toolbar, the Next.js dev overlay and indicator, and
+the TanStack Devtools, Query Devtools and Router Devtools floating UI), which otherwise land at a different spot in
 every capture and show up as unexplained visual changes on every page. Then it
 scrolls through the page to fire scroll-triggered reveals (framer-motion `whileInView`,
 IntersectionObserver fade-ins, lazy images), waits `settle` for the animations

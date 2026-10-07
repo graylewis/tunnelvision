@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { originalPositionFor } from "@jridgewell/trace-mapping";
+import { loadMapRef, toFilePath } from "../src/reactsource.js";
 import { StyleLocator, sameLines } from "../src/stylesource.js";
 import type { RawStyles } from "../src/styles.js";
 
@@ -31,6 +33,36 @@ test("an inline source map's absolute sources resolve to files, not to the page'
 	const { rules, unlocated } = await new StyleLocator(root).rules(styles({ sourceMapURL, text: "\n\n\n.card { border-radius: var(--radius); }\n" }));
 	assert.equal(unlocated, 0);
 	assert.deepEqual(rules[0].decls[0].loc, { path: "src/styles/global.css", line: 4 });
+});
+
+/** A source map as an inline `data:` URL. */
+const inlineMap = (map: object) => `data:application/json;base64,${Buffer.from(JSON.stringify(map)).toString("base64")}`;
+
+test("a Turbopack stylesheet's index source map resolves through its section", async () => {
+	const { root, styles } = project();
+	// Turbopack heads the served sheet with a comment line, so the section starts on line 1 (0-based).
+	const section = { version: 3, sources: ["turbopack:///[project]/src/styles/global.css"], names: [], mappings: ";;AAGA" };
+	const sourceMapURL = inlineMap({ version: 3, sources: [], sections: [{ offset: { line: 1, column: 0 }, map: section }] });
+	const text = "/* [project]/src/styles/global.css [app-client] (css) */\n\n\n.card { border-radius: var(--radius); }\n";
+	const { rules, unlocated } = await new StyleLocator(root).rules(styles({ sourceMapURL, text }));
+	assert.equal(unlocated, 0);
+	assert.deepEqual(rules[0].decls[0].loc, { path: "src/styles/global.css", line: 4 });
+});
+
+test("loadMapRef reads Turbopack's index maps (one section per module) as well as flat ones", async () => {
+	const a = { version: 3, sources: ["file:///app/src/a.tsx"], names: [], mappings: "AAAA" };
+	const b = { version: 3, sources: ["file:///app/src/b.tsx"], names: [], mappings: "AAEE" };
+	const indexed = await loadMapRef(
+		inlineMap({ version: 3, sources: [], sections: [{ offset: { line: 4, column: 0 }, map: a }, { offset: { line: 20, column: 0 }, map: b }] }),
+		"http://localhost:3000/_next/static/chunks/src_0abc._.js",
+	);
+	assert.ok(indexed);
+	const pos = originalPositionFor(indexed, { line: 21, column: 0 });
+	assert.equal(pos.source && toFilePath(pos.source, "/app"), "/app/src/b.tsx");
+	assert.deepEqual([pos.line, pos.column], [3, 2]);
+
+	const flat = await loadMapRef(inlineMap(a), "http://localhost:5173/src/a.tsx");
+	assert.equal(flat && originalPositionFor(flat, { line: 1, column: 0 }).source, "file:///app/src/a.tsx");
 });
 
 test("a Vite <style> inside a page's HTML matches its file line for line", async () => {

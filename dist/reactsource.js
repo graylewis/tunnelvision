@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { TraceMap, originalPositionFor } from "@jridgewell/trace-mapping";
+import { FlattenMap, originalPositionFor } from "@jridgewell/trace-mapping";
 const FETCH_TIMEOUT_MS = 5000;
 /** Resolve symlinks (e.g. macOS /var → /private/var) so root-relative paths line up. */
 export function realpath(p) {
@@ -38,7 +38,9 @@ async function loadSourceMap(scriptUrl) {
 }
 /**
  * Load the source map `ref` points at: an inline `data:` URL, or a URL
- * relative to `baseUrl` (the script or stylesheet that referenced it).
+ * relative to `baseUrl` (the script or stylesheet that referenced it). Takes
+ * flat maps (Vite, webpack) and index maps, whose `sections` each hold a map
+ * for part of the file (Turbopack, one per module in a chunk).
  */
 export async function loadMapRef(ref, baseUrl) {
     try {
@@ -49,11 +51,11 @@ export async function loadMapRef(ref, baseUrl) {
             const json = meta.endsWith(";base64")
                 ? Buffer.from(data, "base64").toString("utf8")
                 : decodeURIComponent(data);
-            return new TraceMap(json, baseUrl);
+            return new FlattenMap(JSON.parse(json), baseUrl);
         }
         const mapUrl = new URL(ref, baseUrl).href;
         const json = await fetchText(mapUrl);
-        return json ? new TraceMap(json, mapUrl) : null;
+        return json ? new FlattenMap(JSON.parse(json), mapUrl) : null;
     }
     catch {
         return null;

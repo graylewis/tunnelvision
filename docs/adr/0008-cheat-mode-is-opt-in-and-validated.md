@@ -11,7 +11,7 @@ Script bodies are part of the fingerprint because JS-only changes, such as a scr
 Things that vary between loads of the same code are ignored:
 
 - inline styles are always canonicalized;
-- a short built-in list of dev-mode attributes is stripped (Astro's `server-render-time` and `client-render-time`, Vite's `?t=` stamps);
+- a short built-in list of dev-mode attributes is stripped (Astro's `server-render-time` and `client-render-time`, Vite's `?t=` and Next's `?v=` stamps);
 - the setup skill fingerprints the same commit twice and saves any attribute that still varied to `tunnelvision.json`.
 
 Nothing is learned during normal runs, because an attribute that varied harmlessly once can matter another time. Attributes that decide what's painted (`style`, `class`, `src`, …) are never learned. If one of them varies, the page was still changing when it was fingerprinted. For that reason the fingerprint waits up to 5s for the page to go quiet: finite animations finished, and two snapshots 100ms apart identical. framer-motion entrance animations otherwise made a few pages differ between loads. Audio and video load in byte ranges, so they're identified by their `ETag`, `Last-Modified` and length rather than their bytes.

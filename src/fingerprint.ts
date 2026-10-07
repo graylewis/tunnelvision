@@ -1,3 +1,5 @@
+import { DEVTOOLS_OVERLAY_SELECTORS } from "./stabilize.js";
+
 /**
  * The render fingerprint: what a page rendered from, hashed once it has
  * hydrated but before it's scrolled or settled, so cheat mode can tell a page
@@ -10,11 +12,12 @@
  * are left out:
  *
  * - `<script>` elements (their code is hashed as a resource) and comments;
+ * - framework dev overlays (`DEVTOOLS_OVERLAY_SELECTORS`), which captures hide;
  * - attributes in `BUILTIN_VOLATILE_ATTRIBUTES` and the project's own
  *   `cheatMode.ignoreAttributes`, which `tunnelvision fingerprint` finds;
  * - the order and spacing of inline style declarations (framer-motion
  *   rewrites `style` in whatever order it animates);
- * - Vite's `?t=<timestamp>` on hot-reloaded module URLs.
+ * - dev servers' cache-busting stamps on resource URLs (`stripDevStamps`).
  *
  * Entrance animations (framer-motion's `animate`, CSS fade-ins) are still
  * running when a page has just hydrated, and their in-flight inline styles
@@ -63,6 +66,23 @@ export const BUILTIN_VOLATILE_ATTRIBUTES: readonly string[] = [
 ];
 
 /**
+ * A URL (or an attribute value holding some, like `srcset`) without the
+ * stamps dev servers add to resource URLs on every load: Vite's `?t=<ms>` on
+ * hot-reloaded modules, and Next's `?v=<ms>` on everything under `/_next/`.
+ * Runs in the page too, so it's self-contained. Kept in step with
+ * `resource_key` in assets/capture.py.
+ */
+export function stripDevStamps(value: string): string {
+	return value
+		.replace(/([?&])t=\d{10,}&?/g, "$1")
+		.replace(/(\/_next\/[^?#\s]*)\?([^#\s]*)/g, (_, path: string, query: string) => {
+			const kept = query.split("&").filter((p) => p && !/^v=\d{10,}$/.test(p));
+			return kept.length ? path + "?" + kept.join("&") : path;
+		})
+		.replace(/[?&]$/, "");
+}
+
+/**
  * The in-page fingerprint script. Resolves to `{ dom, css, urls }`: the DOM as
  * normalized lines (`E path tag`, `A path name=value`, `T path text`), the
  * text of every stylesheet's rules, and the media URLs the page refers to.
@@ -71,14 +91,16 @@ export function fingerprintScript(ignoreAttributes: readonly string[] = []): str
 	return FINGERPRINT_JS.replace(
 		"__IGNORED__",
 		JSON.stringify([...new Set([...BUILTIN_VOLATILE_ATTRIBUTES, ...ignoreAttributes])]),
-	);
+	)
+		.replace("__CLEAN__", () => String(stripDevStamps))
+		.replace("__OVERLAYS__", () => JSON.stringify(DEVTOOLS_OVERLAY_SELECTORS.join(", ")));
 }
 
 const FINGERPRINT_JS = `
 async () => {
 	const ignored = new Set(__IGNORED__);
-	const stamp = /([?&])t=\\d{10,}&?/g;
-	const clean = (v) => v.replace(stamp, "$1").replace(/[?&]$/, "");
+	const clean = __CLEAN__;
+	const overlays = __OVERLAYS__;
 	const lines = [];
 	const urls = [];
 	const styleText = (el) => {
@@ -100,7 +122,7 @@ async () => {
 			}
 			if (child.nodeType !== 1) continue;
 			const tag = child.tagName.toLowerCase();
-			if (tag === "script" || child.hasAttribute("data-tunnelvision")) continue;
+			if (tag === "script" || child.hasAttribute("data-tunnelvision") || child.matches(overlays)) continue;
 			lines.push("E " + p + " " + tag);
 			const attrs = [];
 			for (const a of child.attributes) {

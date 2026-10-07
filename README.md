@@ -21,7 +21,7 @@ if you're still finding diffs identified where they shouldn't be, try using --wa
 
 if your app is behind an auth wall, use --auth to interactively log into your app and then store your auth information for tunnelvision to use (stored in .tunnelvision, so make sure not to commit it). tunnelvision will use the auth information when screenshotting your app. 
 
-### cheat mode
+### cheat mode (most runs <20s, only stable on nextjs)
 sometimes running a tunnelvision shoot (snapshot) takes too long (especially in projects that use tailwind.). my goal is that for the majority of websites, runs take less than 10 seconds. To support this, I added 'cheat mode', 
 which uses code hashing to skip a lot of the lengthy processing calls where no changes were made. 
 

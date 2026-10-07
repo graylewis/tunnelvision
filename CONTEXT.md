@@ -12,6 +12,10 @@ _Avoid_: Snapshot, build
 One URL from the app's file-based routes (Next.js and Astro) or, for any other app, from its sitemap, captured once per version.
 _Avoid_: Route, screen
 
+**Redirect**:
+A Page whose URL lands on another Page. A Version records where it lands instead of capturing it again, and a Page that starts or stops redirecting is a visual change.
+_Avoid_: Alias, duplicate page
+
 **Element**:
 A visible block-level DOM node in a page's element tree, paired across versions by identity rather than DOM path.
 _Avoid_: Node, component
@@ -31,6 +35,22 @@ _Avoid_: Style, class
 **Winning declaration**:
 The declaration that sets a tracked property on an element once the cascade is resolved, or a note that the value is inherited from an ancestor.
 _Avoid_: Matched rule (a rule can match without winning anything)
+
+**Render fingerprint**:
+A hash of a Page's rendered DOM and styles and of the scripts, images and fonts it loaded, taken once it has hydrated but before it is scrolled or settled, with details known to vary between loads of the same code left out.
+_Avoid_: Bundle hash (the fingerprint is of what rendered, not of what was served)
+
+**Carried-over page**:
+A Page in a Version taken whole from an earlier Version because its render fingerprint is unchanged, with its source locations brought up to date with the new commit. Only cheat mode carries pages over.
+_Avoid_: Skipped page, cached page (nothing is skipped: the Version still holds the Page)
+
+**Carried-over element**:
+An element whose style data is taken from its counterpart in an earlier Version, because nothing that could decide its winning declarations changed: not its computed values, its own JSX line, any rule that matches it, nor the lines its winners were written on.
+_Avoid_: Cached element
+
+**Cheat mode**:
+An opt-in way of capturing a Version in which a Page whose render fingerprint matches the previous Version's is carried over without being settled or screenshotted. A project uses it by default only once it has proven to find exactly the same visual changes and causes as the normal way.
+_Avoid_: Fast mode
 
 ## Changes
 

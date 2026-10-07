@@ -9,12 +9,14 @@ import {
 	ELEMENT_IMAGE,
 	ELEMENT_MANIFEST,
 	PAGE_IMAGE,
+	pngSize,
 	readElementManifest,
 	type ElementManifest,
 	type ElementNode,
 } from "./elements.js";
 import type { Correlation } from "./correlate.js";
 import { matchElements, matchOptions, type ElementMatch, type MatchedBy } from "./matching.js";
+import { readRedirect } from "./carryover.js";
 
 export type PageStatus = "unchanged" | "changed" | "added" | "removed" | "size-mismatch" | "error";
 
@@ -89,6 +91,17 @@ function listPngs(dir: string): Set<string> {
 	return out;
 }
 
+function subdirs(dir: string): string[] {
+	try {
+		return fs
+			.readdirSync(dir, { withFileTypes: true })
+			.filter((d) => d.isDirectory())
+			.map((d) => d.name);
+	} catch {
+		return [];
+	}
+}
+
 function readPng(file: string): PNG {
 	return PNG.sync.read(fs.readFileSync(file));
 }
@@ -101,27 +114,62 @@ function tryReadPng(file: string): PNG | null {
 	}
 }
 
-/** A page's element tree and screenshot, from which its element images are cropped. */
-interface ElementPage {
-	manifest: ElementManifest;
-	page: PNG | null;
+/**
+ * A page's element tree and screenshot, from which its element images are
+ * cropped. The screenshot is only decoded once a crop is needed: a page
+ * carried over unchanged has the same bytes on both sides, and its elements
+ * can be compared by their boxes alone.
+ */
+class ElementPage {
+	private decoded: PNG | null | undefined;
+	readonly size: { width: number; height: number } | null;
+
+	constructor(
+		readonly manifest: ElementManifest,
+		private readonly file: string,
+	) {
+		this.size = pngSize(file);
+	}
+
+	get page(): PNG | null {
+		if (this.decoded === undefined) this.decoded = tryReadPng(this.file);
+		return this.decoded;
+	}
+
+	/** Whether this page's screenshot is byte-for-byte `other`'s. */
+	sameImage(other: ElementPage): boolean {
+		try {
+			return fs.readFileSync(this.file).equals(fs.readFileSync(other.file));
+		} catch {
+			return false;
+		}
+	}
 }
 
 /** Crop `node` out of its page screenshot, or null when it has no image. */
-function cropNode({ manifest, page }: ElementPage, node: ElementNode): PNG | null {
-	const rect = page && cropRect(page, node.box, manifest.scale);
-	return rect ? cropImage(page, rect) : null;
+function cropNode(p: ElementPage, node: ElementNode): PNG | null {
+	const rect = p.size && cropRect(p.size, node.box, p.manifest.scale);
+	const page = rect && p.page;
+	return rect && page ? cropImage(page, rect) : null;
 }
 
 /** Whether `node` can be cropped out of its page screenshot. */
-function hasImage({ manifest, page }: ElementPage, node: ElementNode): boolean {
-	return Boolean(page && cropRect(page, node.box, manifest.scale));
+function hasImage(p: ElementPage, node: ElementNode): boolean {
+	return Boolean(p.size && cropRect(p.size, node.box, p.manifest.scale));
 }
 
 /** Pixel-diff two image files, writing a diff image when they count as changed. */
 function diffImages(fromFile: string, toFile: string, outFile: string, entry: PageDiff, config: Config): PageDiff {
 	try {
-		return diffPngs(readPng(fromFile), readPng(toFile), outFile, entry, config);
+		const a = fs.readFileSync(fromFile);
+		const b = fs.readFileSync(toFile);
+		if (a.equals(b)) {
+			// The same file (a page carried over unchanged): nothing to decode.
+			const size = pngSize(toFile);
+			const total = size ? size.width * size.height : 0;
+			return { ...entry, status: "unchanged", diffPercent: 0, mismatchedPixels: 0, totalPixels: total };
+		}
+		return diffPngs(PNG.sync.read(a), PNG.sync.read(b), outFile, entry, config);
 	} catch (err) {
 		return { ...entry, status: "error", message: (err as Error).message };
 	}
@@ -202,12 +250,34 @@ export function diffVersions(
 	const pairs = new Map<string, PagePairs>();
 
 	const pageSlugs = new Set([...fromFiles, ...toFiles].map((f) => f.split("/")[0]));
+
+	// Redirects: a page recorded as landing on another page has no capture of
+	// its own. Starting or stopping redirecting, or landing somewhere else, is
+	// one change to the page, not every element in it coming or going.
+	for (const slug of new Set([...pageSlugs, ...subdirs(fromDir), ...subdirs(toDir)])) {
+		const ra = readRedirect(path.join(fromDir, slug));
+		const rb = readRedirect(path.join(toDir, slug));
+		if (!ra && !rb) continue;
+		pageSlugs.delete(slug);
+		for (const f of fromFiles) if (f.startsWith(`${slug}/`)) doneFrom.add(f);
+		for (const f of toFiles) if (f.startsWith(`${slug}/`)) doneTo.add(f);
+		if (ra && rb && ra.to === rb.to) continue;
+		const where = (r: { url: string }) => new URL(r.url).pathname;
+		const message = ra && rb
+			? `redirects to ${where(rb)} instead of ${where(ra)}`
+			: rb
+				? `now redirects to ${where(rb)}`
+				: `no longer redirects to ${where(ra as { url: string })}`;
+		pages.push({ filename: `${slug}/${PAGE_IMAGE}`, status: "changed", message });
+	}
+
 	for (const slug of pageSlugs) {
 		const a = readElementManifest(path.join(fromDir, slug, ELEMENT_MANIFEST));
 		const b = readElementManifest(path.join(toDir, slug, ELEMENT_MANIFEST));
 		if (!a || !b) continue;
-		const pageA: ElementPage = { manifest: a, page: tryReadPng(path.join(fromDir, slug, PAGE_IMAGE)) };
-		const pageB: ElementPage = { manifest: b, page: tryReadPng(path.join(toDir, slug, PAGE_IMAGE)) };
+		const pageA = new ElementPage(a, path.join(fromDir, slug, PAGE_IMAGE));
+		const pageB = new ElementPage(b, path.join(toDir, slug, PAGE_IMAGE));
+		const sameImage = a.scale === b.scale && pageA.sameImage(pageB);
 
 		const match = matchElements(a.elements, b.elements, opts);
 		pairs.set(slug, { from: a, to: b, match });
@@ -230,6 +300,15 @@ export function diffVersions(
 							...(other !== own ? { fromFilename: other } : {}),
 							...(match.moved.has(n) ? { moved: true } : {}),
 						};
+						const rectFrom = pageA.size && cropRect(pageA.size, partner.box, a.scale);
+						const rectTo = pageB.size && cropRect(pageB.size, n.box, b.scale);
+						if (sameImage && rectFrom && rectTo && sameRect(rectFrom, rectTo)) {
+							// The same pixels from the same screenshot.
+							const total = rectTo.width * rectTo.height;
+							pages.push({ ...entry, diffPercent: 0, mismatchedPixels: 0, totalPixels: total });
+							visit(n.children, side);
+							continue;
+						}
 						const imgFrom = cropNode(pageA, partner);
 						const imgTo = cropNode(pageB, n);
 						const inFrom = Boolean(imgFrom);
@@ -290,6 +369,10 @@ export function diffVersions(
 	};
 	Object.defineProperty(report, "pairs", { value: pairs, enumerable: false });
 	return report;
+}
+
+function sameRect(a: { x: number; y: number; width: number; height: number }, b: typeof a): boolean {
+	return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
 
 /** Find a per-page maxDiffPercent override by matching the filename's page path. */

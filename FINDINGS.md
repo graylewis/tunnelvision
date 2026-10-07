@@ -52,3 +52,11 @@ What the tunnelvision prototype taught us: a CLI that screenshots every page in 
 ## Takeaway
 
 Pixel diffing is easy. The value is in stable captures, reliable element matching, and linking changes back to source. The source link only works with modern React dev builds, and GitHub's diff-line limit stops it from covering style-only changes.
+
+## Capture speed (carry-over and cheat mode)
+
+- On a 21-page Tailwind/Astro site, CDP style reads were 72% of a 3.5-minute capture. Each `CSS.getMatchedStylesForNode` answer was ~400KB, 80% of it the `inherited` chain repeating Tailwind's universal rules at every ancestor, at ~115ms of renderer time per call. Pipelining doesn't help, because the renderer answers one at a time. `getComputedStyleForNode` is ~2ms.
+- Three of the 21 "pages" were redirects to `/` and cost 29% of the capture.
+- Two loads of the same commit: 17/21 page screenshots were byte-identical, and all 21 diffed to zero under `threshold 0.1, includeAA false`. The 4 that weren't had one shared widget off by up to Δ20 per channel.
+- A naive DOM fingerprint differed on 20/21 pages between loads, because of Astro dev's `server-render-time`/`client-render-time` attributes and framer-motion writing inline styles in varying order. After stripping those and waiting for entrance animations, it was stable on 21/21 over 4 loads. Script bodies served by Vite dev were byte-identical between loads.
+- Loading and fingerprinting is mostly waiting, so it runs at 3× the capture concurrency. That took an all-unchanged cheat run from 21s to ~10s.

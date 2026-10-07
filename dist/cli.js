@@ -12,6 +12,8 @@ import { installHook } from "./commands/installHook.js";
 import { inspector } from "./commands/inspector.js";
 import { DEFAULT_IMAGE_BRANCH, updatePr } from "./commands/updatePr.js";
 import { DEFAULT_SKILLS_TARGET, skills } from "./commands/skills.js";
+import { fingerprint } from "./commands/fingerprint.js";
+import { cheat } from "./commands/cheat.js";
 const ROOT = process.cwd();
 function num(v) {
     const n = Number(v);
@@ -32,6 +34,8 @@ function withCaptureOptions(cmd) {
         .option("--auth <file>", "path to a shot-scraper auth context file")
         .option("--concurrency <n>", "pages captured at once (per-element captures)", num)
         .option("--only-pages", "capture one full-page screenshot per page, without per-element screenshots, style data or causes")
+        .option("--cheat", "cheat mode: carry over pages whose render fingerprint is unchanged, without screenshotting them")
+        .option("--no-cheat", "capture normally even when cheat mode is the configured default")
         .addOption(byElementOption());
 }
 /** `--by-element` was the opt-in before per-element captures became the default; still accepted so old scripts keep working. */
@@ -79,6 +83,7 @@ withCaptureOptions(program.command("shoot").description("Capture screenshots of 
     auth: opts.auth,
     concurrency: opts.concurrency,
     onlyPages: opts.onlyPages,
+    cheat: opts.cheat,
 })));
 withDiffOptions(program
     .command("diff")
@@ -107,12 +112,38 @@ withDiffOptions(withCaptureOptions(program.command("review").description("Captur
     auth: opts.auth,
     concurrency: opts.concurrency,
     onlyPages: opts.onlyPages,
+    cheat: opts.cheat,
     threshold: opts.threshold,
     maxDiffPercent: opts.maxDiffPercent,
     json: opts.json,
     report: opts.report,
     notify: opts.notify,
 })));
+program
+    .command("fingerprint")
+    .description("Load every page several times and check its render fingerprint never changes (needed for cheat mode)")
+    .option("--base-url <url>", "override the base URL from config")
+    .option("--auth <file>", "path to a shot-scraper auth context file")
+    .option("--concurrency <n>", "pages loaded at once", num)
+    .option("--runs <n>", "loads of every page to compare", num, 2)
+    .option("--save", "ignore attributes that changed between loads from now on (cheatMode.ignoreAttributes), then check again")
+    .action((opts) => run(() => fingerprint({
+    root: ROOT,
+    baseUrl: opts.baseUrl,
+    auth: opts.auth,
+    concurrency: opts.concurrency,
+    runs: Math.max(2, opts.runs),
+    save: Boolean(opts.save),
+})));
+program
+    .command("cheat")
+    .description("Make cheat mode the default (on), stop using it (off), or show whether it's in use (status)")
+    .argument("[action]", "on, off or status", "status")
+    .action((action) => run(async () => {
+    if (!["on", "off", "status"].includes(action))
+        throw new Error(`Expected on, off or status, got "${action}"`);
+    return cheat({ root: ROOT, action: action });
+}));
 program
     .command("auth")
     .description("Log in via a browser and save an auth context for authenticated screenshots")

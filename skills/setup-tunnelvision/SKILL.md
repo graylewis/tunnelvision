@@ -1,6 +1,6 @@
 ---
 name: setup-tunnelvision
-description: Set up tunnelvision in this project — install shot-scraper if it's missing, check where Pages come from (Next.js/Astro routes or the sitemap) and the source-map settings, run `tunnelvision init`, capture a baseline, and offer the post-commit hook. Use when the user asks to set up, install, initialise or configure tunnelvision, or to take a first baseline capture.
+description: Set up tunnelvision in this project — install shot-scraper if it's missing, check where Pages come from (Next.js/Astro routes or the sitemap) and the source-map settings, run `tunnelvision init`, capture a baseline, offer the post-commit hook, and test whether cheat mode finds exactly what normal captures do before making it the default. Use when the user asks to set up, install, initialise or configure tunnelvision, or to take a first baseline capture.
 ---
 
 # Set up tunnelvision
@@ -116,7 +116,37 @@ tunnelvision install-hook
 
 If a `post-commit` hook from something else already exists, install-hook exits 1 and asks for `--force`, which appends the tunnelvision block to it without touching the rest. Show the user the existing hook and confirm before re-running with `--force`. On macOS, install-hook also builds the notifier and sends a first notification, so the permission prompt comes up now rather than after the first commit; tell the user to allow it. If they say no, don't install it, and don't ask again.
 
-## 10. What's next
+## 10. Cheat mode
+
+Cheat mode makes captures several times faster: a page whose *render fingerprint* (its DOM, CSS and the bytes of every script, image and font it uses, taken once it has hydrated) matches the previous Version's is carried over without being scrolled, settled or screenshotted. It trusts that the same inputs render the same pixels, so it only becomes the project's default once you've shown it finds exactly the same visual changes and Causes as a normal capture. Tell the user that in one sentence and ask, in one question, whether to run the check now: it takes a few minutes and makes a throwaway branch. If they say no, leave it off and move on.
+
+1. **Fingerprints are stable.** With the app serving at the base URL:
+   ```sh
+   tunnelvision fingerprint --save
+   ```
+   It loads every page twice and compares. Attributes that changed between loads of the same code (render timings, random ids) are added to `cheatMode.ignoreAttributes` in `tunnelvision.json` and it checks again. Pages it still reports can't be carried over: `style` or `class` changing means the page was still animating or loading when fingerprinted (it waits up to 5s); `resources` names files whose bytes changed between loads. Cheat mode is still safe with a few such pages (they're just captured normally), but if most pages are unstable, stop here, leave it off and tell the user why.
+2. **Plant changes.** Follow `/test-tunnelvision` steps 1–3: preconditions, the test branch and noise-floor Version (`tunnelvision shoot --no-cheat`), and the planted-changes commit with its manifest. Add rows aimed at what a fingerprint could miss, wherever the app has a place for them (say which you skipped and why):
+   - **JS only**: change something only client-side JavaScript decides, such as a framer-motion `animate`/`whileInView` end state, or the markup of a component that only renders in the browser (`client:only`, `useEffect`).
+   - **Image bytes**: overwrite an image in `public/` (or wherever static files live) with a visibly different image under the same file name.
+   - **Font**: swap a self-hosted font file, or change an `@font-face` `font-weight`.
+3. **Capture the planted commit both ways**, cheat mode first so both carry over from the noise-floor Version:
+   ```sh
+   tunnelvision shoot --cheat
+   tunnelvision diff <noise-key> <test-key> --report .tunnelvision/cheat-report.json
+   mv .tunnelvision/versions/<test-key> .tunnelvision/versions/<test-key>-cheat
+   tunnelvision shoot --no-cheat
+   tunnelvision diff <noise-key> <test-key> --report .tunnelvision/normal-report.json
+   ```
+   The cheat capture's output says how many pages it carried over; a planted change on a carried-over page is a miss.
+4. **Compare the two reports.** Cheat mode passes when, for every manifest row, it reports the same changed elements (`pages[]` entries whose `status` isn't `unchanged`) and the same Causes (`correlation.causes[]`: `path`, `line`, `side`) as normal mode. Normal mode re-captures every page, so it can also report noise that cheat mode doesn't (an element still animating on a page with no planted change); confirm each such entry is noise by the signatures in `/test-tunnelvision` step 5 and leave it out. Anything a planted change caused that only normal mode reports is a failure, and so is anything only cheat mode reports.
+5. **Decide.** If it passes:
+   ```sh
+   tunnelvision cheat on
+   ```
+   This records the tunnelvision, framework and dev-server versions it was validated with in `tunnelvision.json`; when any of them change, captures run normally and `tunnelvision doctor` says so until this step is repeated. Offer to commit `tunnelvision.json`. If it fails, leave cheat mode off and tell the user which planted change it missed and why that kind of change can't be fingerprinted on this app.
+6. **Clean up** as in `/test-tunnelvision` step 7, also removing `.tunnelvision/versions/<test-key>-cheat` and the two reports.
+
+## 11. What's next
 
 Suggest, briefly:
 

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import type { Viewport } from "./config.js";
 import type { RawElement } from "./elements.js";
 import type { RawStyles } from "./styles.js";
+import { HYDRATE_JS, MATCH_JS } from "./fingerprint.js";
 
 /**
  * Drive Playwright directly for per-element captures. shot-scraper can't
@@ -32,23 +33,45 @@ export interface PageJob {
 	stabilizeJs: string;
 }
 
-export interface PageCapture {
-	ok: boolean;
-	tree?: RawElement[];
-	/** Matched rules per element, read over CDP; null when that failed. */
-	styles?: RawStyles | null;
-	error?: string;
-}
+/** What the driver reports about a page, in order (see `assets/capture.py`). */
+export type DriverEvent =
+	| { index: number; event: "redirect"; url: string }
+	| {
+			index: number;
+			event: "fingerprint";
+			fingerprint: string;
+			/** Only when fingerprinting alone: the normalized DOM lines and hashed resources. */
+			dom?: string[];
+			resources?: [string, string][];
+	  }
+	| { index: number; event: "extracted"; tree: RawElement[]; changed: string[] }
+	| { index: number; event: "done"; styles: RawStyles | null }
+	| { index: number; event: "error"; error: string };
+
+/** tunnelvision's answer to a `fingerprint` (cheat mode) or `extracted` event. */
+export type DriverReply = { carry: boolean } | { query: string[] | "all" };
 
 export interface CaptureOptions {
 	viewport: Viewport;
 	scaleFactor: number;
 	/** Playwright storage state (a shot-scraper auth file). */
 	authFile?: string;
-	/** Pages captured at once, each in its own browser context. */
+	/** Pages settled, screenshotted and read at once, each in its own browser context. */
 	concurrency: number;
+	/** Pages loaded and fingerprinted at once (at least `concurrency`); loading is mostly waiting. */
+	loadConcurrency?: number;
 	/** The element-extraction script evaluated in each page. */
 	extractJs: string;
+	/** The render fingerprint script (see `fingerprint.ts`). */
+	fingerprintJs: string;
+	/** Ask whether to carry each page over once it's fingerprinted. */
+	cheat: boolean;
+	/** `fingerprint`: stop every page once it's fingerprinted. */
+	mode?: "capture" | "fingerprint";
+	/** Every page's URL, so a page that redirects to another is recognised. */
+	knownUrls: string[];
+	/** Selectors of style rules the commit changed (see `changedrules.ts`). */
+	changedSelectors: string[];
 }
 
 function findOnPath(bin: string): string | null {
@@ -112,22 +135,30 @@ export function findPlaywrightPython(): string {
 }
 
 /**
- * Capture `pages` with one page load each: wait, extract the element tree, and
- * write a full-page screenshot. Results are returned in input order. `onPage`
- * fires as each page completes.
+ * Capture `pages` with one page load each: wait, fingerprint, settle, write a
+ * full-page screenshot, extract the element tree and read the matched styles
+ * of the elements tunnelvision asks for. `onEvent` hears each step as it
+ * happens and, for `fingerprint` (in cheat mode) and `extracted` events,
+ * returns the reply the page is waiting on.
  */
-export function capturePages(
+export function runDriver(
 	pages: PageJob[],
 	opts: CaptureOptions,
-	onPage?: (index: number, result: PageCapture) => void,
-): Promise<PageCapture[]> {
+	onEvent: (event: DriverEvent) => Promise<DriverReply | void> | DriverReply | void,
+): Promise<void> {
 	const python = findPlaywrightPython();
 	for (const page of pages) fs.mkdirSync(path.dirname(page.output), { recursive: true });
 
 	return new Promise((resolve, reject) => {
 		const proc = spawn(python, [DRIVER], { stdio: ["pipe", "pipe", "inherit"] });
-		const results: PageCapture[] = pages.map(() => ({ ok: false, error: "not captured" }));
 		let buffered = "";
+		let failed: Error | null = null;
+		const handling: Promise<void>[] = [];
+
+		const handle = async (event: DriverEvent): Promise<void> => {
+			const reply = await onEvent(event);
+			if (reply && !proc.stdin.destroyed) proc.stdin.write(`${JSON.stringify({ index: event.index, ...reply })}\n`);
+		};
 
 		proc.stdout.setEncoding("utf8");
 		proc.stdout.on("data", (chunk: string) => {
@@ -137,36 +168,49 @@ export function capturePages(
 				const line = buffered.slice(0, nl).trim();
 				buffered = buffered.slice(nl + 1);
 				if (!line) continue;
+				let event: DriverEvent;
 				try {
-					const msg = JSON.parse(line) as PageCapture & { index: number };
-					const result: PageCapture = msg.ok
-						? { ok: true, tree: Array.isArray(msg.tree) ? msg.tree : [], styles: msg.styles ?? null }
-						: { ok: false, error: msg.error ?? "unknown error" };
-					results[msg.index] = result;
-					onPage?.(msg.index, result);
+					event = JSON.parse(line) as DriverEvent;
 				} catch {
-					// ignore stray output
+					continue; // stray output
 				}
+				handling.push(
+					handle(event).catch((err: Error) => {
+						failed ??= err;
+						// Unblock the page so the driver can finish.
+						if (!proc.stdin.destroyed) proc.stdin.write(`${JSON.stringify({ index: event.index, carry: false, query: [] })}\n`);
+					}),
+				);
 			}
+		});
+		proc.stdin.on("error", () => {
+			// The driver exited; its exit code says why.
 		});
 		proc.on("error", reject);
-		proc.on("close", (code) => {
-			if (code !== 0 && results.every((r) => !r.ok)) {
-				reject(new Error(`Playwright capture failed (exit ${code}).`));
-			} else {
-				resolve(results);
-			}
+		proc.on("close", async (code) => {
+			await Promise.all(handling);
+			if (failed) reject(failed);
+			else if (code !== 0) reject(new Error(`Playwright capture failed (exit ${code}).`));
+			else resolve();
 		});
 
-		proc.stdin.end(
-			JSON.stringify({
+		proc.stdin.write(
+			`${JSON.stringify({
 				viewport: opts.viewport,
 				scaleFactor: opts.scaleFactor,
 				authFile: opts.authFile ?? null,
 				concurrency: opts.concurrency,
+				loadConcurrency: Math.max(opts.concurrency, opts.loadConcurrency ?? opts.concurrency),
 				extractJs: opts.extractJs,
+				fingerprintJs: opts.fingerprintJs,
+				hydrateJs: HYDRATE_JS,
+				matchJs: MATCH_JS,
+				cheat: opts.cheat,
+				mode: opts.mode ?? "capture",
+				knownUrls: opts.knownUrls,
+				changedSelectors: opts.changedSelectors,
 				pages,
-			}),
+			})}\n`,
 		);
 	});
 }

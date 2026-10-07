@@ -23,7 +23,8 @@ export function listVersions(paths) {
     try {
         dirs = fs
             .readdirSync(paths.versions, { withFileTypes: true })
-            .filter((d) => d.isDirectory())
+            // Dot-directories are captures still being written (see `shoot.ts`).
+            .filter((d) => d.isDirectory() && !d.name.startsWith("."))
             .map((d) => d.name);
     }
     catch {

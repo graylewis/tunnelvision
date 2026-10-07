@@ -6,6 +6,8 @@ import { checkShotScraper } from "../shotscraper.js";
 import { discoverPages } from "../pagesource.js";
 import { FRAMEWORK_NAMES } from "../fileroutes.js";
 import { findPlaywrightPython } from "../playwright.js";
+import { loadConfig } from "../config.js";
+import { environmentVersions, versionChanges } from "../environment.js";
 import fs from "node:fs";
 import path from "node:path";
 /** Dependencies that make Vite transform CSS, so its lines no longer match the source without a source map. */
@@ -95,6 +97,25 @@ export async function doctor(opts) {
     if (css) {
         console.log(`  ${pc.yellow("!")} css source maps${pc.dim(`  ${css}`)}`);
         console.log(pc.dim("      visual changes can't be traced to CSS lines until it's set"));
+    }
+    // cheat mode: opt-in, so being off isn't a failure; being stale is worth a look
+    if (config) {
+        try {
+            const { enabled, validatedWith } = loadConfig(paths).cheatMode;
+            const changes = enabled && validatedWith ? versionChanges(validatedWith, environmentVersions(opts.root)) : [];
+            if (!enabled) {
+                console.log(`  ${pc.dim("·")} cheat mode${pc.dim("  off; /setup-tunnelvision checks whether this project can use it")}`);
+            }
+            else if (!validatedWith || changes.length > 0) {
+                console.log(`  ${pc.yellow("!")} cheat mode${pc.dim(`  needs validating again (${validatedWith ? changes.join(", ") : "never validated"}); captures run normally until then`)}`);
+            }
+            else {
+                console.log(`  ${pc.green("✓")} cheat mode${pc.dim("  on; unchanged pages are carried over without a screenshot")}`);
+            }
+        }
+        catch {
+            // the config line already reported it
+        }
     }
     console.log("");
     console.log(ok ? pc.green("All good.") : pc.yellow("Some checks need attention."));

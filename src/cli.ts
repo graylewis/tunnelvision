@@ -12,6 +12,8 @@ import { installHook } from "./commands/installHook.js";
 import { inspector } from "./commands/inspector.js";
 import { DEFAULT_IMAGE_BRANCH, updatePr } from "./commands/updatePr.js";
 import { DEFAULT_SKILLS_TARGET, skills } from "./commands/skills.js";
+import { fingerprint } from "./commands/fingerprint.js";
+import { cheat } from "./commands/cheat.js";
 
 const ROOT = process.cwd();
 
@@ -41,6 +43,8 @@ function withCaptureOptions(cmd: Command): Command {
 			"--only-pages",
 			"capture one full-page screenshot per page, without per-element screenshots, style data or causes",
 		)
+		.option("--cheat", "cheat mode: carry over pages whose render fingerprint is unchanged, without screenshotting them")
+		.option("--no-cheat", "capture normally even when cheat mode is the configured default")
 		.addOption(byElementOption());
 }
 
@@ -101,6 +105,7 @@ withCaptureOptions(
 			auth: opts.auth,
 			concurrency: opts.concurrency,
 			onlyPages: opts.onlyPages,
+			cheat: opts.cheat,
 		}),
 	),
 );
@@ -145,6 +150,7 @@ withDiffOptions(
 			auth: opts.auth,
 			concurrency: opts.concurrency,
 			onlyPages: opts.onlyPages,
+			cheat: opts.cheat,
 			threshold: opts.threshold,
 			maxDiffPercent: opts.maxDiffPercent,
 			json: opts.json,
@@ -153,6 +159,38 @@ withDiffOptions(
 		}),
 	),
 );
+
+program
+	.command("fingerprint")
+	.description("Load every page several times and check its render fingerprint never changes (needed for cheat mode)")
+	.option("--base-url <url>", "override the base URL from config")
+	.option("--auth <file>", "path to a shot-scraper auth context file")
+	.option("--concurrency <n>", "pages loaded at once", num)
+	.option("--runs <n>", "loads of every page to compare", num, 2)
+	.option("--save", "ignore attributes that changed between loads from now on (cheatMode.ignoreAttributes), then check again")
+	.action((opts) =>
+		run(() =>
+			fingerprint({
+				root: ROOT,
+				baseUrl: opts.baseUrl,
+				auth: opts.auth,
+				concurrency: opts.concurrency,
+				runs: Math.max(2, opts.runs),
+				save: Boolean(opts.save),
+			}),
+		),
+	);
+
+program
+	.command("cheat")
+	.description("Make cheat mode the default (on), stop using it (off), or show whether it's in use (status)")
+	.argument("[action]", "on, off or status", "status")
+	.action((action: string) =>
+		run(async () => {
+			if (!["on", "off", "status"].includes(action)) throw new Error(`Expected on, off or status, got "${action}"`);
+			return cheat({ root: ROOT, action: action as "on" | "off" | "status" });
+		}),
+	);
 
 program
 	.command("auth")

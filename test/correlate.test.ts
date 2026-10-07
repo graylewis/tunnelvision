@@ -144,7 +144,7 @@ function input(opts: {
 	];
 	const lines = (ls: Line[] = []) => new Map(ls.map((l): [number, string] => (typeof l === "number" ? [l, ""] : l)));
 	const changes = new Map<string, FileChanges>(
-		Object.entries(opts.changes).map(([p, c]) => [p, { oldPath: p, added: lines(c.added), deleted: lines(c.deleted) }]),
+		Object.entries(opts.changes).map(([p, c]) => [p, { oldPath: p, added: lines(c.added), deleted: lines(c.deleted), hunks: [] }]),
 	);
 	return {
 		pages: [{ slug: "index", from: { manifest: manifest(a), styles: styles(opts.from) }, to: { manifest: manifest(b), styles: styles(opts.to) }, match }],

@@ -25,16 +25,18 @@ Stop and say what's missing rather than working around it:
 
 Then check for **dev tool overlays**, which don't block the test but must be reported. Dev servers often float extra UI over the page (toolbars, badges, inspector pills, debug panels) that has nothing to do with the app's design. It lands in the screenshot, drifts between captures of identical code, and shows up as unexplained visual changes. tunnelvision hides these itself, but **only for Astro (the dev toolbar) and TanStack (Devtools, Query Devtools, Router Devtools)**. Anything else gets through. Look in `package.json` (and the framework config) for other dev overlays, for example the Next.js dev indicator, Nuxt DevTools, `vite-plugin-vue-devtools`, the Svelte inspector, `@vercel/toolbar`, `react-scan`, Sentry Spotlight, or Redux/Jotai/XState devtools panels. Write down each one, whether tunnelvision handles it, and whether it's on by default in dev. Section 6 reports them.
 
-Read `.tunnelvision/versions/*/meta.json` and pick the **baseline**: the Version whose `sha` matches `git rev-parse --short HEAD` and isn't `dirty`. If there isn't one, run `tunnelvision shoot` now so the comparison contains only what you're about to change.
+Read `.tunnelvision/versions/*/meta.json` and pick the **baseline**: the Version whose `sha` matches `git rev-parse --short HEAD` and isn't `dirty`. If there isn't one, run `tunnelvision shoot --no-cheat` now so the comparison contains only what you're about to change.
 
 ## 2. Test branch and noise floor
 
 ```sh
 git checkout -b tunnelvision-test/<short-sha>
 git commit --allow-empty -m "tunnelvision test: noise floor"
-tunnelvision shoot
+tunnelvision shoot --no-cheat
 tunnelvision diff <baseline> <noise-key>
 ```
+
+`--no-cheat` makes every capture here a normal one even when cheat mode is the project's default: in cheat mode a page whose render fingerprint is unchanged is carried over rather than captured again, which would hide the noise this step looks for, and the test would grade cheat mode instead of the capture itself (`/setup-tunnelvision` checks cheat mode separately).
 
 Same code, new key, second capture. Anything this diff reports is **noise** — a change tunnelvision sees between two captures of identical code — and it's the cleanest evidence of the false-positive classes below. Ideal output: every page `unchanged`, no Causes, no unexplained changes. Keep the list of noisy elements; step 5 subtracts them.
 
@@ -68,7 +70,7 @@ Confirm the dev server picked the commit up before capturing. Vite dev serves so
 ## 4. Capture and diff
 
 ```sh
-tunnelvision shoot
+tunnelvision shoot --no-cheat
 tunnelvision diff <noise-key> <test-key> --report .tunnelvision/test-report.json
 ```
 

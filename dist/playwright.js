@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { HYDRATE_JS, MATCH_JS } from "./fingerprint.js";
 /**
  * Drive Playwright directly for per-element captures. shot-scraper can't
  * measure elements and screenshot them from the same page load (its
@@ -77,18 +78,26 @@ export function findPlaywrightPython() {
     throw new Error(INSTALL_HINT);
 }
 /**
- * Capture `pages` with one page load each: wait, extract the element tree, and
- * write a full-page screenshot. Results are returned in input order. `onPage`
- * fires as each page completes.
+ * Capture `pages` with one page load each: wait, fingerprint, settle, write a
+ * full-page screenshot, extract the element tree and read the matched styles
+ * of the elements tunnelvision asks for. `onEvent` hears each step as it
+ * happens and, for `fingerprint` (in cheat mode) and `extracted` events,
+ * returns the reply the page is waiting on.
  */
-export function capturePages(pages, opts, onPage) {
+export function runDriver(pages, opts, onEvent) {
     const python = findPlaywrightPython();
     for (const page of pages)
         fs.mkdirSync(path.dirname(page.output), { recursive: true });
     return new Promise((resolve, reject) => {
         const proc = spawn(python, [DRIVER], { stdio: ["pipe", "pipe", "inherit"] });
-        const results = pages.map(() => ({ ok: false, error: "not captured" }));
         let buffered = "";
+        let failed = null;
+        const handling = [];
+        const handle = async (event) => {
+            const reply = await onEvent(event);
+            if (reply && !proc.stdin.destroyed)
+                proc.stdin.write(`${JSON.stringify({ index: event.index, ...reply })}\n`);
+        };
         proc.stdout.setEncoding("utf8");
         proc.stdout.on("data", (chunk) => {
             buffered += chunk;
@@ -98,35 +107,49 @@ export function capturePages(pages, opts, onPage) {
                 buffered = buffered.slice(nl + 1);
                 if (!line)
                     continue;
+                let event;
                 try {
-                    const msg = JSON.parse(line);
-                    const result = msg.ok
-                        ? { ok: true, tree: Array.isArray(msg.tree) ? msg.tree : [], styles: msg.styles ?? null }
-                        : { ok: false, error: msg.error ?? "unknown error" };
-                    results[msg.index] = result;
-                    onPage?.(msg.index, result);
+                    event = JSON.parse(line);
                 }
                 catch {
-                    // ignore stray output
+                    continue; // stray output
                 }
+                handling.push(handle(event).catch((err) => {
+                    failed ??= err;
+                    // Unblock the page so the driver can finish.
+                    if (!proc.stdin.destroyed)
+                        proc.stdin.write(`${JSON.stringify({ index: event.index, carry: false, query: [] })}\n`);
+                }));
             }
+        });
+        proc.stdin.on("error", () => {
+            // The driver exited; its exit code says why.
         });
         proc.on("error", reject);
-        proc.on("close", (code) => {
-            if (code !== 0 && results.every((r) => !r.ok)) {
+        proc.on("close", async (code) => {
+            await Promise.all(handling);
+            if (failed)
+                reject(failed);
+            else if (code !== 0)
                 reject(new Error(`Playwright capture failed (exit ${code}).`));
-            }
-            else {
-                resolve(results);
-            }
+            else
+                resolve();
         });
-        proc.stdin.end(JSON.stringify({
+        proc.stdin.write(`${JSON.stringify({
             viewport: opts.viewport,
             scaleFactor: opts.scaleFactor,
             authFile: opts.authFile ?? null,
             concurrency: opts.concurrency,
+            loadConcurrency: Math.max(opts.concurrency, opts.loadConcurrency ?? opts.concurrency),
             extractJs: opts.extractJs,
+            fingerprintJs: opts.fingerprintJs,
+            hydrateJs: HYDRATE_JS,
+            matchJs: MATCH_JS,
+            cheat: opts.cheat,
+            mode: opts.mode ?? "capture",
+            knownUrls: opts.knownUrls,
+            changedSelectors: opts.changedSelectors,
             pages,
-        }));
+        })}\n`);
     });
 }

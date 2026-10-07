@@ -1,3 +1,5 @@
 # Capture style data for every element on every per-element capture
 
 Every per-element capture records tracked properties and winning declarations for every element, even though only the few elements that visibly change end up needing them. At capture time we don't know which elements will change: the diff runs later, and once a commit's page is gone it can't be asked again. Making this opt-in would leave versions that can never be correlated. We accept slower captures (one CDP call per leaf element, pipelined, with ancestors read from the leaves' inherited chains) and a `styles.json` per page (about 350KB for 140 elements, kept apart from `elements.json` and written compactly) in exchange for being able to compare any version against any later one. Captures made before this have no style data, and correlation is skipped for them.
+
+Amended by ADR 0007: a Version still holds style data for every element, but data for unchanged pages and elements is carried over from the nearest ancestor Version instead of being queried again.

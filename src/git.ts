@@ -151,6 +151,22 @@ export interface FileChanges {
 	added: Map<number, string>;
 	/** Lines deleted from the old version: 1-based line number → the line's text. */
 	deleted: Map<number, string>;
+	/** The diff's hunks, in order, as their `@@` headers give them. */
+	hunks: Hunk[];
+	/** The file is new: it has no old lines. */
+	created?: boolean;
+}
+
+/**
+ * One `@@ -oldStart,oldCount +newStart,newCount @@` hunk. A count of 0 means
+ * the hunk only adds (or only deletes) lines: its start is then the line
+ * they come after.
+ */
+export interface Hunk {
+	oldStart: number;
+	oldCount: number;
+	newStart: number;
+	newCount: number;
 }
 
 /** Strip git's `a/` / `b/` prefix, or return null for `/dev/null`. */
@@ -169,6 +185,7 @@ export function parseUnifiedDiff(text: string): Map<string, FileChanges> {
 	const out = new Map<string, FileChanges>();
 	let oldPath: string | null = null;
 	let newPath: string | null = null;
+	let created = false;
 	let current: FileChanges | null = null;
 	let oldLine = 0;
 	let newLine = 0;
@@ -176,7 +193,13 @@ export function parseUnifiedDiff(text: string): Map<string, FileChanges> {
 	const open = (): FileChanges | null => {
 		const key = newPath ?? oldPath;
 		if (!key) return null;
-		const changes = out.get(key) ?? { oldPath: oldPath ?? key, added: new Map<number, string>(), deleted: new Map<number, string>() };
+		const changes = out.get(key) ?? {
+			oldPath: oldPath ?? key,
+			added: new Map<number, string>(),
+			deleted: new Map<number, string>(),
+			hunks: [],
+			...(created ? { created: true } : {}),
+		};
 		out.set(key, changes);
 		return changes;
 	};
@@ -210,15 +233,18 @@ export function parseUnifiedDiff(text: string): Map<string, FileChanges> {
 			oldLeft = hunk[2] === undefined ? 1 : Number(hunk[2]);
 			newLine = Number(hunk[3]);
 			newLeft = hunk[4] === undefined ? 1 : Number(hunk[4]);
+			current?.hunks.push({ oldStart: oldLine, oldCount: oldLeft, newStart: newLine, newCount: newLeft });
 			continue;
 		}
 		if (line.startsWith("diff --git ")) {
 			const m = line.match(/^diff --git a\/(.*) b\/(.*)$/);
 			oldPath = m ? m[1] : null;
 			newPath = m ? m[2] : null;
+			created = false;
 			current = null;
 		} else if (line.startsWith("--- ")) {
 			oldPath = diffPath(line.slice(4), "a/");
+			created = oldPath === null;
 		} else if (line.startsWith("+++ ")) {
 			newPath = diffPath(line.slice(4), "b/");
 			current = open();
@@ -240,4 +266,29 @@ export function parseUnifiedDiff(text: string): Map<string, FileChanges> {
 export function changedLines(root: string, fromRev: string, toRev: string): Map<string, FileChanges> | null {
 	const text = tryGit(root, ["diff", "-U0", "-M", "--no-color", "--no-ext-diff", fromRev, toRev, "--"]);
 	return text === null ? null : parseUnifiedDiff(text);
+}
+
+/** A file's contents at a revision (`path` relative to the repository's top level), or null. */
+export function fileAt(root: string, rev: string, file: string): string | null {
+	try {
+		return execFileSync("git", ["show", `${rev}:${file}`], {
+			cwd: root,
+			stdio: ["ignore", "pipe", "ignore"],
+			encoding: "utf8",
+			maxBuffer: 256 * 1024 * 1024,
+		});
+	} catch {
+		return null;
+	}
+}
+
+/** Full SHAs of HEAD and its first-parent ancestors, nearest first. */
+export function firstParentShas(root: string, max = 200): string[] {
+	const out = tryGit(root, ["rev-list", "--first-parent", `--max-count=${max}`, "HEAD"]);
+	return out ? out.split("\n").filter(Boolean) : [];
+}
+
+/** The project root's path inside the repository, POSIX-style ("" at the top level). */
+export function repoPrefix(root: string): string {
+	return tryGit(root, ["rev-parse", "--show-prefix"])?.replace(/\/$/, "") ?? "";
 }

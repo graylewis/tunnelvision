@@ -138,6 +138,7 @@ export function parseUnifiedDiff(text) {
     const out = new Map();
     let oldPath = null;
     let newPath = null;
+    let created = false;
     let current = null;
     let oldLine = 0;
     let newLine = 0;
@@ -145,7 +146,13 @@ export function parseUnifiedDiff(text) {
         const key = newPath ?? oldPath;
         if (!key)
             return null;
-        const changes = out.get(key) ?? { oldPath: oldPath ?? key, added: new Map(), deleted: new Map() };
+        const changes = out.get(key) ?? {
+            oldPath: oldPath ?? key,
+            added: new Map(),
+            deleted: new Map(),
+            hunks: [],
+            ...(created ? { created: true } : {}),
+        };
         out.set(key, changes);
         return changes;
     };
@@ -179,16 +186,19 @@ export function parseUnifiedDiff(text) {
             oldLeft = hunk[2] === undefined ? 1 : Number(hunk[2]);
             newLine = Number(hunk[3]);
             newLeft = hunk[4] === undefined ? 1 : Number(hunk[4]);
+            current?.hunks.push({ oldStart: oldLine, oldCount: oldLeft, newStart: newLine, newCount: newLeft });
             continue;
         }
         if (line.startsWith("diff --git ")) {
             const m = line.match(/^diff --git a\/(.*) b\/(.*)$/);
             oldPath = m ? m[1] : null;
             newPath = m ? m[2] : null;
+            created = false;
             current = null;
         }
         else if (line.startsWith("--- ")) {
             oldPath = diffPath(line.slice(4), "a/");
+            created = oldPath === null;
         }
         else if (line.startsWith("+++ ")) {
             newPath = diffPath(line.slice(4), "b/");
@@ -212,4 +222,27 @@ export function parseUnifiedDiff(text) {
 export function changedLines(root, fromRev, toRev) {
     const text = tryGit(root, ["diff", "-U0", "-M", "--no-color", "--no-ext-diff", fromRev, toRev, "--"]);
     return text === null ? null : parseUnifiedDiff(text);
+}
+/** A file's contents at a revision (`path` relative to the repository's top level), or null. */
+export function fileAt(root, rev, file) {
+    try {
+        return execFileSync("git", ["show", `${rev}:${file}`], {
+            cwd: root,
+            stdio: ["ignore", "pipe", "ignore"],
+            encoding: "utf8",
+            maxBuffer: 256 * 1024 * 1024,
+        });
+    }
+    catch {
+        return null;
+    }
+}
+/** Full SHAs of HEAD and its first-parent ancestors, nearest first. */
+export function firstParentShas(root, max = 200) {
+    const out = tryGit(root, ["rev-list", "--first-parent", `--max-count=${max}`, "HEAD"]);
+    return out ? out.split("\n").filter(Boolean) : [];
+}
+/** The project root's path inside the repository, POSIX-style ("" at the top level). */
+export function repoPrefix(root) {
+    return tryGit(root, ["rev-parse", "--show-prefix"])?.replace(/\/$/, "") ?? "";
 }

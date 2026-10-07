@@ -21,6 +21,12 @@ if you're still finding diffs identified where they shouldn't be, try using --wa
 
 if your app is behind an auth wall, use --auth to interactively log into your app and then store your auth information for tunnelvision to use (stored in .tunnelvision, so make sure not to commit it). tunnelvision will use the auth information when screenshotting your app. 
 
+### cheat mode
+sometimes running a tunnelvision shoot (snapshot) takes too long (especially in projects that use tailwind.). my goal is that for the majority of websites, runs take less than 10 seconds. To support this, I added 'cheat mode', 
+which uses code hashing to skip a lot of the lengthy processing calls where no changes were made. 
+
+in some edge cases, cheat mode will miss some changes. mostly in cases where javascript changes the styles or DOM without user input. the setup skill will test whether cheat mode is appropriate for your project, and set this up for you.
+
 ----
 # agent-written docs
 ## tunnelvision
@@ -166,6 +172,12 @@ i18n prefixes. If you use a base path, put it in `baseUrl`.
 - **Capture** — a fixed viewport (default 1280×800) guarantees identical
   dimensions so diffs are clean. A page that fails to load is skipped and the run
   exits non-zero.
+- **Carry-over** — a capture reuses whatever the nearest ancestor Version
+  already holds instead of reading it again, so a commit that changes one page
+  costs about one page. See [Speed: carry-over and cheat mode](#speed-carry-over-and-cheat-mode).
+- **Redirects** — a page that lands on another page (`/login` → `/` when
+  signed out) is recorded as a redirect instead of being captured again.
+  Starting or stopping redirecting shows up as one change to the page.
 - **Diffing** — compares two versions with pixelmatch. Only pages present in both
   are pixel-diffed; added/removed pages are reported separately. A page counts as
   changed when its mismatched-pixel percentage exceeds `maxDiffPercent`.
@@ -183,6 +195,8 @@ i18n prefixes. If you use a base path, put it in `baseUrl`.
 | `tunnelvision clean` | Prune versions (`--keep <n>`), diffs (`--diffs`), or everything (`--all`). |
 | `tunnelvision install-hook` | Install an opt-in git `post-commit` hook that runs `review` in the background and notifies you when it's done (see below). |
 | `tunnelvision skills` | Install the agent skills (`/setup-tunnelvision`, `/test-tunnelvision`) into `.agents/skills/`, linked from `.claude/skills/`. |
+| `tunnelvision fingerprint` | Load every page a few times and check its render fingerprint never changes; `--save` ignores attributes that vary from load to load (see cheat mode below). |
+| `tunnelvision cheat [on\|off\|status]` | Make cheat mode the default (recording the versions it was validated with), stop using it, or show where it stands. |
 | `tunnelvision inspector` | Open a local web UI to explore per-element diffs as a tree (see below). |
 | `tunnelvision update-pr` | Comment on a GitHub PR with per-element diffs, anchored at each element's source line (see below). |
 
@@ -200,6 +214,7 @@ i18n prefixes. If you use a base path, put it in `baseUrl`.
 --max-diff-percent <n>  page mismatch % cutoff for pass/fail
 --only-pages            capture one screenshot per page instead of every element (see below)
 --concurrency <n>       pages captured at once in per-element captures (default 4)
+--cheat / --no-cheat    use cheat mode for this capture, or don't, whatever the config says
 --json                  print a machine-readable report
 --report <path>         write JSON report (use - for stdout)
 ```
@@ -467,6 +482,58 @@ older version.
 The review captures whatever your app is serving when it runs, so let it finish
 before editing files the app serves, or the capture may include those edits.
 
+## Speed: carry-over and cheat mode
+
+Reading every element's matched CSS rules over CDP is most of a capture's
+cost: each `CSS.getMatchedStylesForNode` answer repeats every ancestor's rules
+(Tailwind's universal rules at every level make it ~400KB), and the renderer
+answers one at a time. So a capture reuses what the nearest ancestor Version
+already knows: a Version under the same key, else the newest Version of the
+nearest commit on `HEAD`'s first-parent history.
+
+**Every capture (normal mode).** Each page is still loaded, settled,
+screenshotted and its element tree extracted, which is cheap. An element then
+keeps its previous style data when all of these hold, and only the rest are
+read over CDP:
+
+- it's paired with an element of the earlier capture (by identity, as diffs pair them);
+- its tracked computed values are identical;
+- its own JSX line isn't one the commit added or edited;
+- no style rule the commit added, edited or deleted matches it (the rules'
+  selectors are tested in the page, so a new rule that wins with the same value
+  is still noticed);
+- every rule its winning declarations come from can be brought up to date
+  exactly: lines that shifted are moved, a line inside an edited block keeps
+  its place only if its exact text is still there.
+
+Carried data is rewritten to the new commit's line numbers, so every Version
+stays correct on its own. Nothing is carried over when a lockfile changed
+(installed packages may have too) or the capture settings differ.
+
+**Cheat mode** (`--cheat`, or the configured default) goes further: once a page
+has hydrated, and before it's scrolled or settled, it takes a *render
+fingerprint* — the page's normalized DOM, the text of its CSS, and the bytes of
+every script, stylesheet, image and font it uses — and when that matches the
+earlier capture's, the whole page is carried over without a screenshot. A page
+whose fingerprint differs is captured normally. Cheat mode trusts that the
+same inputs render the same pixels, so it's opt-in: `/setup-tunnelvision`
+plants changes and only makes it the default (`tunnelvision cheat on`) when it
+finds exactly what normal mode does. The validation records tunnelvision's and
+the framework's versions; when either changes, captures run normally and
+`doctor` says so until it's validated again.
+
+Things that differ between loads of the same code are left out of the
+fingerprint: `<script>` elements (their code is hashed as a resource),
+`?t=` HMR stamps, the order of inline style declarations, a few known dev-mode
+attributes (Astro's `server-render-time`), and whatever `tunnelvision
+fingerprint --save` finds (`cheatMode.ignoreAttributes`). It waits up to 5s
+for entrance animations to finish first. Audio and video are identified by
+their `ETag`/`Last-Modified` rather than their bytes, since they load in ranges.
+
+On the reference Astro site (21 pages, warm dev server): a full capture takes
+about 150s, a normal capture of a typical commit about 35–50s, and cheat mode
+about 10–15s.
+
 ## Pull request comments (`update-pr`)
 
 ```bash
@@ -549,6 +616,7 @@ it to the root.
   },
   "styles": { "properties": ["color", "padding-top", "..."] },
   "updatePr": { "mode": "code-first" },
+  "cheatMode": { "enabled": false, "ignoreAttributes": [] },
   "pages": {
     "/pricing": { "waitFor": "document.querySelector('.loaded')", "wait": 2000, "settle": 3000 }
   }
@@ -565,6 +633,11 @@ at diff time, so it also affects existing captures.
 `styles.properties` replaces the default list of tracked properties (leave it
 out to keep the defaults, which change with new versions). It's recorded at
 capture time.
+
+`cheatMode` is managed by `tunnelvision cheat` and `tunnelvision fingerprint
+--save` (see [cheat mode](#speed-carry-over-and-cheat-mode)): `enabled` makes it
+the default, `validatedWith` records the versions it was validated with, and
+`ignoreAttributes` lists attributes left out of the render fingerprint.
 
 `wait` runs right after the page loads. Then tunnelvision hides framework
 dev overlays (the Astro dev toolbar and the TanStack Devtools, Query Devtools
@@ -595,7 +668,9 @@ base URL and fails fast if it can't be reached.
 tunnelvision.json                   # committed config
 .tunnelvision/                      # git-ignored
   auth.json                         # secret
-  versions/<key>/<page>/            # page.png, elements.json, styles.json
+  versions/<key>/<page>/            # page.png, elements.json, styles.json, capture.json (settings + render fingerprint)
+  versions/<key>/<page>/redirect.json   # instead, for a page that lands on another page
+  versions/.<key>.<pid>/            # a capture still being written; swapped in when it's done
   versions/<key>/<page>.png         # --only-pages screenshots, plus meta.json & shots.yml
   diffs/<from>__<to>/<page>.png      # pixelmatch diff images
   review.log                        # output of the last background review (install-hook)

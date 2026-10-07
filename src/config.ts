@@ -45,6 +45,20 @@ export interface UpdatePrConfig {
 	mode: PrMode;
 }
 
+/**
+ * Cheat mode: carry a page over without settling or screenshotting it when its
+ * render fingerprint matches the previous Version's (see
+ * docs/adr/0008-cheat-mode-is-opt-in-and-validated.md).
+ */
+export interface CheatModeConfig {
+	/** Use cheat mode by default. Only honoured while `validatedWith` matches the installed versions. */
+	enabled: boolean;
+	/** Attributes left out of the render fingerprint because they change between loads of the same code. */
+	ignoreAttributes: string[];
+	/** tunnelvision's and the framework's versions when cheat mode was shown to find exactly what normal mode does. */
+	validatedWith?: Record<string, string>;
+}
+
 export interface Viewport {
 	width: number;
 	height: number;
@@ -90,6 +104,7 @@ export interface Config {
 	match: MatchConfig;
 	styles: StylesConfig;
 	updatePr: UpdatePrConfig;
+	cheatMode: CheatModeConfig;
 	/** Optional per-page overrides keyed by URL path (e.g. "/pricing"). */
 	pages?: Record<string, PageOverride>;
 }
@@ -118,6 +133,10 @@ export const DEFAULT_CONFIG: Config = {
 	updatePr: {
 		mode: "code-first",
 	},
+	cheatMode: {
+		enabled: false,
+		ignoreAttributes: [],
+	},
 };
 
 /** Deep-merge a partial config on top of defaults. */
@@ -130,6 +149,7 @@ function withDefaults(partial: Partial<Config>): Config {
 		match: { ...DEFAULT_CONFIG.match, ...(partial.match ?? {}) },
 		styles: { ...DEFAULT_CONFIG.styles, ...(partial.styles ?? {}) },
 		updatePr: { ...DEFAULT_CONFIG.updatePr, ...(partial.updatePr ?? {}) },
+		cheatMode: { ...DEFAULT_CONFIG.cheatMode, ...(partial.cheatMode ?? {}) },
 	};
 }
 
@@ -172,6 +192,22 @@ export function saveConfig(paths: Paths, config: Config): void {
 }
 
 /**
+ * Change the config file as written, leaving every setting it doesn't touch
+ * (and the defaults it leaves out) alone.
+ */
+export function updateConfigFile(paths: Paths, change: (raw: Partial<Config>) => void): void {
+	const file = existingConfig(paths) ?? paths.config;
+	let raw: Partial<Config> = {};
+	try {
+		raw = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<Config>;
+	} catch {
+		// start from nothing
+	}
+	change(raw);
+	fs.writeFileSync(file, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+}
+
+/**
  * CLI flag overrides that can be layered on top of loaded config.
  * Precedence: flags > tunnelvision.json > defaults.
  */
@@ -189,6 +225,8 @@ export interface Overrides {
 	concurrency?: number;
 	/** Capture one full-page screenshot per page instead of every visible block-level element. */
 	onlyPages?: boolean;
+	/** Force cheat mode on or off, whatever the config says. */
+	cheat?: boolean;
 }
 
 export function applyOverrides(config: Config, o: Overrides): Config {
@@ -199,6 +237,7 @@ export function applyOverrides(config: Config, o: Overrides): Config {
 		match: { ...config.match },
 		styles: { ...config.styles },
 		updatePr: { ...config.updatePr },
+		cheatMode: { ...config.cheatMode },
 	};
 	if (o.baseUrl !== undefined) next.baseUrl = o.baseUrl;
 	if (o.width !== undefined) next.viewport.width = o.width;

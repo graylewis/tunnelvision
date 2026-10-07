@@ -26,6 +26,10 @@ export const DEFAULT_CONFIG = {
     updatePr: {
         mode: "code-first",
     },
+    cheatMode: {
+        enabled: false,
+        ignoreAttributes: [],
+    },
 };
 /** Deep-merge a partial config on top of defaults. */
 function withDefaults(partial) {
@@ -37,6 +41,7 @@ function withDefaults(partial) {
         match: { ...DEFAULT_CONFIG.match, ...(partial.match ?? {}) },
         styles: { ...DEFAULT_CONFIG.styles, ...(partial.styles ?? {}) },
         updatePr: { ...DEFAULT_CONFIG.updatePr, ...(partial.updatePr ?? {}) },
+        cheatMode: { ...DEFAULT_CONFIG.cheatMode, ...(partial.cheatMode ?? {}) },
     };
 }
 export function configExists(paths) {
@@ -74,6 +79,22 @@ export function saveConfig(paths, config) {
     const saved = styles.properties === DEFAULT_CONFIG.styles.properties ? rest : config;
     fs.writeFileSync(paths.config, `${JSON.stringify(saved, null, 2)}\n`, "utf8");
 }
+/**
+ * Change the config file as written, leaving every setting it doesn't touch
+ * (and the defaults it leaves out) alone.
+ */
+export function updateConfigFile(paths, change) {
+    const file = existingConfig(paths) ?? paths.config;
+    let raw = {};
+    try {
+        raw = JSON.parse(fs.readFileSync(file, "utf8"));
+    }
+    catch {
+        // start from nothing
+    }
+    change(raw);
+    fs.writeFileSync(file, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+}
 export function applyOverrides(config, o) {
     const next = {
         ...config,
@@ -82,6 +103,7 @@ export function applyOverrides(config, o) {
         match: { ...config.match },
         styles: { ...config.styles },
         updatePr: { ...config.updatePr },
+        cheatMode: { ...config.cheatMode },
     };
     if (o.baseUrl !== undefined)
         next.baseUrl = o.baseUrl;

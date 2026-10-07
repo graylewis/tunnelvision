@@ -68,6 +68,10 @@ export const DEVTOOLS_OVERLAY_SELECTORS: readonly string[] = [
  *    step, so pages with long ones need a longer settle.
  * 4. Turn off CSS animations and transitions, which freezes looping effects
  *    (pulsing dots, spinners) and snaps any leftover fades to their end state.
+ * 5. Wait (up to 5s) for every rendered `<img>` to load and decode, the lazy
+ *    ones the scroll pass started included, so a capture doesn't catch an
+ *    image half-drawn. One that still hasn't is recorded as not loaded, which
+ *    correlation treats as unknown rather than changed.
  *
  * Returns a promise; Playwright's `evaluate` waits for it to resolve.
  */
@@ -121,6 +125,17 @@ async () => {
 	style.textContent =
 		"*, *::before, *::after { animation: none !important; transition: none !important; }";
 	(document.head || document.documentElement).appendChild(style);
+
+	const rendering = Array.from(document.images).filter((img) => (img.currentSrc || img.src) && img.getClientRects().length > 0);
+	const decoded = (img) =>
+		(img.complete
+			? Promise.resolve()
+			: new Promise((r) => {
+					img.addEventListener("load", r, { once: true });
+					img.addEventListener("error", r, { once: true });
+				})
+		).then(() => (img.naturalWidth > 0 ? img.decode().catch(() => {}) : undefined));
+	await Promise.race([Promise.all(rendering.map(decoded)), sleep(5000)]);
 	await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 }
 `.trim();

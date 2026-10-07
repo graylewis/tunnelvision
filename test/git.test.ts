@@ -109,6 +109,42 @@ test("parseUnifiedDiff: renames, new files, deleted files and missing newlines",
 	assert.equal(gone?.added.size, 0);
 });
 
+test("parseUnifiedDiff: binary files are changed without lines", () => {
+	const diff = [
+		"diff --git a/public/images/avatar.png b/public/images/avatar.png",
+		"index 1111111..2222222 100644",
+		"Binary files a/public/images/avatar.png and b/public/images/avatar.png differ",
+		"diff --git a/src/assets/new.webp b/src/assets/new.webp",
+		"new file mode 100644",
+		"index 0000000..3333333",
+		"Binary files /dev/null and b/src/assets/new.webp differ",
+		"diff --git a/src/assets/gone.jpg b/src/assets/gone.jpg",
+		"deleted file mode 100644",
+		"index 4444444..0000000",
+		"Binary files a/src/assets/gone.jpg and /dev/null differ",
+		"diff --git a/src/app.css b/src/app.css",
+		"--- a/src/app.css",
+		"+++ b/src/app.css",
+		"@@ -1 +1 @@",
+		"-a { color: red }",
+		"+a { color: blue }",
+		"",
+	].join("\n");
+	const files = parseUnifiedDiff(diff);
+
+	const replaced = files.get("public/images/avatar.png");
+	assert.equal(replaced?.binary, true);
+	assert.equal(replaced?.oldPath, "public/images/avatar.png");
+	assert.equal(replaced?.added.size, 0);
+	assert.equal(replaced?.created, undefined);
+
+	assert.equal(files.get("src/assets/new.webp")?.binary, true);
+	assert.equal(files.get("src/assets/new.webp")?.created, true);
+	assert.equal(files.get("src/assets/gone.jpg")?.binary, true);
+	assert.equal(files.get("src/app.css")?.binary, undefined);
+	assert.deepEqual(sorted(files.get("src/app.css")?.added), [1]);
+});
+
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }

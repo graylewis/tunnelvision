@@ -24,6 +24,14 @@ _Avoid_: Node, component
 The text an element renders, including its inline descendants but not the text of elements nested inside it.
 _Avoid_: textContent (that includes nested elements' text)
 
+**Own images**:
+The images an element displays, including those of its inline descendants but not those of elements nested inside it.
+_Avoid_: Child images, media
+
+**Content**:
+What an element displays rather than how it's styled: its own text (copy) and its own images (an `<img>`'s chosen source, a `<video>` poster, a `<picture>` source, an SVG `<image>`, an `<object>`'s data). A CSS background image is style, not content, and an image source that hasn't loaded is unknown, not changed.
+_Avoid_: Copy (that's only the text half), media (too broad: it includes video and audio playback)
+
 **Tracked property**:
 A computed CSS property whose value is recorded for every element, drawn from a curated set of visual properties.
 _Avoid_: Style, computed style (for the whole set)
@@ -62,8 +70,12 @@ _Avoid_: Diff (that's the image), regression
 A line added or deleted in the git diff between the commits of two versions.
 _Avoid_: Hunk (a hunk can hold several changed lines)
 
+**Changed binary file**:
+A file the git diff between the commits of two versions reports as changed without lines, such as an image added, replaced or deleted.
+_Avoid_: Changed asset (an SVG is an asset but has changed lines)
+
 **Cause**:
-A changed line that explains a visual change: a declaration, selector or custom-property definition in a stylesheet, an element's own JSX line, or a line holding the words an element's own text gained or lost (a copy cause).
+A changed line or changed binary file that explains a visual change: a declaration, selector or custom-property definition in a stylesheet, an element's own JSX line, or a line holding content an element gained or lost (a content cause, either copy or image), or a changed binary file holding one of an element's own images (also an image content cause).
 _Avoid_: Culprit, source (source already means an element's JSX location)
 
 **Knock-on effect**:
@@ -71,7 +83,7 @@ A visual change on an element whose own tracked properties didn't change, attrib
 _Avoid_: Displacement, side effect
 
 **Direct effect**:
-A visual change a cause explains other than as a knock-on effect: the cause reaches the element through its own winning declarations (directly, by inheritance, or via a custom property), through a selector change, or through its own JSX or text.
+A visual change a cause explains other than as a knock-on effect: the cause reaches the element through its own winning declarations (directly, by inheritance, or via a custom property), through a selector change, or through its own JSX or content.
 _Avoid_: Own change, primary change
 
 **Origin**:

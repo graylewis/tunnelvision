@@ -77,8 +77,9 @@ export class GitHub {
     /** Which lines of each changed file sit inside a diff hunk (and so can be commented on). */
     async commentableLines(number) {
         const files = await this.list(`/pulls/${number}/files`);
-        const out = { right: new Map(), left: new Map(), changed: { right: new Map(), left: new Map() } };
+        const out = { right: new Map(), left: new Map(), changed: { right: new Map(), left: new Map() }, files: new Set() };
         for (const f of files) {
+            out.files.add(f.filename);
             if (!f.patch)
                 continue;
             const right = new Set();
@@ -123,6 +124,10 @@ export class GitHub {
     /** Post all `comments` as a single review, so the PR gets one notification. */
     createReview(number, commitId, comments) {
         return this.request("POST", `/pulls/${number}/reviews`, { commit_id: commitId, event: "COMMENT", comments });
+    }
+    /** Comment on a whole file rather than a line (a changed binary file, which has none). */
+    createFileComment(number, commitId, path, body) {
+        return this.request("POST", `/pulls/${number}/comments`, { commit_id: commitId, path, body, subject_type: "file" });
     }
     /** A URL that renders `file` at `commit` as an image, including in private repos. */
     imageUrl(commit, file) {

@@ -5,7 +5,7 @@ import pc from "picocolors";
 import type { Overrides } from "../config.js";
 import { diffDir, versionDir, type Paths } from "../paths.js";
 import { diffVersions, type DiffReport } from "../diffengine.js";
-import { addCorrelation } from "../correlate.js";
+import { addCorrelation, versionMapper } from "../correlate.js";
 import { latestExcluding } from "../versions.js";
 import { printReport, writeJsonReport } from "../report.js";
 import { notify, type NotificationAction } from "../notify.js";
@@ -159,6 +159,7 @@ async function reviewLocked(opts: ReviewOptions, ctx: Awaited<ReturnType<typeof 
 		diffDir(ctx.paths, baseline.key, ctx.version.key),
 		ctx.config,
 		{ from: baseline.key, to: ctx.version.key },
+		versionMapper(ctx.paths, baseline.key, ctx.version.key),
 	);
 	addCorrelation(ctx.paths, report);
 

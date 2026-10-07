@@ -1,9 +1,12 @@
 import path from "node:path";
 import type { DiffReport, PageDiff, PageStatus } from "./diffengine.js";
-import { STYLE_MANIFEST, type ElementManifest, type ElementNode } from "./elements.js";
-import { changedLines, isGitRepo, topLevel, type FileChanges } from "./git.js";
+import { IMAGES_VERSION, STYLE_MANIFEST, type ElementManifest, type ElementNode, type OwnImage } from "./elements.js";
+import { publicDir } from "./fileroutes.js";
+import { changedLines, isGitRepo, repoPrefix, topLevel, type FileChanges } from "./git.js";
+import { imageFiles, imageName } from "./imagesource.js";
 import type { ElementMatch } from "./matching.js";
 import { realpath, type ComponentSource } from "./reactsource.js";
+import { LineMapper } from "./remap.js";
 import { readMeta, versionRev } from "./versions.js";
 import { versionDir, type Paths } from "./paths.js";
 import { pickRepresentative } from "./representative.js";
@@ -21,11 +24,17 @@ import { readStyleManifest, type DeclRef, type ElementStyles, type SourceLoc, ty
  * (deleted lines) the baseline's winners are used, on the new side (added
  * lines) the target's, so a deleted rule is still found.
  *
- * An element whose own text changed is searched for in the changed lines
- * themselves: the words it gained are looked for in added lines, the words it
- * lost in deleted ones, in any file but a stylesheet. That finds copy wherever
- * it was written (a JSX text line, a prop, a constants or translations file),
- * which the element's JSX line alone can't.
+ * An element whose content changed is searched for in the changed lines
+ * themselves. For its own text (copy), the words it gained are looked for in
+ * added lines, the words it lost in deleted ones, in any file but a
+ * stylesheet. That finds copy wherever it was written (a JSX text line, a
+ * prop, a constants or translations file), which the element's JSX line
+ * alone can't. For its own images, the file names of the sources it gained
+ * are looked for literally in added lines, and a deleted line holding the
+ * name of one it lost points at the added lines that replaced it. An image
+ * whose source stayed the same is traced to its file, when that file is a
+ * changed binary file or a changed SVG (see
+ * docs/adr/0009-changed-binary-files-are-causes.md).
  *
  * Likewise, when a property's winning rule switches to or from a
  * single-class selector (a utility class: `.md\:grid-cols-4` to
@@ -64,7 +73,7 @@ export interface PropChange {
 }
 
 /** `new` / `removed`: the new or removed element itself; `inside`: a new or removed element inside it. */
-export type EffectVia = "direct" | "inherited" | "var" | "jsx" | "copy" | "knock-on" | "new" | "removed" | "inside";
+export type EffectVia = "direct" | "inherited" | "var" | "jsx" | "content" | "knock-on" | "new" | "removed" | "inside";
 
 /** A visual change a cause produced. */
 export interface Effect {
@@ -79,19 +88,25 @@ export interface Effect {
 	via: EffectVia;
 	/** Changed pixels, used to pick the representative screenshot. */
 	size: number;
-	/** Other causes of this element's change, as `path:line`. */
+	/** Other causes of this element's change, as `path:line` (just `path` for a changed binary file). */
 	alsoCausedBy?: string[];
 }
 
-export type CauseKind = "declaration" | "selector" | "variable" | "jsx" | "copy";
+export type CauseKind = "declaration" | "selector" | "variable" | "jsx" | "content";
 
-/** A changed line that explains visual changes. */
+/** What a content cause changed: an element's own text, or one of its own images. */
+export type ContentKind = "copy" | "image";
+
+/** A changed line, or a changed binary file, that explains visual changes. */
 export interface Cause {
 	/** Repository-relative path in the target, as a PR diff names it. */
 	path: string;
-	line: number;
+	/** Absent for a changed binary file, which has no lines. */
+	line?: number;
 	side: Side;
 	kind: CauseKind;
+	/** Set when `kind` is `content`. */
+	content?: ContentKind;
 	/** What's on the line, e.g. `.card { padding: 18px }`. */
 	text?: string;
 	effects: Effect[];
@@ -168,6 +183,8 @@ export interface CorrelateInput {
 	top: string;
 	/** Tracked properties that only count when a declaration sets them (layout results otherwise). */
 	layoutProperties?: Set<string>;
+	/** The directory served at the site's root, relative to `root` (default `public`). */
+	publicDir?: string;
 }
 
 const VISUAL: Set<PageStatus> = new Set(["changed", "size-mismatch"]);
@@ -177,15 +194,24 @@ export const LAYOUT_PROPERTIES = new Set(["width", "height", "min-width", "min-h
 const STOP_WORDS = new Set(["the", "and", "for", "you", "your", "are", "with", "this", "that", "from", "our", "was", "has", "have", "its"]);
 /** More changed lines than this containing an element's new copy or class is a coincidence, not a cause. */
 const MAX_MATCHING_LINES = 5;
+/** Changed pixels this close to an image's box (CSS pixels) still count as inside it. */
+const IMAGE_TOLERANCE = 2;
 
 interface Candidate {
 	side: Side;
 	/** Repository-relative, on that side. */
 	path: string;
-	line: number;
+	/** Absent for a changed binary file. */
+	line?: number;
 	kind: CauseKind;
+	content?: ContentKind;
 	via: EffectVia;
 	text?: string;
+}
+
+/** A cause's location as people read it: `path:line`, or just `path` for a changed binary file. */
+export function causeLocation(c: { path: string; line?: number }): string {
+	return c.line === undefined ? c.path : `${c.path}:${c.line}`;
 }
 
 /** An element with a visual change, and what might explain it. */
@@ -196,7 +222,7 @@ interface Changed {
 	fromNode?: ElementNode;
 	status: PageStatus;
 	props: PropChange[];
-	/** Some property changed because its declaration did, or its copy did on a changed line, so the change is the element's own. */
+	/** Some property changed because its declaration did, or its content did on a changed line or file, so the change is the element's own. */
 	own: boolean;
 	size: number;
 	note?: string;
@@ -260,6 +286,22 @@ function searchTerms(ws: string[]): string[] {
 	return distinctive.length ? distinctive : ws;
 }
 
+/** Whether `text` holds the file name `name` as a whole, not inside a longer name (`a.png` in `data.png`). */
+function holdsName(text: string, name: string): boolean {
+	const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return new RegExp(`(?:^|[^\\w.-])${escaped}(?:$|[^\\w.-])`).test(text);
+}
+
+/** The words two lines share, as a share of the first's: how much `b` reads like a rewrite of `a`. */
+function likeness(a: Set<string>, b: Set<string>): number {
+	return a.size ? [...a].filter((w) => b.has(w)).length / a.size : 0;
+}
+
+/** Own images that animate or play, whose pixels can differ between loads with nothing changed. */
+function animates(image: OwnImage): boolean {
+	return image.tag === "video" || /\.gif$/i.test(imageName(image.src) ?? "");
+}
+
 /** `text` in quotes, shortened for a note. */
 function quote(text: string): string {
 	return JSON.stringify(text.length > 40 ? `${text.slice(0, 39)}…` : text);
@@ -297,8 +339,13 @@ export function correlate(input: CorrelateInput): Correlation {
 		added.set(p, c.added);
 		deleted.set(c.oldPath, { lines: c.deleted, path: p });
 	}
-	const isChanged = (side: Side, p: string, line: number) =>
-		side === "RIGHT" ? Boolean(added.get(p)?.has(line)) : Boolean(deleted.get(p)?.lines.has(line));
+	/** A changed line, or with no line, a changed binary file. */
+	const isChanged = (side: Side, p: string, line: number | undefined) =>
+		line === undefined
+			? Boolean(side === "RIGHT" ? input.changes.get(p)?.binary : input.changes.get(deleted.get(p)?.path ?? p)?.binary)
+			: side === "RIGHT"
+				? Boolean(added.get(p)?.has(line))
+				: Boolean(deleted.get(p)?.lines.has(line));
 	const targetPath = (side: Side, p: string) => (side === "RIGHT" ? p : (deleted.get(p)?.path ?? p));
 
 	// Changed lines copy or class names could be on, with their words: anything but stylesheets.
@@ -437,7 +484,127 @@ export function correlate(input: CorrelateInput): Correlation {
 			const top = Math.max(0, ...found.map(share));
 			found = found.filter((l) => share(l) === top);
 			if (found.length > MAX_MATCHING_LINES) return [];
-			return found.map((l) => ({ side, path: l.path, line: l.line, kind: "copy", via: "copy", text: l.text.trim() }));
+			return found.map((l) => ({ side, path: l.path, line: l.line, kind: "content", content: "copy", via: "content", text: l.text.trim() }));
+		};
+
+		const imageCandidate = (side: Side, path: string, line?: number, text?: string): Candidate => ({
+			side,
+			path,
+			...(line !== undefined ? { line } : {}),
+			kind: "content",
+			content: "image",
+			via: "content",
+			...(text !== undefined ? { text } : {}),
+		});
+
+		/**
+		 * Changed lines that swapped an image source: for each deleted line
+		 * holding the name of an image `a` lost, the added line of its hunk
+		 * that reads most like it (what replaced it), or the deleted line
+		 * itself when the hunk added nothing; then the added lines holding the
+		 * name of an image `b` gained. Each narrowed to the files that rendered
+		 * the element, if any of those qualify. Replacements come first: that
+		 * line changed the value, while a gained name is often only an import.
+		 */
+		const imageLoc = (a: ElementNode, b: ElementNode, lost: string[], got: string[]): { left: Candidate[]; right: Candidate[] } => {
+			const left: Candidate[] = [];
+			const right: Candidate[] = [];
+			const replaced = nearest(a, sourceLines.LEFT.filter((l) => lost.some((n) => holdsName(l.text, n))));
+			const gainedLines = nearest(b, sourceLines.RIGHT.filter((l) => got.some((n) => holdsName(l.text, n))));
+			if (replaced.length <= MAX_MATCHING_LINES) {
+				for (const l of replaced) {
+					const p = targetPath("LEFT", l.path);
+					const c = input.changes.get(p);
+					const hunk = c?.hunks.find((h) => h.oldCount > 0 && l.line >= h.oldStart && l.line < h.oldStart + h.oldCount);
+					let best: { line: number; text: string; score: number } | null = null;
+					for (let n = hunk?.newStart ?? 0; c && hunk && n < hunk.newStart + hunk.newCount; n++) {
+						const text = c.added.get(n);
+						if (text === undefined) continue;
+						const score = likeness(l.words, new Set(words(text)));
+						if (!best || score > best.score) best = { line: n, text, score };
+					}
+					if (best) right.push(imageCandidate("RIGHT", p, best.line, best.text.trim()));
+					else left.push(imageCandidate("LEFT", l.path, l.line, l.text.trim()));
+				}
+			}
+			if (gainedLines.length <= MAX_MATCHING_LINES) for (const l of gainedLines) right.push(imageCandidate("RIGHT", l.path, l.line, l.text.trim()));
+			return { left, right };
+		};
+
+		/**
+		 * The image file `image` was served from, when it changed: a changed
+		 * binary file, or a changed SVG's first changed line (its first deleted
+		 * one when it only lost lines).
+		 */
+		const imageFileLoc = (image: OwnImage): { left: Candidate[]; right: Candidate[] } => {
+			for (const abs of imageFiles(image.src, page.to.manifest.url, input.root, input.publicDir)) {
+				const p = repoPath(abs);
+				const c = p ? input.changes.get(p) : undefined;
+				if (!p || !c) continue;
+				if (c.binary) return { left: [], right: [imageCandidate("RIGHT", p, undefined, imageName(image.src) ?? undefined)] };
+				const first = (lines: Map<number, string>) => Math.min(...lines.keys());
+				if (c.added.size) return { left: [], right: [imageCandidate("RIGHT", p, first(c.added), c.added.get(first(c.added))?.trim())] };
+				if (c.deleted.size) return { left: [imageCandidate("LEFT", c.oldPath, first(c.deleted), c.deleted.get(first(c.deleted))?.trim())], right: [] };
+				break;
+			}
+			return { left: [], right: [] };
+		};
+
+		/** Whether the changed pixels `d` recorded for `node` all lie inside `image`'s box. */
+		const changedInside = (d: PageDiff, node: ElementNode, image: OwnImage): boolean => {
+			const box = d.changedBox;
+			if (!box) return false;
+			const scale = page.to.manifest.scale || 1;
+			const [x, y] = [node.box.x + box.x / scale, node.box.y + box.y / scale];
+			const [right, bottom] = [x + box.width / scale, y + box.height / scale];
+			const t = IMAGE_TOLERANCE;
+			const r = image.box;
+			return x >= r.x - t && y >= r.y - t && right <= r.x + r.width + t && bottom <= r.y + r.height + t;
+		};
+
+		/**
+		 * Look for what changed an element's own images, and return a note for
+		 * when nothing explains it. Images that hadn't loaded on either side are
+		 * unknown, not changed. Captures made before own images were recorded
+		 * have nothing to compare.
+		 */
+		const traceImages = (entry: Changed, d: PageDiff, a: ElementNode, b: ElementNode): string | null => {
+			if ((page.from.manifest.version ?? 0) < IMAGES_VERSION || (page.to.manifest.version ?? 0) < IMAGES_VERSION) return null;
+			const before = a.images ?? [];
+			const after = b.images ?? [];
+			if (!before.length && !after.length) return null;
+			for (const [images, side] of [[before, "baseline"], [after, "target"]] as const) {
+				const unloaded = images.find((i) => !i.loaded);
+				if (unloaded) return `its image (${imageName(unloaded.src) ?? unloaded.src}) hadn't loaded in the ${side}`;
+			}
+			const named = (images: OwnImage[]) => images.map((i) => imageName(i.src)).filter((n): n is string => Boolean(n));
+			const lost = gained(named(after), named(before));
+			const got = gained(named(before), named(after));
+			const hits = entry.hits.length;
+			if (lost.length || got.length) {
+				const { left, right } = imageLoc(a, b, lost, got);
+				consider(entry, left, right);
+				if (entry.hits.length > hits) {
+					entry.own = true;
+					return null;
+				}
+				const list = (names: string[]) => (names.length ? names.join(", ") : "none");
+				return `its image source changed (${list(lost)} → ${list(got)}) but no changed line holds either name`;
+			}
+			for (const image of after) {
+				const { left, right } = imageFileLoc(image);
+				consider(entry, left, right);
+			}
+			if (entry.hits.length > hits) {
+				entry.own = true;
+				return null;
+			}
+			const shown = after.find((i) => !animates(i) && changedInside(d, b, i));
+			if (!shown) return null;
+			return (
+				`pixels changed inside its image (${imageName(shown.src) ?? shown.src}), but neither its source nor its file changed: ` +
+				"the file may have changed outside the repo, its pipeline (image service, sharp) may have changed, or something drew over it"
+			);
 		};
 
 		/**
@@ -470,10 +637,10 @@ export function correlate(input: CorrelateInput): Correlation {
 			const hit = (list: (Candidate | null)[]) => list.filter((c): c is Candidate => Boolean(c && isChanged(c.side, c.path, c.line)));
 			const onRight = hit(right);
 			const onLeft = hit(left);
-			if (onRight.length) for (const c of onLeft) absorbed.add(`${c.path}:${c.line}`);
+			if (onRight.length) for (const c of onLeft) absorbed.add(causeLocation(c));
 			// A line already found (copy on the element's JSX line, say) keeps what it was found as first.
-			const seen = new Set(entry.hits.map((c) => `${c.side}:${c.path}:${c.line}`));
-			entry.hits.push(...(onRight.length ? onRight : onLeft).filter((c) => !seen.has(`${c.side}:${c.path}:${c.line}`)));
+			const seen = new Set(entry.hits.map((c) => `${c.side}:${causeLocation(c)}`));
+			entry.hits.push(...(onRight.length ? onRight : onLeft).filter((c) => !seen.has(`${c.side}:${causeLocation(c)}`)));
 		};
 
 		const area = (n: ElementNode | undefined, scale: number) => (n ? Math.round(n.box.width * scale) * Math.round(n.box.height * scale) : 0);
@@ -532,6 +699,8 @@ export function correlate(input: CorrelateInput): Correlation {
 				if (entry.hits.length > hits) entry.own = true;
 				else notes.push(`copy changed (${quote(a.text)} → ${quote(b.text)}) but no changed line has it`);
 			}
+			const imageNote = traceImages(entry, d, a, b);
+			if (imageNote) notes.push(imageNote);
 			consider(entry, [jsx("LEFT", a, "jsx")], [jsx("RIGHT", b, "jsx")]);
 			if (switched.length) notes.push(`winner changed (${switched.slice(0, 3).join("; ")}${switched.length > 3 ? "; …" : ""})`);
 			if (notes.length) entry.note = notes.join("; ");
@@ -553,7 +722,7 @@ export function correlate(input: CorrelateInput): Correlation {
 	/** What a change resolves to: changed lines, or the new or removed element it's inside or a knock-on effect of. */
 	type Reason = Candidate | { element: Changed };
 	const reasonKey = (r: Reason) =>
-		"element" in r ? `element:${r.element.page}:${r.element.status}:${r.element.node.dir}` : `${r.side}:${r.path}:${r.line}`;
+		"element" in r ? `element:${r.element.page}:${r.element.status}:${r.element.node.dir}` : `${r.side}:${causeLocation(r)}`;
 	/** The reasons each change resolves to: its own hits, its new or removed element, or those of its knock-on source. */
 	const resolved = new Map<Changed, Reason[]>();
 	for (const entry of changed) if (entry.hits.length) resolved.set(entry, entry.hits);
@@ -676,12 +845,20 @@ export function correlate(input: CorrelateInput): Correlation {
 	const has = (effects: Effect[], entry: Changed) => effects.some((e) => e.page === entry.page && e.dir === entry.node.dir && e.status === entry.status);
 
 	const causes = new Map<string, Cause>();
-	const keyOf = (c: Candidate) => `${c.side}:${targetPath(c.side, c.path)}:${c.line}`;
+	const keyOf = (c: Candidate) => `${c.side}:${causeLocation({ path: targetPath(c.side, c.path), line: c.line })}`;
 	const addEffect = (c: Candidate, entry: Changed, via: EffectVia) => {
 		const key = keyOf(c);
 		let cause = causes.get(key);
 		if (!cause) {
-			cause = { path: targetPath(c.side, c.path), line: c.line, side: c.side, kind: c.kind, text: c.text, effects: [] };
+			cause = {
+				path: targetPath(c.side, c.path),
+				...(c.line !== undefined ? { line: c.line } : {}),
+				side: c.side,
+				kind: c.kind,
+				...(c.content ? { content: c.content } : {}),
+				text: c.text,
+				effects: [],
+			};
 			causes.set(key, cause);
 		}
 		if (!has(cause.effects, entry)) cause.effects.push(effectOf(entry, via));
@@ -736,11 +913,11 @@ export function correlate(input: CorrelateInput): Correlation {
 	for (const cause of causes.values()) {
 		for (const e of cause.effects) {
 			const k = `${e.page}/${e.dir}`;
-			causesOf.set(k, [...(causesOf.get(k) ?? []), `${cause.path}:${cause.line}`]);
+			causesOf.set(k, [...(causesOf.get(k) ?? []), causeLocation(cause)]);
 		}
 	}
 	for (const cause of causes.values()) {
-		const own = `${cause.path}:${cause.line}`;
+		const own = causeLocation(cause);
 		for (const e of cause.effects) {
 			const others = [...new Set(causesOf.get(`${e.page}/${e.dir}`) ?? [])].filter((c) => c !== own);
 			if (others.length) e.alsoCausedBy = others;
@@ -767,7 +944,7 @@ export function correlate(input: CorrelateInput): Correlation {
 		}
 	}
 
-	const sorted = [...causes.values()].sort((x, y) => x.path.localeCompare(y.path) || x.line - y.line || x.side.localeCompare(y.side));
+	const sorted = [...causes.values()].sort((x, y) => x.path.localeCompare(y.path) || (x.line ?? 0) - (y.line ?? 0) || x.side.localeCompare(y.side));
 	invisible.sort((x, y) => x.path.localeCompare(y.path) || x.line - y.line);
 	const renderSites = [...sites.values()].sort(
 		(x, y) => (x.path ?? "\uffff").localeCompare(y.path ?? "\uffff") || (x.line ?? 0) - (y.line ?? 0) || x.side.localeCompare(y.side),
@@ -792,24 +969,35 @@ export function correlationPages(report: DiffReport, fromDir: string, toDir: str
  */
 export function correlateVersions(paths: Paths, report: DiffReport): Correlation | { skipped: string } {
 	if (!report.pairs?.size) return { skipped: "no per-element captures on both sides" };
-	if (!isGitRepo(paths.root)) return { skipped: "not a git repository" };
-	const revs = [report.from, report.to].map((key) => {
-		const meta = readMeta(paths, key);
-		return meta ? versionRev(meta) : null;
-	});
-	const [fromRev, toRev] = revs;
-	if (!fromRev || !toRev) {
-		return { skipped: "a version was captured from uncommitted changes before snapshots existed; re-capture it" };
-	}
-	const changes = changedLines(paths.root, fromRev, toRev);
-	if (!changes) return { skipped: `couldn't diff ${fromRev.slice(0, 7)}..${toRev.slice(0, 7)}` };
+	const changes = versionChanges(paths, report.from, report.to);
+	if ("skipped" in changes) return changes;
 	return correlate({
 		pages: correlationPages(report, versionDir(paths, report.from), versionDir(paths, report.to)),
 		diffs: report.pages,
 		changes,
 		root: realpath(paths.root),
 		top: realpath(topLevel(paths.root) ?? paths.root),
+		publicDir: publicDir(paths.root),
 	});
+}
+
+/** Lines changed between the files versions `from` and `to` were captured from, or why they can't be known. */
+export function versionChanges(paths: Paths, from: string, to: string): Map<string, FileChanges> | { skipped: string } {
+	if (!isGitRepo(paths.root)) return { skipped: "not a git repository" };
+	const [fromRev, toRev] = [from, to].map((key) => {
+		const meta = readMeta(paths, key);
+		return meta ? versionRev(meta) : null;
+	});
+	if (!fromRev || !toRev) {
+		return { skipped: "a version was captured from uncommitted changes before snapshots existed; re-capture it" };
+	}
+	return changedLines(paths.root, fromRev, toRev) ?? { skipped: `couldn't diff ${fromRev.slice(0, 7)}..${toRev.slice(0, 7)}` };
+}
+
+/** Carries source lines of version `from` over to version `to`, for matching their elements; null when that isn't possible. */
+export function versionMapper(paths: Paths, from: string, to: string): LineMapper | null {
+	const changes = versionChanges(paths, from, to);
+	return "skipped" in changes ? null : new LineMapper(changes, repoPrefix(paths.root));
 }
 
 /** Add `correlation` (or why it was skipped) to a report. */

@@ -13,8 +13,15 @@ export const PAGE_IMAGE = "page.png";
 export const ELEMENT_MANIFEST = "elements.json";
 /** Per-page style data (see `styles.ts`), kept apart since it's large and only correlation reads it. */
 export const STYLE_MANIFEST = "styles.json";
-/** 3: element images are cropped on demand (needs `scale`) and components live in the manifest. */
-export const MANIFEST_VERSION = 3;
+/**
+ * 3: element images are cropped on demand (needs `scale`) and components live in the manifest.
+ * 4: elements record their own images, so one without `images` has none.
+ */
+export const MANIFEST_VERSION = 4;
+/** The oldest manifest that can still be read; older captures stored `element.png` files instead. */
+export const MIN_MANIFEST_VERSION = 3;
+/** The first manifest version that records own images. */
+export const IMAGES_VERSION = 4;
 /**
  * The in-page extraction script, evaluated by the capture driver after the page
  * has loaded and settled. Returns an array of top-level block elements
@@ -277,6 +284,51 @@ new Promise((resolve) => {
       }
       return s;
     }
+    // Images \`el\` displays itself or through descendants that aren't
+    // elements of their own, as ownText does for text. A <picture> shows
+    // through its <img>, whose currentSrc is the source it chose.
+    const MAX_IMAGES = 50;
+    function pageBox(n) {
+      const r = n.getBoundingClientRect();
+      return { x: r.x + window.scrollX, y: r.y + window.scrollY, width: r.width, height: r.height };
+    }
+    function imageOf(n) {
+      const tag = n.tagName.toLowerCase();
+      if (tag === "img") {
+        const src = n.currentSrc || n.src;
+        return src ? { tag, src, loaded: Boolean(n.currentSrc && n.complete && n.naturalWidth > 0), box: pageBox(n) } : null;
+      }
+      if (tag === "video") return n.poster ? { tag, src: n.poster, loaded: true, box: pageBox(n) } : null;
+      if (tag === "object") return n.data ? { tag, src: n.data, loaded: true, box: pageBox(n) } : null;
+      if (tag === "image" && n.namespaceURI === "http://www.w3.org/2000/svg") {
+        const href = n.href && n.href.baseVal;
+        if (!href) return null;
+        try {
+          return { tag, src: new URL(href, document.baseURI).href, loaded: true, box: pageBox(n) };
+        } catch (e) {
+          return null;
+        }
+      }
+      return null;
+    }
+    function ownImages(el, out = []) {
+      if (out.length >= MAX_IMAGES || paintsNothing(el)) return out;
+      const own = imageOf(el);
+      if (own) out.push(own);
+      if (el.tagName.toUpperCase() === "SVG") {
+        for (const n of el.querySelectorAll("image")) {
+          const img = !paintsNothing(n) && imageOf(n);
+          if (img && out.length < MAX_IMAGES) out.push(img);
+        }
+        return out;
+      }
+      for (const n of el.children) {
+        const tagU = n.tagName.toUpperCase();
+        if (emitted.has(n) || (SKIP.has(tagU) && tagU !== "SVG")) continue;
+        ownImages(n, out);
+      }
+      return out;
+    }
     function walk(el, parentSel) {
       const out = [];
       for (const child of el.children) {
@@ -292,6 +344,7 @@ new Promise((resolve) => {
         if (box) {
           emitted.add(child);
           const children = walk(child, sel);
+          const images = getComputedStyle(child).visibility === "hidden" ? [] : ownImages(child);
           out.push({
             tag: child.tagName.toLowerCase(),
             id: child.id || null,
@@ -310,6 +363,7 @@ new Promise((resolve) => {
             react: reactInfo(child),
             computed: computed(child),
             text: ownText(child).replace(/\\s+/g, " ").trim().slice(0, MAX_TEXT),
+            ...(images.length ? { images } : {}),
             children
           });
         } else {
@@ -369,6 +423,7 @@ export function assignDirs(nodes, parentDir = "") {
             box: node.box ?? node.rect,
             react: node.react ?? null,
             ...(node.text !== undefined ? { text: node.text } : {}),
+            ...(node.images?.length ? { images: node.images } : {}),
             // Source-derived fields are filled in once frames are resolved (see shoot).
             identity: {
                 attributes: node.attributes ?? {},
@@ -400,7 +455,7 @@ export function findNode(nodes, dir) {
 export function readElementManifest(file) {
     try {
         const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
-        return (manifest.version ?? 0) >= MANIFEST_VERSION ? manifest : null;
+        return (manifest.version ?? 0) >= MIN_MANIFEST_VERSION ? manifest : null;
     }
     catch {
         return null;

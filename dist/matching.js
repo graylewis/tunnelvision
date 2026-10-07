@@ -26,7 +26,12 @@ export function matchOptions(config) {
     }
     return { attributes: config.attributes ?? [], ignoreIds };
 }
-export function matchElements(from, to, opts) {
+/**
+ * `mapper` carries baseline source lines over to the target's revision. Without
+ * it, the source tier is skipped: comparing raw lines across an edit pairs each
+ * element with whichever sibling now sits on its old line.
+ */
+export function matchElements(from, to, opts, mapper) {
     const fromTo = new Map();
     const toFrom = new Map();
     const matchedBy = new Map();
@@ -104,13 +109,21 @@ export function matchElements(from, to, opts) {
     // 3–8: within matched parents, starting from the page roots. Each child list
     // belongs to exactly one parent, so the order parents are visited in doesn't
     // change the outcome.
+    const fromSet = new Set(allFrom);
+    const source = (n) => {
+        const s = n.identity?.source;
+        if (!s || !mapper)
+            return null;
+        const at = fromSet.has(n) ? mapper.location(s) : s;
+        return at && `${n.tag}\0${at}`;
+    };
     const component = (n) => n.identity?.component ?? null;
     const file = (n) => n.identity?.file ?? null;
     const scoped = (as, bs) => {
         unique(as, bs, (n) => (n.identity?.key != null ? `${component(n)}\0${n.identity.key}` : null), "key");
         unique(as, bs, (n) => (component(n) || file(n) ? `${n.tag}\0${component(n)}\0${file(n)}` : null), "component");
         unique(as, bs, (n) => (n.identity?.name ? `${n.tag}\0${n.identity.name}` : null), "name");
-        unique(as, bs, (n) => (n.identity?.source ? `${n.tag}\0${n.identity.source}` : null), "source");
+        unique(as, bs, source, "source");
         inOrder(as, bs, (n) => (component(n) || file(n) ? `${n.tag}\0${component(n)}\0${file(n)}` : null), "order");
         inOrder(as, bs, (n) => n.tag, "tag-order");
     };

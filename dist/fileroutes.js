@@ -40,6 +40,14 @@ function configString(root, framework, key) {
     return new RegExp(`${key}\\s*:\\s*["'\`]([^"'\`]+)["'\`]`).exec(fs.readFileSync(file, "utf8"))?.[1];
 }
 /**
+ * The directory served at the site's root as-is, relative to the project root:
+ * Astro's `publicDir` when its config sets one as a literal, else `public`
+ * (Next, Vite and Astro's default).
+ */
+export function publicDir(root) {
+    return (detectFramework(root) === "astro" ? configString(root, "astro", "publicDir") : undefined) ?? "public";
+}
+/**
  * `pageExtensions` from the Next config when it's written as a literal array,
  * longest first so "page.tsx" is tried before "tsx".
  */

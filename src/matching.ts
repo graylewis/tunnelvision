@@ -1,5 +1,6 @@
 import type { MatchConfig } from "./config.js";
 import type { ElementNode } from "./elements.js";
+import type { LineMapper } from "./remap.js";
 
 /**
  * Decide which elements correspond between two captures of a page.
@@ -17,7 +18,8 @@ import type { ElementNode } from "./elements.js";
  *     3. React `key`, alongside the component that rendered the element
  *     4. component + source file
  *     5. `name` (form controls)
- *     6. source `file:line:col`, a tie-breaker only since lines shift with edits
+ *     6. source `file:line:col`, the baseline's brought up to date with the
+ *        commit's diff first (skipped without one: lines shift with edits)
  *     7. order among siblings that share tag, component and file
  *     8. order among siblings with the same tag
  *
@@ -83,7 +85,17 @@ export function matchOptions(config: MatchConfig): MatchOptions {
 	return { attributes: config.attributes ?? [], ignoreIds };
 }
 
-export function matchElements(from: ElementNode[], to: ElementNode[], opts: MatchOptions): ElementMatch {
+/**
+ * `mapper` carries baseline source lines over to the target's revision. Without
+ * it, the source tier is skipped: comparing raw lines across an edit pairs each
+ * element with whichever sibling now sits on its old line.
+ */
+export function matchElements(
+	from: ElementNode[],
+	to: ElementNode[],
+	opts: MatchOptions,
+	mapper: LineMapper | null,
+): ElementMatch {
 	const fromTo = new Map<ElementNode, ElementNode>();
 	const toFrom = new Map<ElementNode, ElementNode>();
 	const matchedBy = new Map<ElementNode, MatchedBy>();
@@ -163,13 +175,20 @@ export function matchElements(from: ElementNode[], to: ElementNode[], opts: Matc
 	// 3–8: within matched parents, starting from the page roots. Each child list
 	// belongs to exactly one parent, so the order parents are visited in doesn't
 	// change the outcome.
+	const fromSet = new Set(allFrom);
+	const source = (n: ElementNode): string | null => {
+		const s = n.identity?.source;
+		if (!s || !mapper) return null;
+		const at = fromSet.has(n) ? mapper.location(s) : s;
+		return at && `${n.tag}\0${at}`;
+	};
 	const component = (n: ElementNode) => n.identity?.component ?? null;
 	const file = (n: ElementNode) => n.identity?.file ?? null;
 	const scoped = (as: ElementNode[], bs: ElementNode[]): void => {
 		unique(as, bs, (n) => (n.identity?.key != null ? `${component(n)}\0${n.identity.key}` : null), "key");
 		unique(as, bs, (n) => (component(n) || file(n) ? `${n.tag}\0${component(n)}\0${file(n)}` : null), "component");
 		unique(as, bs, (n) => (n.identity?.name ? `${n.tag}\0${n.identity.name}` : null), "name");
-		unique(as, bs, (n) => (n.identity?.source ? `${n.tag}\0${n.identity.source}` : null), "source");
+		unique(as, bs, source, "source");
 		inOrder(as, bs, (n) => (component(n) || file(n) ? `${n.tag}\0${component(n)}\0${file(n)}` : null), "order");
 		inOrder(as, bs, (n) => n.tag, "tag-order");
 	};

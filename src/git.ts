@@ -155,6 +155,8 @@ export interface FileChanges {
 	hunks: Hunk[];
 	/** The file is new: it has no old lines. */
 	created?: boolean;
+	/** git reported the file as changed without lines (an image, say): a changed binary file. */
+	binary?: boolean;
 }
 
 /**
@@ -179,7 +181,7 @@ function diffPath(raw: string, prefix: string): string | null {
 /**
  * Parse a unified diff (any context size) into the lines it changed, and
  * their text, keyed by each file's new path. Deleted files are keyed by their
- * old path.
+ * old path. Binary files have no lines, only `binary` set.
  */
 export function parseUnifiedDiff(text: string): Map<string, FileChanges> {
 	const out = new Map<string, FileChanges>();
@@ -253,6 +255,15 @@ export function parseUnifiedDiff(text: string): Map<string, FileChanges> {
 		} else if (line.startsWith("rename to ")) {
 			newPath = line.slice("rename to ".length);
 			current = open();
+		} else {
+			const binary = line.match(/^Binary files (.+) and (.+) differ$/);
+			if (binary) {
+				oldPath = diffPath(binary[1], "a/");
+				newPath = diffPath(binary[2], "b/");
+				created = oldPath === null;
+				current = open();
+				if (current) current.binary = true;
+			}
 		}
 	}
 	return out;

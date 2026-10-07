@@ -8,7 +8,7 @@ import { applyOverrides, configExists, DEFAULT_CONFIG, loadConfig, type Override
 import { diffDir, resolvePaths, versionDir, type Paths } from "../paths.js";
 import { diffVersions, type DiffReport, type PageDiff, type PageStatus } from "../diffengine.js";
 import { listVersions, versionExists } from "../versions.js";
-import { addCorrelation, type Correlation } from "../correlate.js";
+import { addCorrelation, versionMapper, type Correlation } from "../correlate.js";
 import { topLevel } from "../git.js";
 import { matchElements, matchOptions, type MatchedBy } from "../matching.js";
 import {
@@ -139,7 +139,8 @@ export function buildDiff(paths: Paths, overrides: Overrides, from: string, to: 
 	const toDir = versionDir(paths, to);
 	const outDir = diffDir(paths, from, to);
 
-	const report = addCorrelation(paths, diffVersions(fromDir, toDir, outDir, config, { from, to }));
+	const mapper = versionMapper(paths, from, to);
+	const report = addCorrelation(paths, diffVersions(fromDir, toDir, outDir, config, { from, to }, mapper));
 	// A removed element can share its path with a different element in the
 	// target, so removals are looked up separately.
 	const byFile = new Map<string, PageDiff>();
@@ -180,7 +181,7 @@ export function buildDiff(paths: Paths, overrides: Overrides, from: string, to: 
 		// target's shape, with removed elements under their old parent's partner.
 		const fromTree = fromManifest?.elements ?? [];
 		const toTree = toManifest?.elements ?? [];
-		const match = matchElements(fromTree, toTree, matchOptions(config.match));
+		const match = matchElements(fromTree, toTree, matchOptions(config.match), mapper);
 
 		const countChanged = (children: InspectorNode[]) =>
 			children.reduce((sum, c) => sum + c.changedDescendants + (CHANGE_STATUSES.has(c.status) ? 1 : 0), 0);

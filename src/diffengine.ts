@@ -17,6 +17,7 @@ import {
 import type { Correlation } from "./correlate.js";
 import { matchElements, matchOptions, type ElementMatch, type MatchedBy } from "./matching.js";
 import { readRedirect } from "./carryover.js";
+import type { LineMapper } from "./remap.js";
 
 export type PageStatus = "unchanged" | "changed" | "added" | "removed" | "size-mismatch" | "error";
 
@@ -36,6 +37,8 @@ export interface PageDiff {
 	totalPixels?: number;
 	/** Path to the written diff image, when produced. */
 	diffImage?: string;
+	/** The bounding box of the mismatched pixels, in image pixels from the image's top left, when it changed. */
+	changedBox?: { x: number; y: number; width: number; height: number };
 	message?: string;
 }
 
@@ -175,6 +178,23 @@ function diffImages(fromFile: string, toFile: string, outFile: string, entry: Pa
 	}
 }
 
+/** The bounding box of the pixels pixelmatch marked as mismatched (pure red) in its diff output, or null if none are. */
+export function mismatchBox(diff: PNG): { x: number; y: number; width: number; height: number } | null {
+	let [left, top, right, bottom] = [Infinity, Infinity, -1, -1];
+	const { width, height, data } = diff;
+	for (let y = 0; y < height; y++) {
+		for (let x = 0; x < width; x++) {
+			const i = (y * width + x) * 4;
+			if (data[i] !== 255 || data[i + 1] !== 0 || data[i + 2] !== 0) continue;
+			if (x < left) left = x;
+			if (x > right) right = x;
+			if (y < top) top = y;
+			if (y > bottom) bottom = y;
+		}
+	}
+	return right < 0 ? null : { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+}
+
 /** Pixel-diff one decoded image pair, writing a diff image when it counts as changed. */
 function diffPngs(a: PNG, b: PNG, outFile: string, entry: PageDiff, config: Config): PageDiff {
 	try {
@@ -200,6 +220,7 @@ function diffPngs(a: PNG, b: PNG, outFile: string, entry: PageDiff, config: Conf
 		const changed = percent > cutoff;
 
 		let diffImage: string | undefined;
+		const changedBox = changed ? mismatchBox(diff) : null;
 		if (changed) {
 			diffImage = outFile;
 			fs.mkdirSync(path.dirname(diffImage), { recursive: true });
@@ -213,6 +234,7 @@ function diffPngs(a: PNG, b: PNG, outFile: string, entry: PageDiff, config: Conf
 			mismatchedPixels: mismatched,
 			totalPixels: total,
 			diffImage,
+			...(changedBox ? { changedBox } : {}),
 		};
 	} catch (err) {
 		return { ...entry, status: "error", message: (err as Error).message };
@@ -236,6 +258,8 @@ export function diffVersions(
 	outDir: string,
 	config: Config,
 	labels: { from: string; to: string },
+	/** Carries the baseline's source lines over to the target's, for matching elements (see `versionMapper`). */
+	mapper: LineMapper | null,
 ): DiffReport {
 	const fromFiles = listPngs(fromDir);
 	const toFiles = listPngs(toDir);
@@ -279,7 +303,7 @@ export function diffVersions(
 		const pageB = new ElementPage(b, path.join(toDir, slug, PAGE_IMAGE));
 		const sameImage = a.scale === b.scale && pageA.sameImage(pageB);
 
-		const match = matchElements(a.elements, b.elements, opts);
+		const match = matchElements(a.elements, b.elements, opts, mapper);
 		pairs.set(slug, { from: a, to: b, match });
 		const rel = (n: ElementNode) => `${slug}/${n.dir}/${ELEMENT_IMAGE}`;
 		const visit = (nodes: ElementNode[], side: "from" | "to"): void => {

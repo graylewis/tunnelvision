@@ -117,13 +117,10 @@ function remapRule(mapper, rule, selectors) {
 const LOCATION = /^(.*):(\d+):(\d+)$/;
 /** A `file:line:col` path remapped, keeping its column. */
 function remapPath(mapper, p) {
-    const m = p.match(LOCATION);
-    if (!m)
-        return p;
-    const to = mapper.map(m[1], Number(m[2]));
-    if (!to)
+    const to = mapper.location(p);
+    if (to === null)
         throw new Unmappable();
-    return `${to.path}:${to.line}:${m[3]}`;
+    return to;
 }
 function remapSource(mapper, root, s) {
     if (!s || s.generated)
@@ -237,7 +234,7 @@ export function planElements(input) {
     const plan = { query: "all", carried: new Map(), rules: new Map(), total };
     if (!reference || !mapper)
         return plan;
-    const match = matchElements(reference.elements.elements, fresh, input.match);
+    const match = matchElements(reference.elements.elements, fresh, input.match, mapper);
     // Reference selector → fresh selector, for inline styles (an element's own, or an ancestor's it inherits from).
     const selectors = new Map();
     for (const [from, to] of match.fromTo)

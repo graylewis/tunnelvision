@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
+import { causeLocation } from "./correlate.js";
 const STATUS_STYLE = {
     unchanged: (s) => pc.dim(s),
     changed: (s) => pc.yellow(s),
@@ -68,12 +69,13 @@ function printCorrelation(c) {
     if (causes.length === 0)
         console.log(pc.dim("    No changed line explains a visual change."));
     for (const cause of causes) {
-        const where = `${cause.path}:${cause.line}${cause.side === "LEFT" ? " (deleted)" : ""}`;
+        const where = `${causeLocation(cause)}${cause.side === "LEFT" ? " (deleted)" : ""}`;
         const n = cause.effects.length;
         // Only properties whose declaration changed; the rest are results of layout.
         const props = [...new Set(cause.effects.flatMap((e) => e.props.filter((p) => p.own).map((p) => p.name)))];
         const propText = props.length ? `  ${props.slice(0, MAX_PROPS).join(", ")}${props.length > MAX_PROPS ? ", …" : ""}` : "";
-        console.log(`    ${pc.cyan(where)}  ${pc.dim(cause.text ?? cause.kind)}`);
+        const kind = cause.kind === "content" ? `content (${cause.content})` : cause.kind;
+        console.log(`    ${pc.cyan(where)}  ${pc.dim(cause.text ? `${cause.text}  · ${kind}` : kind)}`);
         console.log(pc.dim(`      → ${n} element${n === 1 ? "" : "s"}${propText}`));
     }
     printRenderSites(c.renderSites ?? []);
@@ -88,6 +90,20 @@ function printCorrelation(c) {
     ].filter(Boolean);
     if (extras.length)
         console.log(pc.dim(`    ${extras.join("  •  ")}  — see \`tunnelvision inspector\``));
+    printHints(unexplained);
+}
+const MAX_HINTS = 5;
+/** The hints on unexplained visual changes, once each, the most common first. */
+function printHints(unexplained) {
+    const counts = new Map();
+    for (const u of unexplained)
+        if (u.note)
+            counts.set(u.note, (counts.get(u.note) ?? 0) + 1);
+    const hints = [...counts].sort((a, b) => b[1] - a[1]);
+    for (const [note, n] of hints.slice(0, MAX_HINTS))
+        console.log(pc.dim(`      hint${n > 1 ? ` (×${n})` : ""}: ${note}`));
+    if (hints.length > MAX_HINTS)
+        console.log(pc.dim(`      …and ${hints.length - MAX_HINTS} more hints`));
 }
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 /** New and removed elements with no cause, by render site. */

@@ -324,12 +324,23 @@ visual changes each line caused.
   for in changed lines outside stylesheets, so a class passed to a shared
   component is found at the call site. A value that changed under an unchanged declaration (`width:
   100%` in a wider parent) is a result of layout, not a cause.
+- **Content**: an element's own text and its own images (an `<img>`'s chosen
+  source, a `<video>` poster, an SVG `<image>`, an `<object>`) are recorded
+  too. Changed copy is looked for in changed lines outside stylesheets. A
+  changed image source is traced to the line that replaced the old file name,
+  and to added lines holding the new one; an image replaced in place is traced
+  to its file, served from the public directory or (in Vite dev) from
+  `/@fs/`. A changed binary file has no lines, so its cause is the file
+  itself, shown as a path without `:line` and posted by `update-pr` as a
+  comment on the whole file. Capture waits up to 5s for visible images to
+  decode; one that still hadn't loaded is treated as unknown, not changed.
 - **Knock-on effects**: elements that moved or resized without a property of
   their own changing are attributed to the earlier sibling or ancestor that
   pushed them, and containers to the content that changed inside them.
 - **Leftovers** are listed separately: **unexplained visual changes** (no
-  changed line explains them) and **invisible changes**, changed CSS lines that
-  changed nothing visible. Those whose rule matched no captured element at all
+  changed line explains them, with a hint when there's a likely reason, such
+  as an image whose pixels changed while its source and file didn't) and
+  **invisible changes**, changed CSS lines that changed nothing visible. Those whose rule matched no captured element at all
   (a `:hover` state, another breakpoint) are marked *not exercised*.
 - **Uncommitted work**: a capture of a dirty tree snapshots it as a commit
   under `refs/tunnelvision/<key>` (your index and checkout are untouched), so it
@@ -353,7 +364,7 @@ strongest first. Each step runs across all elements before the next one starts:
 | 3 | React `key`, including the key on the component that rendered it (`<StatCard key="revenue">`) | within matched parents |
 | 4 | Owning component + source file | within matched parents |
 | 5 | `name` attribute (form controls) | within matched parents |
-| 6 | Source `file:line:col`, a tie-breaker only (lines shift when a file is edited) | within matched parents |
+| 6 | Source `file:line:col`, the baseline's carried over to the target's lines through the commit's diff (skipped when the diff isn't available) | within matched parents |
 | 7 | Order among siblings with the same tag, component and file | within matched parents |
 | 8 | Order among siblings with the same tag | within matched parents |
 

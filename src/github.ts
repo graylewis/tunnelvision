@@ -25,6 +25,8 @@ export interface ReviewComment {
 	line: number | null;
 	side: "LEFT" | "RIGHT";
 	body: string;
+	/** `file` for a comment on a whole file rather than a line. */
+	subject_type?: "line" | "file";
 }
 
 export interface NewReviewComment {
@@ -43,6 +45,8 @@ export interface CommentableLines {
 		right: Map<string, Set<number>>;
 		left: Map<string, Set<number>>;
 	};
+	/** Every file the PR changes, binary files (which have no lines) included. */
+	files: Set<string>;
 }
 
 const API = "https://api.github.com";
@@ -123,8 +127,9 @@ export class GitHub {
 	/** Which lines of each changed file sit inside a diff hunk (and so can be commented on). */
 	async commentableLines(number: number): Promise<CommentableLines> {
 		const files = await this.list<{ filename: string; patch?: string }>(`/pulls/${number}/files`);
-		const out: CommentableLines = { right: new Map(), left: new Map(), changed: { right: new Map(), left: new Map() } };
+		const out: CommentableLines = { right: new Map(), left: new Map(), changed: { right: new Map(), left: new Map() }, files: new Set() };
 		for (const f of files) {
+			out.files.add(f.filename);
 			if (!f.patch) continue;
 			const right = new Set<number>();
 			const left = new Set<number>();
@@ -168,6 +173,11 @@ export class GitHub {
 	/** Post all `comments` as a single review, so the PR gets one notification. */
 	createReview(number: number, commitId: string, comments: NewReviewComment[]): Promise<{ html_url: string }> {
 		return this.request("POST", `/pulls/${number}/reviews`, { commit_id: commitId, event: "COMMENT", comments });
+	}
+
+	/** Comment on a whole file rather than a line (a changed binary file, which has none). */
+	createFileComment(number: number, commitId: string, path: string, body: string): Promise<ReviewComment & { html_url: string }> {
+		return this.request("POST", `/pulls/${number}/comments`, { commit_id: commitId, path, body, subject_type: "file" });
 	}
 
 	/** A URL that renders `file` at `commit` as an image, including in private repos. */

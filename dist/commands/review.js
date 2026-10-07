@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import pc from "picocolors";
 import { diffDir, versionDir } from "../paths.js";
 import { diffVersions } from "../diffengine.js";
-import { addCorrelation } from "../correlate.js";
+import { addCorrelation, versionMapper } from "../correlate.js";
 import { latestExcluding } from "../versions.js";
 import { printReport, writeJsonReport } from "../report.js";
 import { notify } from "../notify.js";
@@ -125,7 +125,7 @@ async function reviewLocked(opts, ctx) {
         console.log(pc.dim("  Run `review` again after your next change to see a diff."));
         return { ...result, code: capture.missing.length > 0 ? 1 : 0 };
     }
-    const report = diffVersions(versionDir(ctx.paths, baseline.key), versionDir(ctx.paths, ctx.version.key), diffDir(ctx.paths, baseline.key, ctx.version.key), ctx.config, { from: baseline.key, to: ctx.version.key });
+    const report = diffVersions(versionDir(ctx.paths, baseline.key), versionDir(ctx.paths, ctx.version.key), diffDir(ctx.paths, baseline.key, ctx.version.key), ctx.config, { from: baseline.key, to: ctx.version.key }, versionMapper(ctx.paths, baseline.key, ctx.version.key));
     addCorrelation(ctx.paths, report);
     printReport(report);
     if (report.hasChanges) {

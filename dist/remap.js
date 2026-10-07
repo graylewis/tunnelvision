@@ -1,4 +1,5 @@
 import path from "node:path";
+const LOCATION = /^(.*):(\d+):(\d+)$/;
 /**
  * Bring source locations recorded at one revision up to date with another,
  * exactly or not at all (see docs/adr/0007-carry-over-unchanged-elements.md).
@@ -70,6 +71,14 @@ export class LineMapper {
                 shift += h.newCount - h.oldCount;
         }
         return { path: out, line: line + shift };
+    }
+    /** A `file:line:col` location mapped like `map`, keeping its column; null when it can't be placed exactly. */
+    location(loc) {
+        const m = loc.match(LOCATION);
+        if (!m)
+            return loc;
+        const to = this.map(m[1], Number(m[2]));
+        return to && `${to.path}:${to.line}:${m[3]}`;
     }
     /** Whether `line` of `file` (at the new revision) is one the diff added. */
     added(file, line) {

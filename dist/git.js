@@ -132,7 +132,7 @@ function diffPath(raw, prefix) {
 /**
  * Parse a unified diff (any context size) into the lines it changed, and
  * their text, keyed by each file's new path. Deleted files are keyed by their
- * old path.
+ * old path. Binary files have no lines, only `binary` set.
  */
 export function parseUnifiedDiff(text) {
     const out = new Map();
@@ -210,6 +210,17 @@ export function parseUnifiedDiff(text) {
         else if (line.startsWith("rename to ")) {
             newPath = line.slice("rename to ".length);
             current = open();
+        }
+        else {
+            const binary = line.match(/^Binary files (.+) and (.+) differ$/);
+            if (binary) {
+                oldPath = diffPath(binary[1], "a/");
+                newPath = diffPath(binary[2], "b/");
+                created = oldPath === null;
+                current = open();
+                if (current)
+                    current.binary = true;
+            }
         }
     }
     return out;

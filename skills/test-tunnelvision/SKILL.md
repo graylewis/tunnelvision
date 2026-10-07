@@ -55,7 +55,9 @@ Read the app's stylesheets and components and pick concrete edits covering the k
 | Selector change | `.bar-label` → `.bar-label, .feed-item .small` | subtle | Cause `selector` |
 | Deleted rule | remove `.badge.down { … }` | significant | Cause with `side: "LEFT"` |
 | JSX class | `className="button"` → `"button primary"` | significant | Cause `jsx`, effect `via: "jsx"` |
-| Copy | change one word of visible text | subtle | Cause `copy`, effect `via: "copy"` |
+| Content (copy) | change one word of visible text | subtle | Cause `content` with `content: "copy"`, effect `via: "content"` |
+| Content (image), new source | point an `<img>` at another image file already in the repo | significant | Cause `content` with `content: "image"` on the line that changed the source, effect `via: "content"` |
+| Content (image), file replaced | overwrite an image file an `<img>` shows with a different image of the same size and type, keeping its name | significant | Cause `content` with `content: "image"` on that file, with no `line` (a changed binary file); a changed SVG's cause is its first changed line instead |
 | Removed element | delete a small component or a list item | significant | effect `status: "removed"` on it, knock-ons on what moves up |
 | Layout | `grid-template-columns: 1fr 2fr` → `2fr 1fr`, or a section's background colour | significant | many effects, mostly knock-on |
 | Invisible: not exercised | add `.nav-item:hover { background: … }` | — | in `invisible` with `reason: "not-exercised"` |

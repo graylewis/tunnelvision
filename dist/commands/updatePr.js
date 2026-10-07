@@ -4,6 +4,7 @@ import path from "node:path";
 import pc from "picocolors";
 import { PNG } from "pngjs";
 import { applyOverrides, configExists, DEFAULT_CONFIG, loadConfig } from "../config.js";
+import { causeLocation } from "../correlate.js";
 import { ELEMENT_IMAGE, ElementImages } from "../elements.js";
 import { currentBranch, isGitRepo, mergeBase, remoteUrl, topLevel } from "../git.js";
 import { GitHub, parseRepo, resolveToken } from "../github.js";
@@ -121,14 +122,14 @@ function targetSection(t, ctx, extra = []) {
     ].join("\n");
 }
 function marker(a) {
-    return `<!-- tunnelvision:${a.side}:${a.path}:${a.line} -->`;
+    return `<!-- tunnelvision:${a.side}:${causeLocation(a)} -->`;
 }
 const VIA = {
     direct: "set by this line",
     inherited: "inherited from an ancestor this line styles",
     var: "through a custom property this line sets",
     jsx: "this is the element's JSX line",
-    copy: "this line has the element's changed copy",
+    content: "this line has the element's changed content",
     "knock-on": "moved or resized by a change this line made",
     new: "a new element",
     removed: "a removed element",
@@ -144,14 +145,21 @@ function causeBody(a, cause, data, ctx) {
     // Only properties whose declaration changed; the rest are results of layout.
     const own = rep.props.filter((p) => p.own);
     const props = own.slice(0, MAX_PROPS).map((p) => `\`${cell(p.name)}\` ${cell(p.from ?? "—")} → ${cell(p.to ?? "—")}`);
-    const extra = [["how", VIA[rep.via]]];
+    const how = rep.via !== "content"
+        ? VIA[rep.via]
+        : cause.content === "image"
+            ? cause.line === undefined
+                ? "this file is the image the element shows"
+                : "this line changed the image the element shows"
+            : "this line has the element's changed copy";
+    const extra = [["how", how]];
     if (props.length)
         extra.push(["changed", props.join("<br>") + (own.length > MAX_PROPS ? "<br>…" : "")]);
     if (rep.alsoCausedBy?.length)
         extra.push(["also affected by", rep.alsoCausedBy.map((c) => `\`${cell(c)}\``).join(", ")]);
     const parts = [
         marker(a),
-        `### tunnelvision · this line changed ${n} element${n === 1 ? "" : "s"}`,
+        `### tunnelvision · this ${cause.line === undefined ? "file" : "line"} changed ${n} element${n === 1 ? "" : "s"}`,
         `Comparing \`${ctx.from}\` → \`${ctx.to}\`.${cause.text ? ` ${cause.side === "LEFT" ? "Removed" : "Now"}: \`${cell(cause.text)}\`` : ""}`,
         "",
         targetSection(t, ctx, extra),
@@ -216,13 +224,15 @@ function codeFirstAnchors(data, lines) {
         const rep = cause.representative;
         const node = rep && findNode(data, rep);
         const page = rep && data.pages.find((p) => p.slug === rep.page);
-        if (!changedLines?.has(cause.line) || !node || !page) {
+        // A changed binary file has no lines: it's commented on as a whole file.
+        const inDiff = cause.line === undefined ? lines.files.has(cause.path) : Boolean(changedLines?.has(cause.line));
+        if (!inDiff || !node || !page) {
             offDiff++;
             continue;
         }
-        anchors.set(`${cause.side}:${cause.path}:${cause.line}`, {
+        anchors.set(`${cause.side}:${causeLocation(cause)}`, {
             path: cause.path,
-            line: cause.line,
+            ...(cause.line !== undefined ? { line: cause.line } : {}),
             side: cause.side,
             targets: [targetOf(page, node)],
             cause,
@@ -231,7 +241,7 @@ function codeFirstAnchors(data, lines) {
     const sites = c.renderSites ?? [];
     const fresh = sites.reduce((n, s) => n + s.effects.filter((e) => e.via === "new" || e.via === "removed").length, 0);
     const parts = [
-        `${c.causes.length} changed lines caused visual changes`,
+        `${c.causes.length} changed lines or files caused visual changes`,
         `${offDiff} outside the PR diff`,
         `${fresh} new or removed elements from ${sites.length} render sites (inspector only)`,
         `${c.unexplained.length} unexplained and ${c.invisible.length} invisible changes (inspector only)`,
@@ -372,11 +382,11 @@ export async function updatePr(opts) {
         imageBase,
         local: new Map(uploads.map((u) => [u.dest, u.file])),
     };
-    const sorted = [...anchors.values()].sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line);
+    const sorted = [...anchors.values()].sort((a, b) => a.path.localeCompare(b.path) || (a.line ?? 0) - (b.line ?? 0));
     if (opts.dryRun) {
         for (const a of sorted) {
             console.log("");
-            console.log(pc.cyan(`── ${a.path}:${a.line} (${a.side})`));
+            console.log(pc.cyan(`── ${causeLocation(a)} (${a.line === undefined ? "file" : a.side})`));
             console.log(commentBody(a, ctx, data));
         }
         console.log("");
@@ -393,13 +403,18 @@ export async function updatePr(opts) {
     console.log(pc.green(`  ✓ pushed ${uploads.length} images to ${branch}`) + pc.dim(` (${ctx.imageCommit.slice(0, 7)})`));
     const existing = await gh.listReviewComments(pr.number);
     const fresh = [];
+    const freshFiles = [];
     let updated = 0;
     for (const a of sorted) {
         const body = commentBody(a, ctx, data);
-        const prior = existing.find((c) => c.body.includes(marker(a)) && c.path === a.path && c.line === a.line && c.side === a.side);
+        // A file comment has no line (GitHub sends null) and no meaningful side.
+        const prior = existing.find((c) => c.body.includes(marker(a)) && c.path === a.path && (c.line ?? undefined) === a.line && (a.line === undefined || c.side === a.side));
         if (prior) {
             await gh.updateReviewComment(prior.id, body);
             updated++;
+        }
+        else if (a.line === undefined) {
+            freshFiles.push(a);
         }
         else {
             fresh.push({ path: a.path, line: a.line, side: a.side, body });
@@ -409,6 +424,19 @@ export async function updatePr(opts) {
         const review = await gh.createReview(pr.number, pr.head.sha, fresh);
         console.log(pc.green(`  ✓ posted ${fresh.length} comments`) + pc.dim(`  ${review.html_url}`));
     }
+    // File comments can't go in a review, so they're posted one by one. One GitHub won't take counts as outside the diff.
+    let postedFiles = 0;
+    for (const a of freshFiles) {
+        try {
+            await gh.createFileComment(pr.number, pr.head.sha, a.path, commentBody(a, ctx, data));
+            postedFiles++;
+        }
+        catch (err) {
+            console.log(pc.yellow(`  couldn't comment on ${a.path} (${err.message}); it counts as outside the PR diff`));
+        }
+    }
+    if (postedFiles)
+        console.log(pc.green(`  ✓ posted ${postedFiles} file comment${postedFiles === 1 ? "" : "s"}`));
     if (updated)
         console.log(pc.green(`  ✓ updated ${updated} existing comments`));
     console.log(summary);

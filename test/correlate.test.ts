@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { correlate, utilityClass, type CorrelateInput } from "../src/correlate.js";
 import type { PageDiff } from "../src/diffengine.js";
-import type { ElementManifest, ElementNode } from "../src/elements.js";
-import type { FileChanges } from "../src/git.js";
+import type { ElementManifest, ElementNode, OwnImage } from "../src/elements.js";
+import type { FileChanges, Hunk } from "../src/git.js";
 import type { ElementMatch } from "../src/matching.js";
 import type { ElementStyles, StyleManifest, StyleRule, Winner } from "../src/styles.js";
 
@@ -95,8 +95,12 @@ function input(opts: {
 	added?: Extra[];
 	/** Elements only the baseline has. */
 	removed?: Extra[];
-	/** Changed line numbers, or `[line, text]` where the text matters. */
-	changes: Record<string, { added?: Line[]; deleted?: Line[] }>;
+	/** Changed line numbers, or `[line, text]` where the text matters; `binary` for a changed binary file. */
+	changes: Record<string, { added?: Line[]; deleted?: Line[]; hunks?: Hunk[]; binary?: true }>;
+	/** Each element's own images, before and after. Captures record them (manifest version 4) whenever this is given. */
+	images?: Record<string, [OwnImage[], OwnImage[]]>;
+	/** Where in each element's image its changed pixels are. */
+	changedBox?: Record<string, { x: number; y: number; width: number; height: number }>;
 }): CorrelateInput {
 	const a = tree();
 	const b = tree();
@@ -123,6 +127,10 @@ function input(opts: {
 		all(a).find((n) => n.dir === dir)!.text = before;
 		all(b).find((n) => n.dir === dir)!.text = after;
 	}
+	for (const [dir, [before, after]] of Object.entries(opts.images ?? {})) {
+		if (before.length) all(a).find((n) => n.dir === dir)!.images = before;
+		if (after.length) all(b).find((n) => n.dir === dir)!.images = after;
+	}
 	const match: ElementMatch = { fromTo: new Map(), toFrom: new Map(), matchedBy: new Map(), moved: new Set() };
 	const byDir = new Map(all(a).map((n) => [n.dir, n]));
 	for (const n of all(b)) {
@@ -131,12 +139,19 @@ function input(opts: {
 		match.fromTo.set(partner, n);
 		match.toFrom.set(n, partner);
 	}
-	const manifest = (elements: ElementNode[]): ElementManifest => ({ version: 3, url: "/", extractedAt: "", scale: 1, elements });
+	const manifest = (elements: ElementNode[]): ElementManifest => ({
+		version: opts.images ? 4 : 3,
+		url: "http://localhost:4321/",
+		extractedAt: "",
+		scale: 1,
+		elements,
+	});
 	const diffs: PageDiff[] = [
 		...all(b).map((n): PageDiff => ({
 			filename: `index/${n.dir}/element.png`,
 			status: onlyB.has(n.dir) ? "added" : (opts.changed[n.dir] ?? "unchanged"),
 			mismatchedPixels: opts.changed[n.dir] ? 50 : 0,
+			...(opts.changedBox?.[n.dir] ? { changedBox: opts.changedBox[n.dir] } : {}),
 		})),
 		...all(a)
 			.filter((n) => onlyA.has(n.dir))
@@ -144,7 +159,10 @@ function input(opts: {
 	];
 	const lines = (ls: Line[] = []) => new Map(ls.map((l): [number, string] => (typeof l === "number" ? [l, ""] : l)));
 	const changes = new Map<string, FileChanges>(
-		Object.entries(opts.changes).map(([p, c]) => [p, { oldPath: p, added: lines(c.added), deleted: lines(c.deleted), hunks: [] }]),
+		Object.entries(opts.changes).map(([p, c]) => [
+			p,
+			{ oldPath: p, added: lines(c.added), deleted: lines(c.deleted), hunks: c.hunks ?? [], ...(c.binary ? { binary: true } : {}) },
+		]),
 	);
 	return {
 		pages: [{ slug: "index", from: { manifest: manifest(a), styles: styles(opts.from) }, to: { manifest: manifest(b), styles: styles(opts.to) }, match }],
@@ -379,7 +397,7 @@ test("an element with two causes lists the other on each", () => {
 
 // Copy: the card's JSX starts on src/App.jsx:12, so its text sits on a later line.
 
-test("changed copy on its own line inside the element's JSX is a copy cause", () => {
+test("changed copy on its own line inside the element's JSX is a content cause, for copy", () => {
 	const result = correlate(
 		input({
 			from: { rules: [], elements: {} },
@@ -390,8 +408,8 @@ test("changed copy on its own line inside the element's JSX is a copy cause", ()
 		}),
 	);
 	assert.deepEqual(
-		result.causes.map((c) => [c.path, c.line, c.side, c.kind, c.text, c.effects.map((e) => [e.dir, e.via])]),
-		[["src/App.jsx", 14, "RIGHT", "copy", "Save draft", [["main/card", "copy"]]]],
+		result.causes.map((c) => [c.path, c.line, c.side, c.kind, c.content, c.text, c.effects.map((e) => [e.dir, e.via])]),
+		[["src/App.jsx", 14, "RIGHT", "content", "copy", "Save draft", [["main/card", "content"]]]],
 	);
 	assert.deepEqual(result.unexplained, []);
 });
@@ -411,7 +429,7 @@ test("copy from a translations file is found there", () => {
 	);
 	assert.deepEqual(
 		result.causes.map((c) => [c.path, c.line, c.side, c.kind]),
-		[["src/locales/en.json", 8, "RIGHT", "copy"]],
+		[["src/locales/en.json", 8, "RIGHT", "content"]],
 	);
 });
 
@@ -446,7 +464,7 @@ test("copy that only lost words is found on the deleted line", () => {
 	);
 	assert.deepEqual(
 		result.causes.map((c) => [c.path, c.line, c.side, c.kind]),
-		[["src/App.jsx", 14, "LEFT", "copy"]],
+		[["src/App.jsx", 14, "LEFT", "content"]],
 	);
 });
 
@@ -466,10 +484,10 @@ test("copy on the element's JSX line is one cause, not two", () => {
 		[
 			[
 				12,
-				"copy",
+				"content",
 				[
 					["main", "knock-on"],
-					["main/card", "copy"],
+					["main/card", "content"],
 				],
 			],
 		],
@@ -787,4 +805,145 @@ test("a sibling that grew doesn't squeeze one whose parent resized too", () => {
 		result.unexplained.map((u) => u.dir),
 		["main", "main/card"],
 	);
+});
+
+// Images: the card shows an avatar inside it (an inline <img>, so the card's own image).
+
+const BOX = { x: 0, y: 0, width: 10, height: 10 };
+const image = (src: string, extra: Partial<OwnImage> = {}): OwnImage => ({ tag: "img", src: `http://localhost:4321${src}`, loaded: true, box: BOX, ...extra });
+
+test("a swapped image source is caused by the line that replaced it, then the line with the new name", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main/card": "changed" },
+			images: { "main/card": [[image("/images/about/person-circle-outline.webp")], [image("/@fs/repo/src/assets/people/gray-lewis.png?origWidth=285")]] },
+			changes: {
+				"src/App.jsx": {
+					added: [
+						[6, "import grayLewis from '@/assets/people/gray-lewis.png';"],
+						[49, "    image: grayLewis.src,"],
+					],
+					deleted: [[48, "    image: '/images/about/person-circle-outline.webp',"]],
+					hunks: [
+						{ oldStart: 5, oldCount: 0, newStart: 6, newCount: 1 },
+						{ oldStart: 48, oldCount: 1, newStart: 49, newCount: 1 },
+					],
+				},
+				"src/assets/people/gray-lewis.png": { binary: true },
+			},
+		}),
+	);
+	assert.deepEqual(
+		result.causes.map((c) => [c.path, c.line, c.side, c.kind, c.content, c.text, c.effects.map((e) => [e.dir, e.via])]),
+		[
+			["src/App.jsx", 6, "RIGHT", "content", "image", "import grayLewis from '@/assets/people/gray-lewis.png';", [["main/card", "content"]]],
+			["src/App.jsx", 49, "RIGHT", "content", "image", "image: grayLewis.src,", [["main/card", "content"]]],
+		],
+	);
+	assert.deepEqual(result.causes[0].effects[0].alsoCausedBy, ["src/App.jsx:49"], "each line names the other");
+	assert.deepEqual(result.unexplained, []);
+});
+
+test("a name inside a longer file name isn't a match", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main/card": "changed" },
+			images: { "main/card": [[image("/a.png")], [image("/b.png")]] },
+			changes: { "src/App.jsx": { added: [[3, "const icon = '/data.png';"]], deleted: [[3, "const icon = '/beta.png';"]] } },
+		}),
+	);
+	assert.deepEqual(result.causes, []);
+	assert.deepEqual(
+		result.unexplained.map((u) => [u.dir, u.note]),
+		[["main/card", "its image source changed (a.png → b.png) but no changed line holds either name"]],
+	);
+});
+
+test("an image file replaced in place is a changed binary file cause, with no line", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main/card": "changed" },
+			images: { "main/card": [[image("/images/avatar.png")], [image("/images/avatar.png")]] },
+			changes: { "public/images/avatar.png": { binary: true } },
+		}),
+	);
+	assert.deepEqual(
+		result.causes.map((c) => [c.path, c.line, c.side, c.kind, c.content, c.text, c.effects.map((e) => [e.dir, e.via])]),
+		[["public/images/avatar.png", undefined, "RIGHT", "content", "image", "avatar.png", [["main/card", "content"]]]],
+	);
+	assert.equal("line" in result.causes[0], false);
+	assert.deepEqual(result.unexplained, []);
+});
+
+test("an edited SVG image is caused by its first changed line", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main/card": "changed" },
+			images: { "main/card": [[image("/icons/logo.svg")], [image("/icons/logo.svg")]] },
+			changes: { "public/icons/logo.svg": { added: [[7, '  <path d="M1 1"/>'], [4, '  <circle r="3"/>']], deleted: [[4, '  <circle r="2"/>']] } },
+		}),
+	);
+	assert.deepEqual(
+		result.causes.map((c) => [c.path, c.line, c.side, c.content]),
+		[["public/icons/logo.svg", 4, "RIGHT", "image"]],
+	);
+});
+
+test("an image that hadn't loaded is unknown, with a hint saying so", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main/card": "changed" },
+			images: { "main/card": [[image("/a.png", { loaded: false })], [image("/b.png")]] },
+			changes: { "src/App.jsx": { added: [[3, "const icon = '/b.png';"]] } },
+		}),
+	);
+	assert.deepEqual(result.causes, []);
+	assert.deepEqual(
+		result.unexplained.map((u) => [u.dir, u.note]),
+		[["main/card", "its image (a.png) hadn't loaded in the baseline"]],
+	);
+});
+
+test("pixels changed inside an unchanged image get a hint; elsewhere, or for animated images, they don't", () => {
+	const hinted = (images: OwnImage[], changedBox: { x: number; y: number; width: number; height: number }) =>
+		correlate(
+			input({
+				from: { rules: [], elements: {} },
+				to: { rules: [], elements: {} },
+				changed: { "main/card": "changed" },
+				images: { "main/card": [images, images] },
+				changedBox: { "main/card": changedBox },
+				changes: {},
+			}),
+		).unexplained.map((u) => u.note);
+	const avatar = image("/images/avatar.png", { box: { x: 0, y: 0, width: 4, height: 4 } });
+	assert.deepEqual(hinted([avatar], { x: 1, y: 1, width: 3, height: 3 }), [
+		"pixels changed inside its image (avatar.png), but neither its source nor its file changed: the file may have changed outside the repo, its pipeline (image service, sharp) may have changed, or something drew over it",
+	]);
+	assert.deepEqual(hinted([avatar], { x: 1, y: 1, width: 9, height: 9 }), [undefined], "changed pixels outside the image");
+	assert.deepEqual(hinted([image("/spinner.gif", { box: avatar.box })], { x: 1, y: 1, width: 3, height: 3 }), [undefined], "a GIF animates");
+	assert.deepEqual(hinted([{ ...avatar, tag: "video" }], { x: 1, y: 1, width: 3, height: 3 }), [undefined], "a video plays");
+});
+
+test("captures from before own images were recorded have no image evidence", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main/card": "changed" },
+			changes: { "public/images/avatar.png": { binary: true } },
+		}),
+	);
+	assert.deepEqual(result.causes, []);
+	assert.deepEqual(result.unexplained.map((u) => u.note), [undefined]);
 });

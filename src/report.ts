@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
-import type { Correlation, RenderSite } from "./correlate.js";
+import { causeLocation, type Correlation, type RenderSite, type UnexplainedChange } from "./correlate.js";
 import type { DiffReport, PageStatus } from "./diffengine.js";
 
 const STATUS_STYLE: Record<PageStatus, (s: string) => string> = {
@@ -74,12 +74,13 @@ function printCorrelation(c: Correlation): void {
 	console.log(pc.bold("  Causes"));
 	if (causes.length === 0) console.log(pc.dim("    No changed line explains a visual change."));
 	for (const cause of causes) {
-		const where = `${cause.path}:${cause.line}${cause.side === "LEFT" ? " (deleted)" : ""}`;
+		const where = `${causeLocation(cause)}${cause.side === "LEFT" ? " (deleted)" : ""}`;
 		const n = cause.effects.length;
 		// Only properties whose declaration changed; the rest are results of layout.
 		const props = [...new Set(cause.effects.flatMap((e) => e.props.filter((p) => p.own).map((p) => p.name)))];
 		const propText = props.length ? `  ${props.slice(0, MAX_PROPS).join(", ")}${props.length > MAX_PROPS ? ", …" : ""}` : "";
-		console.log(`    ${pc.cyan(where)}  ${pc.dim(cause.text ?? cause.kind)}`);
+		const kind = cause.kind === "content" ? `content (${cause.content})` : cause.kind;
+		console.log(`    ${pc.cyan(where)}  ${pc.dim(cause.text ? `${cause.text}  · ${kind}` : kind)}`);
 		console.log(pc.dim(`      → ${n} element${n === 1 ? "" : "s"}${propText}`));
 	}
 	printRenderSites(c.renderSites ?? []);
@@ -93,6 +94,18 @@ function printCorrelation(c: Correlation): void {
 		withoutStyles.length ? `${withoutStyles.length} page(s) without style data (re-capture to trace CSS)` : "",
 	].filter(Boolean);
 	if (extras.length) console.log(pc.dim(`    ${extras.join("  •  ")}  — see \`tunnelvision inspector\``));
+	printHints(unexplained);
+}
+
+const MAX_HINTS = 5;
+
+/** The hints on unexplained visual changes, once each, the most common first. */
+function printHints(unexplained: UnexplainedChange[]): void {
+	const counts = new Map<string, number>();
+	for (const u of unexplained) if (u.note) counts.set(u.note, (counts.get(u.note) ?? 0) + 1);
+	const hints = [...counts].sort((a, b) => b[1] - a[1]);
+	for (const [note, n] of hints.slice(0, MAX_HINTS)) console.log(pc.dim(`      hint${n > 1 ? ` (×${n})` : ""}: ${note}`));
+	if (hints.length > MAX_HINTS) console.log(pc.dim(`      …and ${hints.length - MAX_HINTS} more hints`));
 }
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;

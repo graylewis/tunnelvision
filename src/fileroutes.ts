@@ -57,6 +57,15 @@ function configString(root: string, framework: Framework, key: string): string |
 }
 
 /**
+ * The directory served at the site's root as-is, relative to the project root:
+ * Astro's `publicDir` when its config sets one as a literal, else `public`
+ * (Next, Vite and Astro's default).
+ */
+export function publicDir(root: string): string {
+	return (detectFramework(root) === "astro" ? configString(root, "astro", "publicDir") : undefined) ?? "public";
+}
+
+/**
  * `pageExtensions` from the Next config when it's written as a literal array,
  * longest first so "page.tsx" is tried before "tsx".
  */

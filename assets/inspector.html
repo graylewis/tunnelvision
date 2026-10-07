@@ -242,10 +242,21 @@ function elementKey(e) {
 
 /** A cause's location, as a source link relative to the repository. */
 function causeSource(cause) {
-	return { fileName: state.data.repoRoot.replace(/\/$/, "") + "/" + cause.path, lineNumber: cause.line, columnNumber: 1, path: `${cause.path}:${cause.line}` };
+	return { fileName: state.data.repoRoot.replace(/\/$/, "") + "/" + cause.path, lineNumber: cause.line, columnNumber: 1, path: causeAt(cause) };
 }
 
-const VIA = { direct: "sets it", inherited: "inherited", var: "via var()", jsx: "JSX line", copy: "copy", "knock-on": "knock-on", new: "new", removed: "removed", inside: "inside" };
+/** `path:line`, or just the path for a changed binary file (which has no lines). */
+function causeAt(cause, short) {
+	const p = short ? cause.path.split("/").pop() : cause.path;
+	return cause.line === undefined ? p : `${p}:${cause.line}`;
+}
+
+/** A cause's kind, with what it changed for a content cause: `content (image)`. */
+function causeKind(cause) {
+	return cause.kind === "content" ? `content (${cause.content})` : cause.kind;
+}
+
+const VIA = { direct: "sets it", inherited: "inherited", var: "via var()", jsx: "JSX line", content: "content", "knock-on": "knock-on", new: "new", removed: "removed", inside: "inside" };
 
 /** A render site's location, or what to call it when the parent has no JSX line. */
 function siteWhere(site, short) {
@@ -306,8 +317,8 @@ function renderCauses() {
 	const causes = c.causes.map((cause, i) => [cause, i]).filter(([x]) => match(x.path, x.text ?? ""));
 	group("Causes", causes.length);
 	for (const [cause, i] of causes) {
-		const where = `${cause.path.split("/").pop()}:${cause.line}${cause.side === "LEFT" ? " (deleted)" : ""}`;
-		row("c:" + i, "changed", `${esc(where)} <span class="cause-text">${esc(cause.text ?? cause.kind)}</span>`, `<span class="badge" title="elements affected">${cause.effects.length}</span>`);
+		const where = `${causeAt(cause, true)}${cause.side === "LEFT" ? " (deleted)" : ""}`;
+		row("c:" + i, "changed", `${esc(where)} <span class="cause-text">${esc(cause.text ?? causeKind(cause))}</span>`, `<span class="badge" title="elements affected">${cause.effects.length}</span>`);
 	}
 	const sites = (c.renderSites ?? []).map((site, i) => [site, i]).filter(([x]) => match(x.path ?? "", ...x.effects.map((e) => e.page + "/" + e.dir)));
 	if (sites.length) group("New and removed elements", sites.length);
@@ -533,7 +544,7 @@ function renderDetail() {
 	}
 	if (causedBy.length) {
 		dl += `<dt>caused by</dt><dd><ul class="effects">` + causedBy.map(({ cause, effect, key }) =>
-			`<li><a class="el" data-goto="${esc(key)}">${esc(cause.path + ":" + cause.line)}</a> <span class="via">${esc(VIA[effect.via])}</span> <span class="hint">${esc(cause.text ?? "")}</span></li>`).join("") + `</ul></dd>`;
+			`<li><a class="el" data-goto="${esc(key)}">${esc(causeAt(cause))}</a> <span class="via">${esc(VIA[effect.via])}</span> <span class="hint">${esc(cause.text ?? "")}</span></li>`).join("") + `</ul></dd>`;
 	} else if (unexplained) {
 		dl += `<dt>caused by</dt><dd><span class="hint">no changed line explains it${unexplained.note ? " — " + esc(unexplained.note) : ""}</span></dd>`;
 	}
@@ -580,10 +591,10 @@ function propsTable(props) {
 
 function renderCause(cause) {
 	const rep = cause.representative;
-	let html = `<h2>${esc(cause.path + ":" + cause.line)}</h2><dl>` +
+	let html = `<h2>${esc(causeAt(cause))}</h2><dl>` +
 		`<dt>source</dt><dd>${sourceLink(causeSource(cause))}</dd>` +
 		(cause.text ? `<dt>${cause.side === "LEFT" ? "was" : "now"}</dt><dd>${esc(cause.text)}</dd>` : "") +
-		`<dt>kind</dt><dd>${esc(cause.kind)}${cause.side === "LEFT" ? " (deleted line)" : ""}</dd>` +
+		`<dt>kind</dt><dd>${esc(causeKind(cause))}${cause.line === undefined ? " (changed binary file)" : cause.side === "LEFT" ? " (deleted line)" : ""}</dd>` +
 		`<dt>affects</dt><dd>${cause.effects.length} element${cause.effects.length === 1 ? "" : "s"}</dd></dl>`;
 	if (rep) {
 		const node = state.items.get(elementKey(rep))?.node;
@@ -591,7 +602,7 @@ function renderCause(cause) {
 		if (node) html += imageGrid(`${rep.page}/${node.dir}/element.png`, node, `${rep.page}/${node.fromDir ?? node.dir}/element.png`);
 		html += propsTable(rep.props);
 	}
-	const order = { direct: 0, inherited: 1, var: 1, jsx: 1, copy: 1, inside: 1, "knock-on": 2 };
+	const order = { direct: 0, inherited: 1, var: 1, jsx: 1, content: 1, inside: 1, "knock-on": 2 };
 	const effects = [...cause.effects].sort((a, b) => order[a.via] - order[b.via] || b.size - a.size);
 	html += `<figcaption>affected elements</figcaption><ul class="effects">` + effects.map((e) =>
 		`<li><a class="el" data-goto="${esc(elementKey(e))}">${esc(e.page + "/" + e.dir)}</a> <span class="via">${esc(VIA[e.via])}</span>` +

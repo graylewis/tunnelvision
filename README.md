@@ -27,6 +27,11 @@ which uses code hashing to skip a lot of the lengthy processing calls where no c
 
 in some edge cases, cheat mode will miss some changes. mostly in cases where javascript changes the styles or DOM without user input. the setup skill will test whether cheat mode is appropriate for your project, and set this up for you.
 
+### your first run
+setting up a baseline will be by far the longest run of tunnelvision. it goes through, collects all of the CSS object model information it can regarding every single component in your app (in apps with tailwind this takes an especially long time), and screenshots every page. 
+
+subsequent runs can be as quick as 10 seconds in complex applications - especially if cheat mode works in your project
+
 ----
 # agent-written docs
 ## tunnelvision

@@ -5,14 +5,21 @@ directly to the visual consequences of that change, and presented to you with sc
 tunnelvision is installed directly into your repo. its config is `tunnelvision.json` at the repo root, which you commit; the captures, diffs and auth context it produces are stored in `.tunnelvision`, which is git-ignored.
 
 ### steps to set up:
+1. run `npx tunnelvision skills`
+2. use. /setup-tunnelvision
+
+OR
+
 1. install shot-scraper, ensure that it's on your path
 2. install tunnelvision into your repo.
-3. ensure that you have a valid sitemap.xml or tunnelvision.json "sitemap" field. Next.js and Astro projects don't need one: their pages are read from their file-based routes (see "Where pages come from" below).
-4. `npx tunnelvision init` in your repo, and commit the `tunnelvision.json` it writes.
-5. `npx tunnelvision review` to create a baseline 'commit' of how your app looks.
-6. whenever you want to review your changes, use `npx tunnelvision review` to create a new point-in-time, and generate a diff for you or your agent`
-7. optionally, use `npx tunnelvision inspector` for a lightweight web interface.
-8. install tunnelvision sandhog for a richer experience
+3. ensure that your app is *running in dev mode* 
+4. ensure that you have a valid sitemap.xml or tunnelvision.json "sitemap" field. Next.js and Astro projects don't need one: their pages are read from their file-based routes (see "Where pages come from" below).
+5. `npx tunnelvision init` in your repo, and commit the `tunnelvision.json` it writes.
+6. `npx tunnelvision review` to create a baseline 'commit' of how your app looks.
+7. whenever you want to review your changes, use `npx tunnelvision review` to create a new point-in-time, and generate a diff for you or your agent`
+8. optionally, use `npx tunnelvision inspector` for a lightweight web interface.
+9. install tunnelvision sandhog for a richer experience
+10. use `npx tunnelvision doctor` to check if anything is broken in your setup
 
 ### troubleshooting for your project:
 tunnelvision relies on playwright to generate screenshots, and therefore can be a bit finicky with things like long-running animations.
@@ -21,11 +28,16 @@ if you're still finding diffs identified where they shouldn't be, try using --wa
 
 if your app is behind an auth wall, use --auth to interactively log into your app and then store your auth information for tunnelvision to use (stored in .tunnelvision, so make sure not to commit it). tunnelvision will use the auth information when screenshotting your app. 
 
-### cheat mode
+### cheat mode (most runs <20s, only stable on nextjs)
 sometimes running a tunnelvision shoot (snapshot) takes too long (especially in projects that use tailwind.). my goal is that for the majority of websites, runs take less than 10 seconds. To support this, I added 'cheat mode', 
 which uses code hashing to skip a lot of the lengthy processing calls where no changes were made. 
 
 in some edge cases, cheat mode will miss some changes. mostly in cases where javascript changes the styles or DOM without user input. the setup skill will test whether cheat mode is appropriate for your project, and set this up for you.
+
+### your first run
+setting up a baseline will be by far the longest run of tunnelvision. it goes through, collects all of the CSS object model information it can regarding every single component in your app (in apps with tailwind this takes an especially long time), and screenshots every page. 
+
+subsequent runs can be as quick as 10 seconds in complex applications - especially if cheat mode works in your project
 
 ----
 # agent-written docs

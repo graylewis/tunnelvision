@@ -40,6 +40,10 @@ _Avoid_: Style, computed style (for the whole set)
 A style rule the browser applied from any stylesheet, including generated ones (Tailwind utilities, CSS-in-JS), identified by its selector, declaration text and, when known, its source location.
 _Avoid_: Style, class
 
+**Broken source map**:
+A stylesheet's source map that doesn't lead back to the files on disk: there's none for a project file, it names a file that isn't there, or its copy of a file isn't the file (PostCSS's output, when Turbopack drops PostCSS's map; an older compile, when the dev server's CSS is stale). Rules from it are untraced: they get no source location rather than a wrong one.
+_Avoid_: Missing source map (most broken maps exist, and point somewhere wrong)
+
 **Winning declaration**:
 The declaration that sets a tracked property on an element once the cascade is resolved, or a note that the value is inherited from an ancestor.
 _Avoid_: Matched rule (a rule can match without winning anything)

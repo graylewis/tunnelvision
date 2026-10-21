@@ -30,8 +30,8 @@ test("an inline source map's absolute sources resolve to files, not to the page'
 	// Line 0 of the served sheet maps to line 3 (0-based) of global.css, named by absolute path as Vite does.
 	const map = { version: 3, sources: [file], names: [], mappings: ";;;AAGA" };
 	const sourceMapURL = `data:application/json;base64,${Buffer.from(JSON.stringify(map)).toString("base64")}`;
-	const { rules, unlocated } = await new StyleLocator(root).rules(styles({ sourceMapURL, text: "\n\n\n.card { border-radius: var(--radius); }\n" }));
-	assert.equal(unlocated, 0);
+	const { rules, checks } = await new StyleLocator(root).rules(styles({ sourceMapURL, text: "\n\n\n.card { border-radius: var(--radius); }\n" }));
+	assert.deepEqual(checks, []);
 	assert.deepEqual(rules[0].decls[0].loc, { path: "src/styles/global.css", line: 4 });
 });
 
@@ -44,8 +44,8 @@ test("a Turbopack stylesheet's index source map resolves through its section", a
 	const section = { version: 3, sources: ["turbopack:///[project]/src/styles/global.css"], names: [], mappings: ";;AAGA" };
 	const sourceMapURL = inlineMap({ version: 3, sources: [], sections: [{ offset: { line: 1, column: 0 }, map: section }] });
 	const text = "/* [project]/src/styles/global.css [app-client] (css) */\n\n\n.card { border-radius: var(--radius); }\n";
-	const { rules, unlocated } = await new StyleLocator(root).rules(styles({ sourceMapURL, text }));
-	assert.equal(unlocated, 0);
+	const { rules, checks } = await new StyleLocator(root).rules(styles({ sourceMapURL, text }));
+	assert.deepEqual(checks, []);
 	assert.deepEqual(rules[0].decls[0].loc, { path: "src/styles/global.css", line: 4 });
 });
 
@@ -73,8 +73,8 @@ test("a Vite <style> inside a page's HTML matches its file line for line", async
 
 test("a <style> written in the HTML itself isn't matched to a file", async () => {
 	const { root, styles } = project();
-	const { unlocated } = await new StyleLocator(root).rules(styles({ devId: null, sourceURL: "http://localhost:4321/about" }));
-	assert.equal(unlocated, 1);
+	const { checks } = await new StyleLocator(root).rules(styles({ devId: null, sourceURL: "http://localhost:4321/about" }));
+	assert.deepEqual(checks, [{ sheet: "inline <style>", problem: "no-map" }]);
 });
 
 test("CSS Modules match their file with class names ignored", () => {

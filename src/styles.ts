@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import type { Untraced } from "./stylemaps.js";
 
 /**
  * Style data recorded for every element in per-element captures: the
@@ -98,6 +99,8 @@ export interface StyleRule {
 	/** The rule's own location (selector through closing brace). */
 	loc: SourceLoc | null;
 	decls: StyleDecl[];
+	/** Why the rule has no location, when its stylesheet's source map is broken. */
+	untraced?: Untraced;
 }
 
 /** `[rule index, declaration index]` into a page's rule table. */

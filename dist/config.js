@@ -30,6 +30,9 @@ export const DEFAULT_CONFIG = {
         enabled: false,
         ignoreAttributes: [],
     },
+    workarounds: {
+        turbopackPostcssMaps: false,
+    },
 };
 /** Deep-merge a partial config on top of defaults. */
 function withDefaults(partial) {
@@ -42,6 +45,7 @@ function withDefaults(partial) {
         styles: { ...DEFAULT_CONFIG.styles, ...(partial.styles ?? {}) },
         updatePr: { ...DEFAULT_CONFIG.updatePr, ...(partial.updatePr ?? {}) },
         cheatMode: { ...DEFAULT_CONFIG.cheatMode, ...(partial.cheatMode ?? {}) },
+        workarounds: { ...DEFAULT_CONFIG.workarounds, ...(partial.workarounds ?? {}) },
     };
 }
 export function configExists(paths) {
@@ -104,6 +108,7 @@ export function applyOverrides(config, o) {
         styles: { ...config.styles },
         updatePr: { ...config.updatePr },
         cheatMode: { ...config.cheatMode },
+        workarounds: { ...config.workarounds },
     };
     if (o.baseUrl !== undefined)
         next.baseUrl = o.baseUrl;

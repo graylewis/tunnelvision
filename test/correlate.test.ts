@@ -947,3 +947,26 @@ test("captures from before own images were recorded have no image evidence", () 
 	assert.deepEqual(result.causes, []);
 	assert.deepEqual(result.unexplained.map((u) => u.note), [undefined]);
 });
+
+test("a change whose declaration is in a stylesheet with a broken source map says so", () => {
+	const untraced = (value: string): StyleRule => ({
+		selector: "body",
+		loc: null,
+		decls: [{ name: "color", value, loc: null }],
+		untraced: { file: "src/app/globals.css", problem: "postcss-output" },
+	});
+	const el = (color: string) => ({ computed: { color }, winners: { color: winner(0, { inherited: true }) } });
+	const result = correlate(
+		input({
+			from: { rules: [untraced("var(--foreground)")], elements: { "main/card/inner": el("rgb(37, 37, 37)") } },
+			to: { rules: [untraced("var(--level-2)")], elements: { "main/card/inner": el("lab(27.7 0 0)") } },
+			changed: { "main/card/inner": "changed" },
+			changes: { "src/app/globals.css": { added: [163], deleted: [163] } },
+		}),
+	);
+	assert.deepEqual(result.causes, []);
+	assert.deepEqual(
+		result.unexplained.map((u) => [u.dir, u.note]),
+		[["main/card/inner", "body is in src/app/globals.css, which can't be traced: Turbopack dropped PostCSS's source map"]],
+	);
+});

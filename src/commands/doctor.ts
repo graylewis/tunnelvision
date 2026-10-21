@@ -8,6 +8,7 @@ import { FRAMEWORK_NAMES } from "../fileroutes.js";
 import { findPlaywrightPython } from "../playwright.js";
 import { loadConfig } from "../config.js";
 import { environmentVersions, versionChanges } from "../environment.js";
+import { cssPipeline } from "../stylemaps.js";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -105,6 +106,22 @@ export async function doctor(opts: DoctorOptions): Promise<number> {
 	if (css) {
 		console.log(`  ${pc.yellow("!")} css source maps${pc.dim(`  ${css}`)}`);
 		console.log(pc.dim("      visual changes can't be traced to CSS lines until it's set"));
+	}
+	const pipeline = cssPipeline(opts.root);
+	if (pipeline.turbopack && pipeline.postcssConfig) {
+		let rebuild = false;
+		try {
+			rebuild = config ? loadConfig(paths).workarounds.turbopackPostcssMaps : false;
+		} catch {
+			// the config line already reported it
+		}
+		const file = path.basename(pipeline.postcssConfig);
+		if (rebuild) {
+			console.log(`  ${pc.green("✓")} css source maps${pc.dim("  rebuilt from PostCSS for Turbopack (workarounds.turbopackPostcssMaps)")}`);
+		} else {
+			console.log(`  ${pc.yellow("!")} css source maps${pc.dim(`  Turbopack drops PostCSS's source maps, so CSS run through ${file} likely can't be traced to its lines`)}`);
+			console.log(pc.dim("      a capture confirms it; `workarounds.turbopackPostcssMaps: true` in tunnelvision.json rebuilds them"));
+		}
 	}
 
 	// cheat mode: opt-in, so being off isn't a failure; being stale is worth a look

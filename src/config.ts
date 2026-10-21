@@ -59,6 +59,20 @@ export interface CheatModeConfig {
 	validatedWith?: Record<string, string>;
 }
 
+/**
+ * Temporary fixes for other tools' bugs, each on only where setup found the
+ * bug, and each to be removed once the tool is fixed.
+ */
+export interface WorkaroundsConfig {
+	/**
+	 * Turbopack drops PostCSS's source map, so a processed stylesheet's map
+	 * points into PostCSS's output instead of the file. Rebuild that map by
+	 * running the project's PostCSS on the file, and trace through it
+	 * (docs/adr/0010-rebuild-postcss-maps-turbopack-drops.md).
+	 */
+	turbopackPostcssMaps: boolean;
+}
+
 export interface Viewport {
 	width: number;
 	height: number;
@@ -105,6 +119,7 @@ export interface Config {
 	styles: StylesConfig;
 	updatePr: UpdatePrConfig;
 	cheatMode: CheatModeConfig;
+	workarounds: WorkaroundsConfig;
 	/** Optional per-page overrides keyed by URL path (e.g. "/pricing"). */
 	pages?: Record<string, PageOverride>;
 }
@@ -137,6 +152,9 @@ export const DEFAULT_CONFIG: Config = {
 		enabled: false,
 		ignoreAttributes: [],
 	},
+	workarounds: {
+		turbopackPostcssMaps: false,
+	},
 };
 
 /** Deep-merge a partial config on top of defaults. */
@@ -150,6 +168,7 @@ function withDefaults(partial: Partial<Config>): Config {
 		styles: { ...DEFAULT_CONFIG.styles, ...(partial.styles ?? {}) },
 		updatePr: { ...DEFAULT_CONFIG.updatePr, ...(partial.updatePr ?? {}) },
 		cheatMode: { ...DEFAULT_CONFIG.cheatMode, ...(partial.cheatMode ?? {}) },
+		workarounds: { ...DEFAULT_CONFIG.workarounds, ...(partial.workarounds ?? {}) },
 	};
 }
 
@@ -238,6 +257,7 @@ export function applyOverrides(config: Config, o: Overrides): Config {
 		styles: { ...config.styles },
 		updatePr: { ...config.updatePr },
 		cheatMode: { ...config.cheatMode },
+		workarounds: { ...config.workarounds },
 	};
 	if (o.baseUrl !== undefined) next.baseUrl = o.baseUrl;
 	if (o.width !== undefined) next.viewport.width = o.width;

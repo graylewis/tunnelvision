@@ -1,6 +1,6 @@
 ---
 name: setup-tunnelvision
-description: Set up tunnelvision in this project — install shot-scraper if it's missing, check where Pages come from (Next.js/Astro routes or the sitemap) and the source-map settings, run `tunnelvision init`, capture a baseline, offer the post-commit hook, and test whether cheat mode finds exactly what normal captures do before making it the default. Use when the user asks to set up, install, initialise or configure tunnelvision, or to take a first baseline capture.
+description: Set up tunnelvision in this project — install shot-scraper if it's missing, check where Pages come from (Next.js/Astro routes or the sitemap) and the source-map settings, run `tunnelvision init`, capture a baseline and check its stylesheets' source maps (turning on the Turbopack PostCSS workaround when they need it), offer the post-commit hook, and test whether cheat mode finds exactly what normal captures do before making it the default. Use when the user asks to set up, install, initialise or configure tunnelvision, or to take a first baseline capture.
 ---
 
 # Set up tunnelvision
@@ -23,7 +23,7 @@ If `node_modules/.bin/tunnelvision` doesn't exist, install it as a dev dependenc
 tunnelvision doctor
 ```
 
-It reports, one line each: `shot-scraper`, `playwright (for per-element captures)`, `config`, `git repo`, `post-commit hook`, `next.js routes`, `astro routes` or `sitemap`, and a `!` warning about CSS source maps when they're needed and off. Fix each ✗ with the matching step below, then re-run the doctor until it prints `All good.` (the `config` line stays ✗ until step 6 — that's expected). The `post-commit hook` line is informational (`·` when it isn't installed) and never fails the doctor; step 9 deals with it.
+It reports, one line each: `shot-scraper`, `playwright (for per-element captures)`, `config`, `git repo`, `post-commit hook`, `next.js routes`, `astro routes` or `sitemap`, and a `!` warning about CSS source maps when they're needed and off, or when Turbopack runs the project's PostCSS (it drops PostCSS's maps; step 8 confirms it). Fix each ✗ with the matching step below, then re-run the doctor until it prints `All good.` (the `config` line stays ✗ until step 6 — that's expected). The `post-commit hook` line is informational (`·` when it isn't installed) and never fails the doctor; step 9 deals with it.
 
 ## 3. shot-scraper
 
@@ -65,7 +65,7 @@ Everywhere else tunnelvision takes its Pages from the one `sitemap*.xml` in the 
 
 Neither of these blocks capture, but without them fewer visual changes can be traced to the lines that caused them. Offer each as a small change; skip if the user declines.
 
-- **CSS source maps.** If the doctor printed `! css source maps`, the Vite (or Astro `vite:`) config processes CSS (Tailwind, PostCSS, Sass…) without them. Add `css: { devSourcemap: true }` to the Vite config.
+- **CSS source maps.** If the doctor printed `! css source maps` about a Vite (or Astro `vite:`) config, it processes CSS (Tailwind, PostCSS, Sass…) without them. Add `css: { devSourcemap: true }` to the Vite config. If it's about Turbopack dropping PostCSS's maps, there's nothing to change yet: the baseline capture in step 8 checks the served maps and says whether the workaround is needed.
 - **React 19 in a development build.** React 19 dev builds record each element's JSX location; React 18 or a production build only give component names. Check the `react` version in `package.json` and mention it if it's older. Nothing to change here beyond making sure the base URL points at the dev server, not a production preview.
 
 ## 6. Initialise
@@ -98,10 +98,25 @@ tunnelvision shoot
 
 By default this captures every visible block-level element of every Page, plus the style data that makes cause-tracing work. Expect a few seconds per page. A page that fails to load is skipped and the run exits non-zero — read the error, fix the URL or the sitemap, and re-run.
 
+### Check the source maps
+
+`shoot` checks every stylesheet's source map against the files on disk, first for the sheets the first Page links to and then for any later Pages bring, and prints `! source maps (…)` with one line per file whose map is broken (the same list is in the Version's `meta.json` under `styleMaps`). Visual changes caused by rules in those files can't be traced, so they'd show up as unexplained. Deal with each kind of line in this order, since a stale compile hides the others:
+
+1. **`probably a stale compile`**: the dev server is serving CSS it compiled from an older version of the file (Turbopack keeps it after a `git checkout`, even across restarts). The screenshots are wrong too. Make a real edit to the named file (append a comment), wait a few seconds, undo it byte for byte, and check `git status` shows the file unchanged. Then run `tunnelvision shoot` again.
+2. **`Turbopack dropped PostCSS's source map`**: Turbopack ran the project's PostCSS (Tailwind's `@tailwindcss/postcss`, say) and kept the map from before it, so the map points into the compiled CSS. tunnelvision can rebuild the map by running the project's PostCSS on the file itself. Tell the user that in one sentence, then set it in `tunnelvision.json`:
+   ```json
+   "workarounds": { "turbopackPostcssMaps": true }
+   ```
+   The baseline's rule locations were found without it, so capture it again: offer to commit `tunnelvision.json` first (otherwise the new capture is keyed `-dirty`), run `tunnelvision shoot`, and check the output now says `source map rebuilt` for each of those files and warns about none of them. If the first baseline is left under another key, offer `tunnelvision clean --keep 1` to remove it.
+3. **Anything else** (no map for a project file, a missing file, Sass or a Turbopack loader, an unknown cause): there's no fix in setup. Tell the user which files, and that visual changes from them will show as unexplained.
+
+If `shoot` says `workarounds.turbopackPostcssMaps` is on but no source map needed rebuilding, Turbopack keeps PostCSS's maps now: offer to remove the setting.
+
 Report back:
 
 - the Version key (`ls .tunnelvision/versions`, newest by `meta.json` `capturedAt`), and how many pages it holds (`pageCount` in that `meta.json`);
 - any pages that failed;
+- which stylesheets' maps were broken, and whether the workaround was turned on;
 - what was changed in the repo during setup.
 
 ## 9. Post-commit hook

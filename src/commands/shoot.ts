@@ -22,8 +22,9 @@ import {
 	type RawElement,
 } from "../elements.js";
 import { Cascade } from "../cascade.js";
-import { StyleLocator } from "../stylesource.js";
-import { writeStyleManifest, type ElementStyles, type RawStyles } from "../styles.js";
+import { LOCATOR_VERSION, StyleLocator } from "../stylesource.js";
+import { checkKey, describeCheck, type SheetCheck } from "../stylemaps.js";
+import { writeStyleManifest, type ElementStyles, type RawSheet, type RawStyles } from "../styles.js";
 import { metaFromInfo, writeMeta } from "../versions.js";
 import { stabilizeScript } from "../stabilize.js";
 import { resolveComponents, SourceResolver, type ComponentFile } from "../reactsource.js";
@@ -170,17 +171,20 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 	const { config } = ctx;
 	const scale = config.scaleFactor && config.scaleFactor > 0 ? config.scaleFactor : config.retina ? 2 : 1;
 	const resolver = new SourceResolver(ctx.paths.root);
-	const locator = new StyleLocator(ctx.paths.root);
+	const locator = new StyleLocator(ctx.paths.root, { rebuild: config.workarounds.turbopackPostcssMaps });
+	const maps = new MapReport({ turbopack: locator.checker.turbopack, rebuild: config.workarounds.turbopackPostcssMaps });
 	const produced: string[] = [];
 	const missing: string[] = [];
 	const noReactSource: string[] = [];
 	const noStyles: string[] = [];
 	const carriedPages: string[] = [];
 	const redirects: string[] = [];
-	let unlocatedSheets = 0;
 	let elementCount = 0;
 	let queried = 0;
 	let planned = 0;
+
+	// Before capturing, so broken maps are known up front; sheets only other pages load are checked as they turn up.
+	if (ctx.pages.length > 0) maps.report(await probeStyleMaps(ctx.pages[0].url, auth, locator), "before capturing");
 
 	const { reference, why } = findReference(ctx.paths, ctx.version.key, rev);
 	if (reference) console.log(pc.dim(`  carrying over from ${reference.meta.key}`));
@@ -263,8 +267,9 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 				queried += asked;
 				planned += plan.total;
 				if (ev.styles || asked === 0) {
-					const located = ev.styles ? await locator.rules(ev.styles) : { rules: [], unlocated: 0 };
-					unlocatedSheets += located.unlocated;
+					const located = ev.styles ? await locator.rules(ev.styles) : { rules: [], checks: [] };
+					if (ev.styles) maps.read(ev.styles.sheets.length);
+					maps.report(located.checks, `on ${ctx.pages[i].url}`);
 					const computed = computedByNode(tree, raw);
 					const fresh = ev.styles
 						? elementStyles(tree, raw, ev.styles, config.styles.properties, plan.query === "all" ? null : new Set(plan.query))
@@ -346,14 +351,7 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 	if (noStyles.length > 0) {
 		console.log(pc.yellow(`  Couldn't read CSS rules on ${noStyles.length} page(s); visual changes there can't be traced to CSS.`));
 	}
-	if (unlocatedSheets > 0) {
-		console.log(
-			pc.yellow(
-				`  ${unlocatedSheets} stylesheet(s) couldn't be traced to a source file; ` +
-					"with Vite, set `css: { devSourcemap: true }` for processed CSS (PostCSS, Tailwind, Sass).",
-			),
-		);
-	}
+	maps.summarize();
 
 	console.log(pc.dim(`  ${elementCount} elements recorded (cropped from each page screenshot on demand)`));
 	const summary = [
@@ -362,8 +360,126 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 		planned && `styles read for ${queried} of ${planned} elements`,
 	].filter(Boolean);
 	console.log(pc.dim(`  ${[...summary, `${((Date.now() - started) / 1000).toFixed(1)}s`].join(" · ")}`));
-	writeMeta(ctx.paths, metaFromInfo(ctx.version, config.baseUrl, ctx.pages.length, rev));
+	const styleMaps = maps.all();
+	writeMeta(ctx.paths, { ...metaFromInfo(ctx.version, config.baseUrl, ctx.pages.length, rev), ...(styleMaps.length ? { styleMaps } : {}) });
 	return { produced, missing, exitCode: 0 };
+}
+
+/**
+ * The problems found with stylesheets' source maps over a capture, each told
+ * once, as soon as it's found.
+ */
+class MapReport {
+	private readonly found = new Map<string, SheetCheck>();
+	private sheets = 0;
+	private foreign = 0;
+
+	constructor(private readonly context: { turbopack: boolean; rebuild: boolean }) {}
+
+	/** Count stylesheets checked, so a capture that checked none doesn't say the maps are fine. */
+	read(sheets: number): void {
+		this.sheets += sheets;
+	}
+
+	report(checks: SheetCheck[], where: string): void {
+		const fresh = checks.filter((c) => !this.found.has(checkKey(c)));
+		for (const c of fresh) this.found.set(checkKey(c), c);
+		// A sheet without a map that isn't a project file is someone else's (a CDN's, a library's <style>).
+		const foreign = (c: SheetCheck) => c.problem === "no-map" && !c.file;
+		this.foreign += fresh.filter(foreign).length;
+		const broken = fresh.filter((c) => !c.patched && !foreign(c));
+		const patched = fresh.filter((c) => c.patched);
+		if (broken.length) {
+			const files = new Set(broken.map((c) => c.file ?? c.sheet)).size;
+			console.log(
+				pc.yellow(
+					`  ! source maps (${where}): ${files} stylesheet file(s) can't be traced to their lines; expect unexplained changes from them`,
+				),
+			);
+			for (const c of broken) console.log(pc.yellow(`      ${describeCheck(c, this.context)}`));
+		}
+		for (const c of patched) console.log(pc.dim(`  source maps: ${describeCheck(c, this.context)}`));
+	}
+
+	summarize(): void {
+		const all = this.all();
+		const broken = new Set(all.filter((c) => !c.patched && !(c.problem === "no-map" && !c.file)).map((c) => c.file ?? c.sheet));
+		if (this.foreign) console.log(pc.dim(`  ${this.foreign} stylesheet(s) from outside the project (CDNs, libraries' <style> tags) have no source map; their rules have no lines`));
+		if (broken.size) console.log(pc.yellow(`  ${broken.size} stylesheet file(s) couldn't be traced (see above); visual changes they cause show as unexplained`));
+		if (this.context.rebuild && this.sheets > 0 && !all.some((c) => c.patched)) {
+			console.log(
+				pc.dim(
+					"  `workarounds.turbopackPostcssMaps` is on, but no source map needed rebuilding: if Turbopack keeps PostCSS's maps now, it can be removed",
+				),
+			);
+		}
+	}
+
+	all(): SheetCheck[] {
+		return [...this.found.values()];
+	}
+}
+
+/** A cookie in a Playwright storage state (the auth file). */
+interface StoredCookie {
+	name: string;
+	value: string;
+	domain: string;
+}
+
+function cookieHeader(authFile: string | undefined, url: string): string | null {
+	if (!authFile) return null;
+	try {
+		const { cookies = [] } = JSON.parse(fs.readFileSync(authFile, "utf8")) as { cookies?: StoredCookie[] };
+		const host = new URL(url).hostname;
+		const sent = cookies.filter((c) => {
+			const domain = c.domain.replace(/^\./, "");
+			return host === domain || host.endsWith(`.${domain}`);
+		});
+		return sent.length ? sent.map((c) => `${c.name}=${c.value}`).join("; ") : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Check the source maps of the stylesheets a page links to, from its HTML,
+ * without a browser. Sheets a script adds (Vite dev) aren't found this way;
+ * they're checked when the capture reads them.
+ */
+async function probeStyleMaps(url: string, authFile: string | undefined, locator: StyleLocator): Promise<SheetCheck[]> {
+	const get = async (href: string, headers: Record<string, string> = {}): Promise<string | null> => {
+		try {
+			const res = await fetch(href, { headers, signal: AbortSignal.timeout(10_000) });
+			return res.ok ? await res.text() : null;
+		} catch {
+			return null;
+		}
+	};
+	const cookie = cookieHeader(authFile, url);
+	const html = await get(url, cookie ? { cookie } : {});
+	if (!html) return [];
+	const hrefs = [...html.matchAll(/<link\b[^>]*>/gi)]
+		.map((m) => m[0])
+		.filter((tag) => /\brel=["']?stylesheet\b/i.test(tag))
+		.map((tag) => tag.match(/\bhref=["']([^"']+)["']/i)?.[1])
+		.filter((href): href is string => Boolean(href))
+		.map((href) => new URL(href.replace(/&amp;/g, "&"), url).href);
+	const checks: SheetCheck[] = [];
+	for (const href of new Set(hrefs)) {
+		const text = await get(href);
+		if (text === null) continue;
+		const sheet: RawSheet = {
+			id: href,
+			sourceURL: href,
+			sourceMapURL: text.match(/\/\*[#@]\s*sourceMappingURL=([^\s*]+)\s*\*\/\s*$/)?.[1] ?? null,
+			startLine: 0,
+			devId: null,
+			text,
+		};
+		checks.push(...(await locator.check(sheet)));
+	}
+	return checks;
 }
 
 /** How many more pages are loaded and fingerprinted at once than are captured (see `capture.py`). */
@@ -394,6 +510,8 @@ function settingsHash(ctx: CaptureContext, job: PageJob, extractJs: string, scal
 		viewport: ctx.config.viewport,
 		scale,
 		properties: ctx.config.styles.properties,
+		// Rule locations are carried over with the styles, so they must have been found the same way.
+		styleMaps: { locator: LOCATOR_VERSION, rebuild: ctx.config.workarounds.turbopackPostcssMaps },
 		extractJs,
 		stabilizeJs: job.stabilizeJs,
 		wait: job.wait ?? null,

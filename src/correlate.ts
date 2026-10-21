@@ -10,7 +10,12 @@ import { LineMapper } from "./remap.js";
 import { readMeta, versionRev } from "./versions.js";
 import { versionDir, type Paths } from "./paths.js";
 import { pickRepresentative } from "./representative.js";
+<<<<<<< Updated upstream
 import { readStyleManifest, type DeclRef, type ElementStyles, type SourceLoc, type StyleManifest, type StyleRule } from "./styles.js";
+=======
+import { problemReason } from "./stylemaps.js";
+import type { DeclRef, ElementStyles, SourceLoc, StyleManifest, StyleRule } from "./styles.js";
+>>>>>>> Stashed changes
 
 /**
  * Code-first correlation: which changed lines caused which visual changes.
@@ -322,6 +327,19 @@ function winnerText(styles: StyleManifest | null, el: ElementStyles | undefined,
 		return rule?.decls[ref[1]] ? declText(rule, ref) : "?";
 	};
 	return [w.decl, ...(w.via ?? [])].map(text).join(" <- ");
+}
+
+/**
+ * Hints for the declarations behind a property that come from a stylesheet
+ * whose source map is broken, so no changed line could be matched to them.
+ */
+function untracedHints(styles: StyleManifest | null, el: ElementStyles | undefined, prop: string): string[] {
+	const w = el?.winners[prop];
+	if (!styles || !w?.decl) return [];
+	return [w.decl, ...(w.via ?? [])].flatMap((ref) => {
+		const rule = styles.rules[ref[0]];
+		return rule?.untraced ? [`${rule.selector} is in ${rule.untraced.file}, which can't be traced: ${problemReason(rule.untraced.problem)}`] : [];
+	});
 }
 
 export function correlate(input: CorrelateInput): Correlation {
@@ -662,6 +680,7 @@ export function correlate(input: CorrelateInput): Correlation {
 			const sa = fromStyles?.elements[a.dir];
 			const sb = toStyles?.elements[b.dir];
 			const switched: string[] = [];
+			const untraced = new Set<string>();
 			if (sa && sb) {
 				for (const prop of Object.keys(sb.computed)) {
 					const before = sa.computed[prop] ?? null;
@@ -675,6 +694,7 @@ export function correlate(input: CorrelateInput): Correlation {
 					change.own = true;
 					entry.own = true;
 					consider(entry, styleCandidates("LEFT", fromStyles, sa, prop), styleCandidates("RIGHT", toStyles, sb, prop));
+					for (const hint of [...untracedHints(fromStyles, sa, prop), ...untracedHints(toStyles, sb, prop)]) untraced.add(hint);
 					const selA = winnerSelector(fromStyles, sa, prop);
 					const selB = winnerSelector(toStyles, sb, prop);
 					if (selA !== selB) {
@@ -702,6 +722,8 @@ export function correlate(input: CorrelateInput): Correlation {
 			const imageNote = traceImages(entry, d, a, b);
 			if (imageNote) notes.push(imageNote);
 			consider(entry, [jsx("LEFT", a, "jsx")], [jsx("RIGHT", b, "jsx")]);
+			// First, since it's the likeliest reason no changed line was found.
+			if (untraced.size) notes.unshift(...untraced);
 			if (switched.length) notes.push(`winner changed (${switched.slice(0, 3).join("; ")}${switched.length > 3 ? "; …" : ""})`);
 			if (notes.length) entry.note = notes.join("; ");
 		});

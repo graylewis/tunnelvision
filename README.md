@@ -84,11 +84,13 @@ Tracing visual changes back to the lines that caused them works best when your a
 - **CSS source maps enabled.** These map each style rule back to the line of
   source that wrote it. Plain CSS served unchanged doesn't need them, but
   PostCSS, Tailwind, Sass and CSS-in-JS do. With Vite, set
-  `css: { devSourcemap: true }` in `vite.config`. See
+  `css: { devSourcemap: true }` in `vite.config`. Next.js with Turbopack
+  drops PostCSS's maps; `workarounds.turbopackPostcssMaps` rebuilds them. See
   [Tracing changes to the lines that caused them](#tracing-changes-to-the-lines-that-caused-them).
 
 Without them, screenshots and visual diffs still work, but fewer changes can
-be traced to a cause. `tunnelvision doctor` checks the Vite source map setting.
+be traced to a cause. `tunnelvision doctor` checks the Vite source map setting
+and warns about Turbopack with PostCSS.
 
 ## Install
 
@@ -326,6 +328,21 @@ visual changes each line caused.
   unchanged (plain CSS, CSS Modules in Vite dev), from the file itself once
   its text is confirmed to match. With Vite and PostCSS, Tailwind or Sass, set
   `css: { devSourcemap: true }`; `doctor` checks for it.
+- **Maps are checked** before they're trusted: every file a map names must
+  be on disk, and the map's copy of it must be the file. `shoot` warns about
+  any that aren't, before capturing for the sheets the first page links to
+  and as they turn up after that, naming the file and the likely cause: no
+  map, a missing file, the dev server serving a stale compile (Turbopack
+  keeps one after `git checkout` until the file is edited, and the
+  screenshots are stale too), Sass or a Turbopack loader, or Turbopack having
+  dropped PostCSS's map. Rules in those files get no line rather than a wrong
+  one, the problems are listed in the Version's `meta.json`, and an
+  unexplained change set by one of them gets a hint saying so. Turbopack
+  runs PostCSS (Tailwind's `@tailwindcss/postcss`) without keeping its map;
+  with `workarounds.turbopackPostcssMaps` on, tunnelvision runs the
+  project's PostCSS on the file itself and traces through that map instead,
+  whenever the result is exactly what Turbopack served (see
+  [ADR 0010](docs/adr/0010-rebuild-postcss-maps-turbopack-drops.md)).
 - **At diff time**, the git diff between the two versions' captured files is
   joined against them. A property that changed on an element points at its
   winning declaration in each version: if that line (or a `var()` it uses, or
@@ -641,6 +658,7 @@ it to the root.
   "styles": { "properties": ["color", "padding-top", "..."] },
   "updatePr": { "mode": "code-first" },
   "cheatMode": { "enabled": false, "ignoreAttributes": [] },
+  "workarounds": { "turbopackPostcssMaps": false },
   "pages": {
     "/pricing": { "waitFor": "document.querySelector('.loaded')", "wait": 2000, "settle": 3000 }
   }
@@ -662,6 +680,13 @@ capture time.
 --save` (see [cheat mode](#speed-carry-over-and-cheat-mode)): `enabled` makes it
 the default, `validatedWith` records the versions it was validated with, and
 `ignoreAttributes` lists attributes left out of the render fingerprint.
+
+`workarounds` holds temporary fixes for other tools' bugs, each set by
+`/setup-tunnelvision` only when it finds the bug. `turbopackPostcssMaps`
+rebuilds the PostCSS source maps Turbopack drops (see
+[Tracing changes](#tracing-changes-to-the-lines-that-caused-them)); `shoot`
+says when no map needed it any more, so it can be removed. It's recorded at
+capture time.
 
 `wait` runs right after the page loads. Then tunnelvision hides framework
 dev overlays (the Astro dev toolbar, the Next.js dev overlay and indicator, and

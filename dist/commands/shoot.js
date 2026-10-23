@@ -6,8 +6,7 @@ import { resolvePaths, versionDir } from "../paths.js";
 import { resolveVersion, snapshotTree } from "../git.js";
 import { discoverPages } from "../pagesource.js";
 import { resolvePages } from "../pages.js";
-import { buildShotsYaml, requireShotScraper, runMulti } from "../shotscraper.js";
-import { runDriver } from "../playwright.js";
+import { runDriver, runPages } from "../playwright.js";
 import { assignDirs, cropRect, extractScript, ELEMENT_MANIFEST, MANIFEST_VERSION, STYLE_MANIFEST, PAGE_IMAGE, pngSize, } from "../elements.js";
 import { Cascade } from "../cascade.js";
 import { LOCATOR_VERSION, StyleLocator } from "../stylesource.js";
@@ -68,7 +67,6 @@ async function assertReachable(baseUrl) {
 }
 /** Run the actual capture given a prepared context. */
 export async function runCapture(ctx) {
-    requireShotScraper();
     const authFile = path.isAbsolute(ctx.config.authFile)
         ? ctx.config.authFile
         : path.join(ctx.paths.root, ctx.config.authFile);
@@ -78,15 +76,22 @@ export async function runCapture(ctx) {
     if (ctx.byElement) {
         return runElementCapture(ctx, rev, auth);
     }
-    const yaml = buildShotsYaml(ctx.pages, ctx.config, ctx.outputDir);
-    const result = runMulti(ctx.pages, ctx.outputDir, {
-        root: ctx.paths.root,
+    const { config } = ctx;
+    const result = await runPages(ctx.pages.map((page) => {
+        const override = config.pages?.[page.pathAndQuery];
+        const wait = override?.wait ?? config.wait;
+        return {
+            url: page.url,
+            output: path.join(ctx.outputDir, page.filename),
+            wait: wait > 0 ? wait : undefined,
+            waitFor: override?.waitFor,
+            stabilizeJs: stabilizeScript(override?.settle ?? config.settle),
+        };
+    }), {
+        viewport: config.viewport,
+        scaleFactor: config.scaleFactor && config.scaleFactor > 0 ? config.scaleFactor : config.retina ? 2 : 1,
         authFile: auth,
-        shotsYamlPath: path.join(ctx.outputDir, "shots.yml"),
-        yaml,
-        retina: ctx.config.retina,
-        scaleFactor: ctx.config.scaleFactor,
-    });
+    }, (output) => path.relative(ctx.outputDir, output));
     writeMeta(ctx.paths, metaFromInfo(ctx.version, ctx.config.baseUrl, ctx.pages.length, rev));
     return result;
 }

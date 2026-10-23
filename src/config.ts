@@ -79,7 +79,7 @@ export interface Viewport {
 }
 
 export interface PageOverride {
-	/** A JS predicate passed to shot-scraper `wait_for`. */
+	/** A JS predicate (an expression, or a function) the page waits for before its screenshot. */
 	waitFor?: string;
 	/** Milliseconds to wait before capturing this page. */
 	wait?: number;

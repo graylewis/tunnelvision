@@ -64,6 +64,27 @@ _Avoid_: Cached element
 An opt-in way of capturing a Version in which a Page whose render fingerprint matches the previous Version's is carried over without being settled or screenshotted. A project uses it by default only once it has proven to find exactly the same visual changes and causes as the normal way.
 _Avoid_: Fast mode
 
+## State
+
+**State plugin**:
+An add-on that records part of an app's runtime state, such as a data library's cache, when a Page is captured, and replays it into later captures of that Page so live data doesn't differ between Versions.
+_Avoid_: Extension, script hook
+
+**Unit of state**:
+One piece of a Page's state that a state plugin records and replays as a whole, such as one cached query, together with the code that produced it: the functions that ran, the module lines around them, and the packages they ran.
+_Avoid_: Fixture, mock
+
+**Recording**:
+The units of state a Page holds in a Version, and the time they were recorded at, carried forward from the previous Version's Recording of that Page until the user re-records it.
+_Avoid_: Fixture, cache, snapshot
+
+**Replayed unit**:
+A unit of state a capture took from the previous Version's Recording instead of from the running app.
+
+**Live unit**:
+A unit of state a capture took from the running app, either because the Recording didn't have it or because the commit changed its code.
+_Avoid_: Fresh unit, refetched unit
+
 ## Changes
 
 **Visual change**:
@@ -79,8 +100,12 @@ A file the git diff between the commits of two versions reports as changed witho
 _Avoid_: Changed asset (an SVG is an asset but has changed lines)
 
 **Cause**:
-A changed line or changed binary file that explains a visual change: a declaration, selector or custom-property definition in a stylesheet, an element's own JSX line, or a line holding content an element gained or lost (a content cause, either copy or image), or a changed binary file holding one of an element's own images (also an image content cause).
+A changed line or changed binary file that explains a visual change: a declaration, selector or custom-property definition in a stylesheet, an element's own JSX line, or a line holding content an element gained or lost (a content cause, either copy or image), or a changed binary file holding one of an element's own images (also an image content cause), or a data cause.
 _Avoid_: Culprit, source (source already means an element's JSX location)
+
+**Data cause**:
+A changed line in a live unit's code, or a changed lockfile entry for a package it ran, which explains the visual changes that unit's new data produced.
+_Avoid_: Data change (that's the effect, not the line)
 
 **Knock-on effect**:
 A visual change on an element whose own tracked properties didn't change, attributed to the nearest ancestor or earlier sibling that did change or is new, or to a sibling that grew, came or went inside a parent that kept its size.

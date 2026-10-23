@@ -8,11 +8,8 @@ import { LineMapper } from "./remap.js";
 import { readMeta, versionRev } from "./versions.js";
 import { versionDir } from "./paths.js";
 import { pickRepresentative } from "./representative.js";
-<<<<<<< Updated upstream
-import { readStyleManifest } from "./styles.js";
-=======
 import { problemReason } from "./stylemaps.js";
->>>>>>> Stashed changes
+import { readStyleManifest } from "./styles.js";
 const VISUAL = new Set(["changed", "size-mismatch"]);
 const STYLESHEET = /\.(css|scss|sass|less|styl|pcss|postcss)$/i;
 export const LAYOUT_PROPERTIES = new Set(["width", "height", "min-width", "min-height", "max-width", "max-height"]);

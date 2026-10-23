@@ -1,6 +1,6 @@
 ---
 name: setup-tunnelvision
-description: Set up tunnelvision in this project — install shot-scraper if it's missing, check where Pages come from (Next.js/Astro routes or the sitemap) and the source-map settings, run `tunnelvision init`, capture a baseline and check its stylesheets' source maps (turning on the Turbopack PostCSS workaround when they need it), offer the post-commit hook, and test whether cheat mode finds exactly what normal captures do before making it the default. Use when the user asks to set up, install, initialise or configure tunnelvision, or to take a first baseline capture.
+description: Set up tunnelvision in this project — install Playwright's Chromium if it's missing, check where Pages come from (Next.js/Astro routes or the sitemap) and the source-map settings, run `tunnelvision init`, capture a baseline and check its stylesheets' source maps (turning on the Turbopack PostCSS workaround when they need it), offer the post-commit hook, and test whether cheat mode finds exactly what normal captures do before making it the default. Use when the user asks to set up, install, initialise or configure tunnelvision, or to take a first baseline capture.
 ---
 
 # Set up tunnelvision
@@ -23,26 +23,13 @@ If `node_modules/.bin/tunnelvision` doesn't exist, install it as a dev dependenc
 tunnelvision doctor
 ```
 
-It reports, one line each: `shot-scraper`, `playwright (for per-element captures)`, `config`, `git repo`, `post-commit hook`, `next.js routes`, `astro routes` or `sitemap`, and a `!` warning about CSS source maps when they're needed and off, or when Turbopack runs the project's PostCSS (it drops PostCSS's maps; step 8 confirms it). Fix each ✗ with the matching step below, then re-run the doctor until it prints `All good.` (the `config` line stays ✗ until step 6 — that's expected). The `post-commit hook` line is informational (`·` when it isn't installed) and never fails the doctor; step 9 deals with it.
+It reports, one line each: `playwright chromium`, `config`, `git repo`, `post-commit hook`, `next.js routes`, `astro routes` or `sitemap`, and a `!` warning about CSS source maps when they're needed and off, or when Turbopack runs the project's PostCSS (it drops PostCSS's maps; step 8 confirms it). Fix each ✗ with the matching step below, then re-run the doctor until it prints `All good.` (the `config` line stays ✗ until step 6 — that's expected). The `post-commit hook` line is informational (`·` when it isn't installed) and never fails the doctor; step 9 deals with it.
 
-## 3. shot-scraper
+## 3. Playwright's Chromium
 
-tunnelvision captures through [shot-scraper](https://shot-scraper.datasette.io/) and the Playwright install next to it, found on `PATH`. If the doctor says `not found`:
+tunnelvision captures with the `playwright` package it depends on, so there's nothing to install separately except the browser. If the doctor's `playwright chromium` line is ✗, download it with the project's package manager (`npx playwright install chromium`, `pnpm exec playwright install chromium` or `bunx playwright install chromium`) and re-run the doctor.
 
-1. Check for an existing install first: `command -v shot-scraper`, and whether `.venv/bin/shot-scraper` exists. A venv that exists but isn't activated is the usual cause — activate it (`source .venv/bin/activate`) in the same shell invocation as each tunnelvision command, and move on.
-2. Otherwise install into a per-project venv so the versions stay matched. Prefer `uv` if it's on the machine:
-   ```sh
-   uv venv
-   uv pip install shot-scraper 'playwright==1.52.0'
-   source .venv/bin/activate
-   shot-scraper install          # downloads the matching browser
-   ```
-   Without `uv`: `python3 -m venv .venv && source .venv/bin/activate && pip install shot-scraper 'playwright==1.52.0' && shot-scraper install`.
-3. **Keep the Playwright pin.** shot-scraper 1.8 breaks on Playwright ≥ 1.53 with `TypeError: launch() got an unexpected keyword argument 'devtools'`. If that error shows up later, this is why.
-4. Add `.venv/` to `.gitignore` if it isn't covered.
-5. Tell the user, once, that tunnelvision uses whichever `shot-scraper` is on `PATH`, so they activate the venv before running it — a stale global install (e.g. `/usr/local/bin/shot-scraper`) would otherwise win.
-
-Re-run the doctor: both the `shot-scraper` and `playwright` lines should now be ✓.
+An older setup may have left a `.venv` with shot-scraper in the project. tunnelvision no longer uses it; mention that it can be removed, but don't delete it without asking.
 
 ## 4. Sitemap
 
@@ -90,7 +77,7 @@ Steps 3–6 may have touched `.gitignore`, `package.json`, the sitemap and the V
 
 The app must be serving at the base URL. Check with `curl -sI <url>`; if nothing answers, ask the user to start the dev server (or whether you should start it in the background with the dev script).
 
-Then, with the venv active if one was made:
+Then:
 
 ```sh
 tunnelvision shoot

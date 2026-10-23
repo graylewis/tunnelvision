@@ -1,12 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { versionDir, type Paths } from "./paths.js";
-<<<<<<< Updated upstream
 import type { VersionInfo } from "./git.js";
-=======
-import { resolveVersion, type VersionInfo } from "./git.js";
 import type { SheetCheck } from "./stylemaps.js";
->>>>>>> Stashed changes
 
 export interface VersionMeta {
 	key: string;

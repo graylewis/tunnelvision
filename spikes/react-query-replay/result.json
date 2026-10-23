@@ -1,0 +1,240 @@
+{
+  "record": {
+    "at": 1792759444904,
+    "units": [
+      {
+        "hash": "[\"stats\"]",
+        "key": [
+          "stats"
+        ],
+        "data": [
+          {
+            "label": "Refunds",
+            "value": "51",
+            "delta": "-2.2%",
+            "up": false
+          },
+          {
+            "label": "Revenue",
+            "value": "$48,457",
+            "delta": "+12.4%",
+            "up": true
+          },
+          {
+            "label": "Orders",
+            "value": "1,289",
+            "delta": "+3.1%",
+            "up": true
+          },
+          {
+            "label": "Customers",
+            "value": "9,460",
+            "delta": "+0.8%",
+            "up": true
+          }
+        ],
+        "dataUpdatedAt": 1792759444904
+      },
+      {
+        "hash": "[\"feed\"]",
+        "key": [
+          "feed"
+        ],
+        "data": [
+          {
+            "text": "New order #1044",
+            "at": "2026-10-23T12:42:05.654Z"
+          },
+          {
+            "text": "Refund issued for #1031",
+            "at": "2026-10-23T12:26:05.654Z"
+          },
+          {
+            "text": "New customer: Priya S.",
+            "at": "2026-10-23T11:42:05.654Z"
+          },
+          {
+            "text": "Inventory low: Desk Lamp",
+            "at": "2026-10-23T09:44:05.654Z"
+          }
+        ],
+        "dataUpdatedAt": 1792759444904
+      }
+    ],
+    "traces": {
+      "[\"stats\"]": {
+        "ok": true,
+        "ran": [
+          "queryFn  queries.js:5 – queries.js:5  ×1",
+          "request  api.js:1 – api.js:5  ×2",
+          "fetchStats  api.js:7 – api.js:9  ×1"
+        ]
+      },
+      "[\"feed\"]": {
+        "ok": true,
+        "ran": [
+          "queryFn  queries.js:9 – queries.js:9  ×1",
+          "request  api.js:1 – api.js:5  ×2",
+          "fetchFeed  api.js:11 – api.js:13  ×1"
+        ]
+      }
+    },
+    "requests": [
+      "/api/feed",
+      "/api/stats",
+      "/api/stats",
+      "/api/stats",
+      "/api/stats",
+      "/api/feed"
+    ],
+    "visible": {
+      "stats": [
+        "Refunds 51 ▼ -2.2%",
+        "Revenue $48,457 ▲ +12.4%",
+        "Orders 1,289 ▲ +3.1%",
+        "Customers 9,460 ▲ +0.8%"
+      ],
+      "feed": [
+        "New order #1044 2 min ago",
+        "Refund issued for #1031 18 min ago",
+        "New customer: Priya S. 1 hr ago",
+        "Inventory low: Desk Lamp 3 hr ago"
+      ]
+    },
+    "log": [
+      "35ms client found at commit 1"
+    ]
+  },
+  "live": [
+    {
+      "requests": [
+        "/api/feed",
+        "/api/stats",
+        "/api/stats",
+        "/api/stats"
+      ],
+      "visible": {
+        "stats": [
+          "Refunds 47 ▼ -2.2%",
+          "Revenue $48,707 ▲ +12.4%",
+          "Orders 1,295 ▲ +3.1%",
+          "Customers 9,450 ▲ +0.8%"
+        ],
+        "feed": [
+          "New order #1050 2 min ago",
+          "Refund issued for #1031 18 min ago",
+          "New customer: Priya S. 1 hr ago",
+          "Inventory low: Desk Lamp 3 hr ago"
+        ]
+      }
+    },
+    {
+      "requests": [
+        "/api/feed",
+        "/api/stats",
+        "/api/stats",
+        "/api/stats"
+      ],
+      "visible": {
+        "stats": [
+          "Refunds 122 ▼ -2.2%",
+          "Revenue $48,821 ▲ +12.4%",
+          "Orders 1,299 ▲ +3.1%",
+          "Customers 9,459 ▲ +0.8%"
+        ],
+        "feed": [
+          "New order #1054 2 min ago",
+          "Refund issued for #1031 18 min ago",
+          "New customer: Priya S. 1 hr ago",
+          "Inventory low: Desk Lamp 3 hr ago"
+        ]
+      }
+    }
+  ],
+  "replay": [
+    {
+      "requests": [
+        "/api/feed"
+      ],
+      "visible": {
+        "stats": [
+          "Refunds 51 ▼ -2.2%",
+          "Revenue $48,457 ▲ +12.4%",
+          "Orders 1,289 ▲ +3.1%",
+          "Customers 9,460 ▲ +0.8%"
+        ],
+        "feed": [
+          "New order #1044 2 min ago",
+          "Refund issued for #1031 18 min ago",
+          "New customer: Priya S. 1 hr ago",
+          "Inventory low: Desk Lamp 3 hr ago"
+        ]
+      },
+      "log": [
+        "25ms client found at commit 1",
+        "25ms cancelled in-flight [\"feed\"]",
+        "26ms seeded 2 at commit 1",
+        "62ms blocked fetch [\"stats\"]",
+        "63ms blocked fetch [\"stats\"]",
+        "2063ms blocked fetch [\"stats\"]",
+        "4063ms blocked fetch [\"stats\"]"
+      ]
+    },
+    {
+      "requests": [
+        "/api/feed"
+      ],
+      "visible": {
+        "stats": [
+          "Refunds 51 ▼ -2.2%",
+          "Revenue $48,457 ▲ +12.4%",
+          "Orders 1,289 ▲ +3.1%",
+          "Customers 9,460 ▲ +0.8%"
+        ],
+        "feed": [
+          "New order #1044 2 min ago",
+          "Refund issued for #1031 18 min ago",
+          "New customer: Priya S. 1 hr ago",
+          "Inventory low: Desk Lamp 3 hr ago"
+        ]
+      },
+      "log": [
+        "23ms client found at commit 1",
+        "23ms cancelled in-flight [\"feed\"]",
+        "23ms seeded 2 at commit 1",
+        "51ms blocked fetch [\"stats\"]",
+        "52ms blocked fetch [\"stats\"]",
+        "2053ms blocked fetch [\"stats\"]",
+        "4052ms blocked fetch [\"stats\"]"
+      ]
+    },
+    {
+      "requests": [
+        "/api/feed"
+      ],
+      "visible": {
+        "stats": [
+          "Refunds 51 ▼ -2.2%",
+          "Revenue $48,457 ▲ +12.4%",
+          "Orders 1,289 ▲ +3.1%",
+          "Customers 9,460 ▲ +0.8%"
+        ],
+        "feed": [
+          "New order #1044 2 min ago",
+          "Refund issued for #1031 18 min ago",
+          "New customer: Priya S. 1 hr ago",
+          "Inventory low: Desk Lamp 3 hr ago"
+        ]
+      },
+      "log": [
+        "23ms client found at commit 1",
+        "23ms cancelled in-flight [\"feed\"]",
+        "23ms seeded 2 at commit 1",
+        "50ms blocked fetch [\"stats\"]",
+        "51ms blocked fetch [\"stats\"]",
+        "2051ms blocked fetch [\"stats\"]",
+        "4051ms blocked fetch [\"stats\"]"
+      ]
+    }
+  ]
+}

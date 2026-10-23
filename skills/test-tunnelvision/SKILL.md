@@ -9,7 +9,7 @@ Prove the setup end to end: plant changes you know about, run tunnelvision, and 
 
 Vocabulary: a **Version** is one capture keyed by git commit; a **Visual change** is an element whose pixels differ between two Versions; a **Cause** is a changed line that explains one; an **Unexplained visual change** has no cause among the changed lines; an **Invisible change** is a changed stylesheet line that changed no pixels. A **Knock-on effect** is an element that only moved because a neighbour or ancestor changed.
 
-`tunnelvision` below means the project-local binary (`npx --no tunnelvision`, `pnpm exec tunnelvision` or `bunx --no-install tunnelvision`). If the project has a `.venv` with shot-scraper, activate it in the same shell invocation as every tunnelvision command.
+`tunnelvision` below means the project-local binary (`npx --no tunnelvision`, `pnpm exec tunnelvision` or `bunx --no-install tunnelvision`).
 
 Ask the user one question at a time, only when a step needs a decision.
 
@@ -18,7 +18,7 @@ Ask the user one question at a time, only when a step needs a decision.
 Stop and say what's missing rather than working around it:
 
 - `tunnelvision.json` exists at the project root (else `/setup-tunnelvision`).
-- `shot-scraper --version` works (venv active?).
+- `tunnelvision doctor` shows `playwright chromium` ✓.
 - The app answers at `baseUrl` from the config (`curl -sI`). It must be the **dev server with hot reload**, not a production build, or the planted changes won't be served.
 - `git status --porcelain` is empty. Ask the user to commit or stash; don't stash for them.
 - Note the current branch (or detached SHA) — you'll return to it.

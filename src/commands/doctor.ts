@@ -2,10 +2,9 @@ import pc from "picocolors";
 import { CONFIG_FILE, existingConfig, resolvePaths } from "../paths.js";
 import { isGitRepo } from "../git.js";
 import { hookInstalled } from "./installHook.js";
-import { checkShotScraper } from "../shotscraper.js";
 import { discoverPages } from "../pagesource.js";
 import { FRAMEWORK_NAMES } from "../fileroutes.js";
-import { findPlaywrightPython } from "../playwright.js";
+import { checkPlaywright } from "../playwright.js";
 import { loadConfig } from "../config.js";
 import { environmentVersions, versionChanges } from "../environment.js";
 import { cssPipeline } from "../stylemaps.js";
@@ -56,21 +55,12 @@ export async function doctor(opts: DoctorOptions): Promise<number> {
 	console.log(pc.bold("tunnelvision doctor"));
 	console.log("");
 
-	// shot-scraper
-	const ss = checkShotScraper();
-	line(ss.installed, "shot-scraper", ss.installed ? ss.version : "not found");
-	if (!ss.installed) {
-		console.log(pc.dim("      pip install shot-scraper && shot-scraper install"));
+	// Playwright's Chromium, which every capture runs in
+	const browser = checkPlaywright();
+	line(browser.installed, "playwright chromium", browser.installed ? undefined : browser.detail);
+	if (!browser.installed) {
+		console.log(pc.dim("      npx playwright install chromium"));
 	}
-
-	// Playwright (used directly for per-element captures)
-	let python: string | null = null;
-	try {
-		python = findPlaywrightPython();
-	} catch {
-		// reported below
-	}
-	line(Boolean(python), "playwright (for per-element captures)", python ?? "not found next to shot-scraper");
 
 	// config
 	const config = existingConfig(paths);

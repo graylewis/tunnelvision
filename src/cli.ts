@@ -37,7 +37,7 @@ function withCaptureOptions(cmd: Command): Command {
 		)
 		.option("--retina", "capture at 2x (retina); doubles image dimensions")
 		.option("--scale-factor <n>", "capture at a specific device pixel scale factor", num)
-		.option("--auth <file>", "path to a shot-scraper auth context file")
+		.option("--auth <file>", "path to a saved login session (from `tunnelvision auth`)")
 		.option("--concurrency <n>", "pages captured at once (per-element captures)", num)
 		.option(
 			"--only-pages",
@@ -164,7 +164,7 @@ program
 	.command("fingerprint")
 	.description("Load every page several times and check its render fingerprint never changes (needed for cheat mode)")
 	.option("--base-url <url>", "override the base URL from config")
-	.option("--auth <file>", "path to a shot-scraper auth context file")
+	.option("--auth <file>", "path to a saved login session (from `tunnelvision auth`)")
 	.option("--concurrency <n>", "pages loaded at once", num)
 	.option("--runs <n>", "loads of every page to compare", num, 2)
 	.option("--save", "ignore attributes that changed between loads from now on (cheatMode.ignoreAttributes), then check again")
@@ -201,7 +201,7 @@ program
 
 program
 	.command("doctor")
-	.description("Check that shot-scraper, git, config and pages (routes or sitemap) are ready")
+	.description("Check that Playwright, git, config and pages (routes or sitemap) are ready")
 	.action(() => run(() => doctor({ root: ROOT })));
 
 program

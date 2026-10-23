@@ -6,8 +6,7 @@ import { resolvePaths, versionDir, type Paths } from "../paths.js";
 import { resolveVersion, snapshotTree, type VersionInfo } from "../git.js";
 import { discoverPages, type PageSource } from "../pagesource.js";
 import { resolvePages, type Page } from "../pages.js";
-import { buildShotsYaml, requireShotScraper, runMulti, type RunResult } from "../shotscraper.js";
-import { runDriver, type DriverEvent, type DriverReply, type PageJob } from "../playwright.js";
+import { runDriver, runPages, type DriverEvent, type DriverReply, type PageJob, type RunResult } from "../playwright.js";
 import {
 	assignDirs,
 	cropRect,
@@ -123,7 +122,6 @@ async function assertReachable(baseUrl: string): Promise<void> {
 
 /** Run the actual capture given a prepared context. */
 export async function runCapture(ctx: CaptureContext): Promise<RunResult> {
-	requireShotScraper();
 	const authFile = path.isAbsolute(ctx.config.authFile)
 		? ctx.config.authFile
 		: path.join(ctx.paths.root, ctx.config.authFile);
@@ -135,15 +133,26 @@ export async function runCapture(ctx: CaptureContext): Promise<RunResult> {
 		return runElementCapture(ctx, rev, auth);
 	}
 
-	const yaml = buildShotsYaml(ctx.pages, ctx.config, ctx.outputDir);
-	const result = runMulti(ctx.pages, ctx.outputDir, {
-		root: ctx.paths.root,
-		authFile: auth,
-		shotsYamlPath: path.join(ctx.outputDir, "shots.yml"),
-		yaml,
-		retina: ctx.config.retina,
-		scaleFactor: ctx.config.scaleFactor,
-	});
+	const { config } = ctx;
+	const result = await runPages(
+		ctx.pages.map((page) => {
+			const override = config.pages?.[page.pathAndQuery];
+			const wait = override?.wait ?? config.wait;
+			return {
+				url: page.url,
+				output: path.join(ctx.outputDir, page.filename),
+				wait: wait > 0 ? wait : undefined,
+				waitFor: override?.waitFor,
+				stabilizeJs: stabilizeScript(override?.settle ?? config.settle),
+			};
+		}),
+		{
+			viewport: config.viewport,
+			scaleFactor: config.scaleFactor && config.scaleFactor > 0 ? config.scaleFactor : config.retina ? 2 : 1,
+			authFile: auth,
+		},
+		(output) => path.relative(ctx.outputDir, output),
+	);
 
 	writeMeta(
 		ctx.paths,

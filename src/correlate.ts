@@ -10,12 +10,8 @@ import { LineMapper } from "./remap.js";
 import { readMeta, versionRev } from "./versions.js";
 import { versionDir, type Paths } from "./paths.js";
 import { pickRepresentative } from "./representative.js";
-<<<<<<< Updated upstream
-import { readStyleManifest, type DeclRef, type ElementStyles, type SourceLoc, type StyleManifest, type StyleRule } from "./styles.js";
-=======
 import { problemReason } from "./stylemaps.js";
-import type { DeclRef, ElementStyles, SourceLoc, StyleManifest, StyleRule } from "./styles.js";
->>>>>>> Stashed changes
+import { readStyleManifest, type DeclRef, type ElementStyles, type SourceLoc, type StyleManifest, type StyleRule } from "./styles.js";
 
 /**
  * Code-first correlation: which changed lines caused which visual changes.

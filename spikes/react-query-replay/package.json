@@ -1,0 +1,8 @@
+{
+  "name": "spike-react-query-replay",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}

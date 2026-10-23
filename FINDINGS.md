@@ -60,3 +60,14 @@ Pixel diffing is easy. The value is in stable captures, reliable element matchin
 - Two loads of the same commit: 17/21 page screenshots were byte-identical, and all 21 diffed to zero under `threshold 0.1, includeAA false`. The 4 that weren't had one shared widget off by up to Δ20 per channel.
 - A naive DOM fingerprint differed on 20/21 pages between loads, because of Astro dev's `server-render-time`/`client-render-time` attributes and framer-motion writing inline styles in varying order. After stripping those and waiting for entrance animations, it was stable on 21/21 over 4 loads. Script bodies served by Vite dev were byte-identical between loads.
 - Loading and fingerprinting is mostly waiting, so it runs at 3× the capture concurrency. That took an all-unchanged cheat run from 21s to ~10s.
+
+## Replaying TanStack Query (spike for ADR 0011)
+
+`spikes/react-query-replay/` runs against `examples/dashboard`, given a live API in which every response differs, a `useQuery` that polls every 2s, and a `useSuspenseQuery` feed showing relative times. TanStack Query 5.104, React 19, Playwright 1.52.
+
+- **Seeding at the first commit works.** An init script installs `__REACT_DEVTOOLS_GLOBAL_HOOK__` before React loads (React Refresh wraps it rather than replacing it). At commit 1, about 25ms in, it found the client by walking fibers for a `client` prop. Three replays matched the recording exactly, and two live loads didn't. Replaying a subset of units also works: the replayed feed matched, and the live stats moved.
+- **`query.cancel({ revert: true })` reverts synchronously** (in the retryer's `onCancel`). So cancel-then-`setQueryData` in the same tick makes the cancelled fetch resolve with the seeded data (`query.js` returns `state.data` for a reverted cancel).
+- **Suspense still sends its request.** `useSuspenseQuery` fetches during render, before commit 1. The request goes out but its data is discarded. Non-Suspense queries never reach the network.
+- **Seeding alone isn't enough.** Recorded data is stale by any `staleTime` under a frozen clock, so `refetchOnMount` (twice, under StrictMode) and `refetchInterval` still call `fetch`. Replacing `fetch` on each replayed query with one that returns its seeded data blocked all of them.
+- **The coverage trace finds the right code.** Resetting counters with `takePreciseCoverage`, re-running `queryFn`, and source-mapping Vite's inline maps gave `queryFn` (queries.js:5), `fetchStats` (api.js:7–9) and `request` (api.js:1–5), but not `createOrder` in the same file. An async function's count includes its resumptions, so only whether a function ran means anything, not how often. Module top-level code never appears, because it ran at import.
+- **React 19 removed `findFiberByHostInstance`**, so `src/elements.ts` never finds fibers through `hook.renderers` and always falls back to the `__reactFiber$` property. This was already true before the plugin's hook.

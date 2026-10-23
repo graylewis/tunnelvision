@@ -10,8 +10,8 @@ tunnelvision is installed directly into your repo. its config is `tunnelvision.j
 
 OR
 
-1. install shot-scraper, ensure that it's on your path
-2. install tunnelvision into your repo.
+1. install tunnelvision into your repo.
+2. download its browser with `npx playwright install chromium`
 3. ensure that your app is *running in dev mode* 
 4. ensure that you have a valid sitemap.xml or tunnelvision.json "sitemap" field. Next.js and Astro projects don't need one: their pages are read from their file-based routes (see "Where pages come from" below).
 5. `npx tunnelvision init` in your repo, and commit the `tunnelvision.json` it writes.
@@ -46,32 +46,21 @@ subsequent runs can be as quick as 10 seconds in complex applications - especial
 Screenshot every page of your app (from its Next.js or Astro routes, or its
 sitemap), version the shots by git commit, and diff them visually with [pixelmatch](https://github.com/mapbox/pixelmatch).
 
-tunnelvision is a Node/TypeScript CLI that wraps
-[shot-scraper](https://shot-scraper.datasette.io/) for capture. Install it in
+tunnelvision is a Node/TypeScript CLI that captures with
+[Playwright](https://playwright.dev/). Install it in
 your project, initialise it, and every version of your screenshots is tracked
 under `.tunnelvision/`, keyed by the git commit they were taken at.
 
 ## Requirements
 
 - **Node.js ≥ 18**
-- **[shot-scraper](https://shot-scraper.datasette.io/)** on your `PATH`:
+- **Playwright's Chromium**. tunnelvision depends on the `playwright` package
+  (pinned, since a new Playwright means a new Chromium, and that changes
+  pixels); download its browser once:
   ```bash
-  # a per-project venv keeps versions matched (recommended)
-  uv venv
-  uv pip install shot-scraper 'playwright==1.52.0'
-  source .venv/bin/activate
-  shot-scraper install   # downloads the matching browser
+  npx playwright install chromium
   ```
   Run `tunnelvision doctor` to verify your setup.
-
-  > **Version note:** shot-scraper 1.8 is incompatible with Playwright ≥ 1.53
-  > (which removed the `devtools` launch argument), producing
-  > `TypeError: launch() got an unexpected keyword argument 'devtools'`.
-  > Pin `playwright==1.52.0` (or any `<1.53`) until shot-scraper releases a fix.
-  >
-  > tunnelvision runs whichever `shot-scraper` is on your `PATH`, so activate the
-  > venv (`source .venv/bin/activate`) before running it — otherwise a broken
-  > global install (e.g. `/usr/local/bin/shot-scraper`) may be used instead."
 
 ### For the best experience
 
@@ -122,8 +111,8 @@ One copy goes to `.agents/skills/`, which Cursor, Gemini CLI, OpenCode and
 GitHub Copilot read. Claude Code only reads `.claude/skills/`, so each skill
 gets a symlink there (a junction on Windows).
 
-- **`/setup-tunnelvision`** runs `doctor`, installs shot-scraper into a venv if
-  it's missing (with the Playwright pin), finds or writes a sitemap, offers the
+- **`/setup-tunnelvision`** runs `doctor`, installs Playwright's Chromium if
+  it's missing, finds or writes a sitemap, offers the
   source-map and React settings that make cause-tracing work, runs `init` and
   captures a baseline.
 - **`/test-tunnelvision`** makes a throwaway branch with a dozen known changes
@@ -205,7 +194,7 @@ i18n prefixes. If you use a base path, put it in `baseUrl`.
 | `tunnelvision diff [from] [to]` | Diff two versions. Defaults to current-vs-previous. |
 | `tunnelvision review` | Capture the current version, then diff it against the previous one. |
 | `tunnelvision auth <url>` | Log in via a browser and save an auth context for authenticated screenshots. |
-| `tunnelvision doctor` | Check shot-scraper, git, config, the post-commit hook and pages (Next.js routes or sitemap). |
+| `tunnelvision doctor` | Check Playwright's Chromium, git, config, the post-commit hook and pages (Next.js routes or sitemap). |
 | `tunnelvision clean` | Prune versions (`--keep <n>`), diffs (`--diffs`), or everything (`--all`). |
 | `tunnelvision install-hook` | Install an opt-in git `post-commit` hook that runs `review` in the background and notifies you when it's done (see below). |
 | `tunnelvision skills` | Install the agent skills (`/setup-tunnelvision`, `/test-tunnelvision`) into `.agents/skills/`, linked from `.claude/skills/`. |
@@ -241,7 +230,7 @@ hierarchy. That's what lets it trace each visual change to the line of code
 that caused it.
 
 With `--only-pages`, it captures and diffs one full-page screenshot per page
-instead, through shot-scraper alone. There are no per-element diffs, style
+instead, without reading elements. There are no per-element diffs, style
 data or causes, and the inspector and `update-pr` have nothing per element to
 show:
 
@@ -252,8 +241,7 @@ tunnelvision review --only-pages
 
 How it works:
 
-- **Single load per page** — each page is loaded once, directly through the
-  Playwright install that shot-scraper uses. tunnelvision waits (`wait` /
+- **Single load per page** — each page is loaded once. tunnelvision waits (`wait` /
   `waitFor`), takes a full-page screenshot, then reads the tree of every
   visible, block-level element (non-zero box, not
   `display:none`/`visibility:hidden`) from that same load. Inline wrappers and

@@ -17,15 +17,15 @@ A Page whose URL lands on another Page. A Version records where it lands instead
 _Avoid_: Alias, duplicate page
 
 **Element**:
-A visible block-level DOM node in a page's element tree, paired across versions by identity rather than DOM path.
-_Avoid_: Node, component
+A visible DOM node in a page's element tree that forms one rectangular box (block-level, or atomic inline-level such as an `inline-flex` button), paired across versions by identity rather than DOM path. Nodes that flow as text (`display: inline`) are never elements.
+_Avoid_: Node, component, block
 
 **Own text**:
-The text an element renders, including its inline descendants but not the text of elements nested inside it.
+The text an element renders, including the inline content inside it but not the text of elements nested inside it.
 _Avoid_: textContent (that includes nested elements' text)
 
 **Own images**:
-The images an element displays, including those of its inline descendants but not those of elements nested inside it.
+The images an element displays, including those in the inline content inside it but not those of elements nested inside it.
 _Avoid_: Child images, media
 
 **Content**:
@@ -88,7 +88,7 @@ _Avoid_: Fresh unit, refetched unit
 ## Changes
 
 **Visual change**:
-An element or page whose pixels differ between two versions, including a size mismatch.
+An element or page with at least a set number of pixels differing between two versions (one, by default), however large it is, including a size mismatch.
 _Avoid_: Diff (that's the image), regression
 
 **Changed line**:
@@ -135,11 +135,25 @@ The JSX line of a new or removed element's parent (the baseline's parent, for a 
 _Avoid_: Generator, origin, cause
 
 **Unexplained visual change**:
-A visual change with no cause among the changed lines that isn't a new or removed element or a knock-on effect of one.
+A visual change with no cause among the changed lines that isn't a new or removed element or a knock-on effect of one. One that changed only because unexplained changes inside it did is downstream of them, and counted with them.
 
 **Invisible change**:
 A changed line in a stylesheet that caused no visual change on any captured element, either because it had no effect or because it wasn't exercised (a hover state, another breakpoint, a page that wasn't captured).
 _Avoid_: Dead CSS (it may be live in states we don't capture)
+
+## Reporting
+
+**Atom**:
+An element a user sees as one thing, such as a button, a chip or a cell of text: the unit visual changes are reported and shown at. An atom changes when it or any of its parts does, and is an origin when any of its parts is.
+_Avoid_: Detail floor, component, unit
+
+**Part**:
+An element inside an atom, such as its label or its icon. It explains its atom's visual changes but is never reported on its own.
+_Avoid_: Child, sub-element
+
+**Container**:
+An element that holds atoms, such as a card, a row or a list. It is reported for changes to its own layout, spacing or order; its other visual changes are downstream of its atoms.
+_Avoid_: Wrapper, parent, layout element
 
 ## Review
 
@@ -152,4 +166,4 @@ Reviewing by visual changes: each changed element gets a PR comment on its JSX l
 _Avoid_: Bottom-up
 
 **Representative screenshot**:
-The one visual change shown for a cause: the one with the most changed pixels that isn't an outlier among the cause's direct effects (knock-on effects only when it has none).
+The one atom shown for a cause: the one with the most changed pixels that isn't an outlier among the atoms the cause directly affects (atoms with only knock-on effects only when there are none).

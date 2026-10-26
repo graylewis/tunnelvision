@@ -37,7 +37,7 @@ export async function diff(opts) {
         throw new Error(`Target version "${to}" not found under ${paths.versions}.`);
     }
     const report = diffVersions(versionDir(paths, from), versionDir(paths, to), diffDir(paths, from, to), config, { from, to }, versionMapper(paths, from, to));
-    addCorrelation(paths, report);
+    addCorrelation(paths, report, config.atoms);
     if (opts.json && !opts.report) {
         console.log(JSON.stringify(report, null, 2));
     }

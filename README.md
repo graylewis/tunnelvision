@@ -41,6 +41,32 @@ subsequent runs can be as quick as 10 seconds in complex applications - especial
 
 ----
 # agent-written docs
+## North stars
+
+Two goals decide every trade-off in tunnelvision, in this order.
+
+**1. Reliability: no visual change goes unreported.** Every visual change on a
+captured page, in the state and viewport it was captured in, is reported. A
+change tunnelvision can't explain is still shown, as an unexplained visual
+change, and never dropped. Every reported change should also get a cause, so
+each unexplained visual change is a defect to fix, in tunnelvision or in the
+project's setup. When reliability and speed conflict, reliability wins.
+
+Coverage is still being built out. A capture sees one state of each page, so
+changes that only show in other states aren't seen yet. Work in progress
+explores more of them: interaction states (hover, focus, open menus) and data
+states (how many items a list renders, which variants of a component the data
+on screen exercises). Changed CSS that no captured element exercised is
+reported as an invisible change, so a gap in coverage is visible rather than
+silent.
+
+**2. Speed: fast enough for AI-driven workflows.** A review should run after
+every agent turn or commit without anyone waiting on it or working around it.
+The target is a normal review (capture and diff) of a ~25-page app in **10
+seconds or less**, and tunnelvision won't be released publicly until it meets
+it. Baseline on 26 Oct 2026 (human-interfaces, 23 pages, Next.js + Tailwind): a
+normal review took ~30s (~23s capture, ~6s diff), and a full capture ~70s.
+
 ## tunnelvision
 
 Screenshot every page of your app (from its Next.js or Astro routes, or its
@@ -182,8 +208,13 @@ i18n prefixes. If you use a base path, put it in `baseUrl`.
   signed out) is recorded as a redirect instead of being captured again.
   Starting or stopping redirecting shows up as one change to the page.
 - **Diffing** — compares two versions with pixelmatch. Only pages present in both
-  are pixel-diffed; added/removed pages are reported separately. A page counts as
-  changed when its mismatched-pixel percentage exceeds `maxDiffPercent`.
+  are pixel-diffed; added/removed pages are reported separately. An element or
+  page counts as changed when at least `diff.minDiffPixels` pixels differ (one,
+  by default), however large it is, so a small change inside a large element is
+  never diluted away ([ADR 0014](docs/adr/0014-visual-changes-are-counted-in-pixels.md)).
+  `diff.maxDiffPercent` adds a percentage cutoff for projects that opt in, and
+  the diff warns while it's set. Each Version records what rendered it
+  (Playwright and OS), and a diff between Versions rendered differently warns.
 
 ## Commands
 
@@ -215,7 +246,8 @@ i18n prefixes. If you use a base path, put it in `baseUrl`.
 --settle <ms>           let animations finish after the scroll pass (default 500)
 --auth <file>           auth context file
 --threshold <n>         pixelmatch colour threshold (0-1)
---max-diff-percent <n>  page mismatch % cutoff for pass/fail
+--min-diff-pixels <n>   pixels that must differ for a change to count (default 1)
+--max-diff-percent <n>  opt-in: also require this % of an element's pixels to differ
 --only-pages            capture one screenshot per page instead of every element (see below)
 --concurrency <n>       pages captured at once in per-element captures (default 4)
 --cheat / --no-cheat    use cheat mode for this capture, or don't, whatever the config says
@@ -265,7 +297,7 @@ options as `["./my-plugin.js", { ... }]`. The design is in
 
 ## Per-element captures
 
-By default tunnelvision captures **every visible block-level element**
+By default tunnelvision captures **every visible element that forms one box**
 individually and stores them as a directory tree that mirrors the page's DOM
 hierarchy. That's what lets it trace each visual change to the line of code
 that caused it.
@@ -284,10 +316,22 @@ How it works:
 
 - **Single load per page** — each page is loaded once. tunnelvision waits (`wait` /
   `waitFor`), takes a full-page screenshot, then reads the tree of every
-  visible, block-level element (non-zero box, not
-  `display:none`/`visibility:hidden`) from that same load. Inline wrappers and
-  text nodes are flattened away so their block descendants bubble up to the
-  nearest block ancestor.
+  visible element that forms one box (non-zero box, not
+  `display:none`/`visibility:hidden`) from that same load: block-level ones, and
+  atomic inline-level ones (`inline-block`, `inline-flex`, `inline-grid`,
+  `inline-table`: buttons, badges, chips) unless they sit in a line of text or
+  among more than 20 such siblings (split-text animations, KaTeX, icon fonts).
+  Nodes that flow as text (`display: inline`) and text nodes are flattened away,
+  so the boxes inside them bubble up to the nearest box ancestor
+  ([ADR 0013](docs/adr/0013-elements-are-nodes-that-form-one-box.md)).
+- **Atoms, parts and containers** — after capture, each element is classified
+  as an atom (something a user sees as one thing: a button, a chip, a cell of
+  text), a part of one (its label, its icon), or a container (an element with
+  atoms inside). Causes and unexplained changes are counted, and each cause's
+  screenshot chosen, in atoms; reports carry each element's `role` and, for a
+  part, its `atom`. Mark an element `data-tv-atom`, or list a component in
+  `atoms.components`, to make it one atom whatever it holds
+  ([ADR 0015](docs/adr/0015-atoms-are-classified-after-capture.md)).
 - **Only what's painted** — an element's crop is the part of its box that's
   actually painted: what's left once ancestors that clip it (`overflow`,
   `clip-path`, `contain: paint`) and the page edges have cut it down. Elements
@@ -513,8 +557,8 @@ Starts a local server with a single-page UI for browsing per-element diffs:
 
 Diffs are computed when you pick a pair and diff images are written to
 `diffs/<from>__<to>/`, the same as `tunnelvision diff`. Before/after element
-images are cropped out of each version's `page.png` as the UI requests them. `--threshold` and
-`--max-diff-percent` apply as they do there. The **threshold** field in the
+images are cropped out of each version's `page.png` as the UI requests them. `--threshold`,
+`--min-diff-pixels` and `--max-diff-percent` apply as they do there. The **threshold** field in the
 header re-runs the diff at a different pixelmatch colour threshold, which is
 useful when subtle, low-contrast changes (like white corners on a light grey
 background) aren't being caught. Use ↑/↓ to move and ←/→ to
@@ -679,7 +723,7 @@ it to the root.
   "authFile": ".tunnelvision/auth.json",
   "concurrency": 4,
   "includeHidden": false,
-  "diff": { "threshold": 0.1, "includeAA": false, "maxDiffPercent": 0.03 },
+  "diff": { "threshold": 0.1, "includeAA": false, "minDiffPixels": 1 },
   "match": {
     "attributes": ["data-testid", "data-test", "data-cy", "data-qa"],
     "ignoreIds": ["^tmp-"]
@@ -687,6 +731,7 @@ it to the root.
   "styles": { "properties": ["color", "padding-top", "..."] },
   "updatePr": { "mode": "code-first" },
   "cheatMode": { "enabled": false, "ignoreAttributes": [] },
+  "atoms": { "components": ["StatCard"] },
   "workarounds": { "turbopackPostcssMaps": false },
   "pages": {
     "/pricing": { "waitFor": "document.querySelector('.loaded')", "wait": 2000, "settle": 3000 }
@@ -709,6 +754,11 @@ capture time.
 --save` (see [cheat mode](#speed-carry-over-and-cheat-mode)): `enabled` makes it
 the default, `validatedWith` records the versions it was validated with, and
 `ignoreAttributes` lists attributes left out of the render fingerprint.
+
+`atoms.components` names components whose root element is one atom whatever
+it holds, for when the classification splits something a user sees as one
+thing (see [Per-element captures](#per-element-captures)). It's applied at diff
+time, so it also affects existing captures.
 
 `workarounds` holds temporary fixes for other tools' bugs, each set by
 `/setup-tunnelvision` only when it finds the bug. `turbopackPostcssMaps`

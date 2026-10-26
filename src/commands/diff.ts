@@ -68,7 +68,7 @@ export async function diff(opts: DiffOptions): Promise<number> {
 		{ from, to },
 		versionMapper(paths, from, to),
 	);
-	addCorrelation(paths, report);
+	addCorrelation(paths, report, config.atoms);
 
 	if (opts.json && !opts.report) {
 		console.log(JSON.stringify(report, null, 2));

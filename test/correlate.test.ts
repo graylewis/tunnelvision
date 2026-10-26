@@ -1008,3 +1008,108 @@ test("a changed line holding the copy wins over a data cause", () => {
 	base.pages[0].data = [{ unit: "q", causes: [{ side: "RIGHT", path: "src/api.js", line: 8 }], added: ["List view"], removed: [] }];
 	assert.deepEqual(correlate(base).causes.map((c) => [causeLocation(c), c.kind]), [["src/App.jsx:4", "content"]]);
 });
+
+test("the containers around an unexplained change are downstream of it, not unexplained changes of their own", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main": "changed", "main/card": "size-mismatch", "main/card/inner": "changed" },
+			grown: ["main/card"],
+			changedBox: { "main": { x: 2, y: 2, width: 4, height: 4 } },
+			changes: {},
+		}),
+	);
+	assert.deepEqual(
+		result.unexplained.map((u) => [u.dir, u.downstreamOf]),
+		[
+			["main", ["main/card"]],
+			["main/card", ["main/card/inner"]],
+			["main/card/inner", undefined],
+		],
+	);
+});
+
+test("a container whose changed pixels reach outside the unexplained change inside it is unexplained in its own right", () => {
+	const result = correlate(
+		input({
+			from: { rules: [], elements: {} },
+			to: { rules: [], elements: {} },
+			changed: { "main/card": "changed", "main/card/inner": "changed" },
+			changedBox: { "main/card": { x: 0, y: 0, width: 30, height: 4 } },
+			changes: {},
+		}),
+	);
+	assert.deepEqual(
+		result.unexplained.map((u) => [u.dir, u.downstreamOf]),
+		[
+			["main/card", undefined],
+			["main/card/inner", undefined],
+		],
+	);
+});
+
+test("a container whose own declaration changed isn't downstream of an unexplained change inside it", () => {
+	const pad = (value: string) => ({ computed: { "padding-top": value }, winners: { "padding-top": winner(0) } });
+	const result = correlate(
+		input({
+			from: { rules: [rule(".card", 5, "padding-top", "18px")], elements: { "main/card": pad("18px") } },
+			to: { rules: [rule(".card", 9, "padding-top", "24px")], elements: { "main/card": pad("24px") } },
+			changed: { "main/card": "changed", "main/card/inner": "changed" },
+			changes: {},
+		}),
+	);
+	assert.deepEqual(
+		result.unexplained.map((u) => [u.dir, u.downstreamOf]),
+		[
+			["main/card", undefined],
+			["main/card/inner", undefined],
+		],
+	);
+});
+
+/** Make `dir` interactive (an atom over what's inside it) in the baseline, the target or both. */
+function interactive(i: CorrelateInput, dir: string, sides: Array<"from" | "to"> = ["from", "to"]): CorrelateInput {
+	for (const side of sides) all(i.pages[0][side].manifest.elements).find((n) => n.dir === dir)!.interactive = true;
+	return i;
+}
+
+test("a change to a part is reported with its atom, and the cause is shown as the atom", () => {
+	const color = (value: string) => ({ computed: { color: value }, winners: { color: winner(0) } });
+	const result = correlate(
+		interactive(
+			input({
+				from: { rules: [rule(".label", 5, "color", "black")], elements: { "main/card/inner": color("black") } },
+				to: { rules: [rule(".label", 5, "color", "navy")], elements: { "main/card/inner": color("navy") } },
+				changed: { "main": "changed", "main/card": "changed", "main/card/inner": "changed" },
+				changes: { "src/styles.css": { added: [5], deleted: [5] } },
+			}),
+			"main/card",
+		),
+	);
+	const [cause] = result.causes;
+	assert.deepEqual(
+		cause.effects.map((e) => [e.dir, e.via, e.role, e.atom]),
+		[
+			["main", "knock-on", "container", undefined],
+			["main/card", "knock-on", "atom", undefined],
+			["main/card/inner", "direct", "part", "main/card"],
+		],
+	);
+	assert.equal(cause.representative?.dir, "main/card");
+});
+
+test("where an atom's boundary moved between versions, the larger atom is used", () => {
+	const roles = (sides: Array<"from" | "to">) =>
+		correlate(
+			interactive(
+				input({ from: { rules: [], elements: {} }, to: { rules: [], elements: {} }, changed: { "main/card/inner": "changed" }, changes: {} }),
+				"main/card",
+				sides,
+			),
+		).unexplained.map((u) => [u.dir, u.role, u.atom]);
+	// The card became a button, or stopped being one: either way its inside is its part.
+	assert.deepEqual(roles(["to"]), [["main/card/inner", "part", "main/card"]]);
+	assert.deepEqual(roles(["from"]), [["main/card/inner", "part", "main/card"]]);
+	assert.deepEqual(roles([]), [["main/card/inner", "atom", undefined]]);
+});

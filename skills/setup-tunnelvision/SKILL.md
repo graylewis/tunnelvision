@@ -67,7 +67,7 @@ tunnelvision init --base-url <url>
 
 `tunnelvision.json` is meant to be committed: it holds the settings the whole team shares (base URL, viewport, waits, per-page overrides), and `.tunnelvision/` is git-ignored because it's a local cache. Make sure no `.gitignore` rule covers `tunnelvision.json` (a broad `*.json` rule would; add `!tunnelvision.json` below it).
 
-Defaults worth knowing (all in `tunnelvision.json`): viewport 1280×800, `wait` 1000 ms before each capture, `settle` 500 ms for animations after the scroll pass, `concurrency` 4, `diff.threshold` 0.1, `diff.maxDiffPercent` 0.03. Per-page overrides go under `pages["/path"]` (`wait`, `waitFor`, `settle`, `maxDiffPercent`). Don't tune these now; `/test-tunnelvision` finds out whether they need it.
+Defaults worth knowing (all in `tunnelvision.json`): viewport 1280×800, `wait` 1000 ms before each capture, `settle` 500 ms for animations after the scroll pass, `concurrency` 4, `diff.threshold` 0.1, `diff.minDiffPixels` 1 (any differing pixel counts, however large the element). Per-page overrides go under `pages["/path"]` (`wait`, `waitFor`, `settle`, `maxDiffPercent`). Don't tune these now; `/test-tunnelvision` finds out whether they need it.
 
 ## 7. Commit the setup
 
@@ -83,7 +83,7 @@ Then:
 tunnelvision shoot
 ```
 
-By default this captures every visible block-level element of every Page, plus the style data that makes cause-tracing work. Expect a few seconds per page. A page that fails to load is skipped and the run exits non-zero — read the error, fix the URL or the sitemap, and re-run.
+By default this captures every visible element that forms one box on every Page, plus the style data that makes cause-tracing work. Expect a few seconds per page. A page that fails to load is skipped and the run exits non-zero — read the error, fix the URL or the sitemap, and re-run.
 
 ### Check the source maps
 

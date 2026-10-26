@@ -59,7 +59,7 @@ export interface CaptureContext {
 	/** Where the pages came from. */
 	source: PageSource;
 	outputDir: string;
-	/** Capture every visible block-level element individually (unless `--only-pages`). */
+	/** Capture every visible element individually (unless `--only-pages`). */
 	byElement: boolean;
 	/** Carry pages over by render fingerprint, without settling them (see `fingerprint.ts`). */
 	cheat: boolean;
@@ -171,7 +171,7 @@ export async function runCapture(ctx: CaptureContext): Promise<RunResult> {
  * Capture each page as a hierarchy of per-element screenshots.
  *
  * Each page is loaded once (several pages at a time): the driver waits, reads
- * the visible block-level element tree, and takes a full-page screenshot from
+ * the tree of visible elements, and takes a full-page screenshot from
  * the same load. Only that screenshot and the tree (`elements.json`) are
  * stored; element images are cropped out of it whenever they're needed.
  *

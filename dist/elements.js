@@ -16,15 +16,23 @@ export const STYLE_MANIFEST = "styles.json";
 /**
  * 3: element images are cropped on demand (needs `scale`) and components live in the manifest.
  * 4: elements record their own images, so one without `images` has none.
+ * 5: elements are every node that forms one box, not only block-level ones
+ *    (docs/adr/0013), and record whether they're interactive.
  */
-export const MANIFEST_VERSION = 4;
+export const MANIFEST_VERSION = 5;
 /** The oldest manifest that can still be read; older captures stored `element.png` files instead. */
 export const MIN_MANIFEST_VERSION = 3;
 /** The first manifest version that records own images. */
 export const IMAGES_VERSION = 4;
 /**
+ * The first manifest version whose elements are every node that forms one
+ * box. Captures on either side of it divide pages into different elements, so
+ * their elements can't be paired.
+ */
+export const BOXES_VERSION = 5;
+/**
  * The in-page extraction script, evaluated by the capture driver after the page
- * has loaded and settled. Returns an array of top-level block elements
+ * has loaded and settled. Returns an array of top-level elements
  * (children of <body>), each with nested `children`. `attributes` are the
  * configured match attributes to record on each element, and `properties` the
  * tracked CSS properties whose computed values are recorded (along with
@@ -52,14 +60,56 @@ new Promise((resolve) => {
       "SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "LINK", "META",
       "HEAD", "BR", "HR", "SVG", "CANVAS"
     ]);
-    function visibleBlock(el) {
+    // Inline-level boxes that never break across lines, so they have one
+    // rectangle like a block does (docs/adr/0013).
+    const ATOMIC = new Set(["inline-block", "inline-flex", "inline-grid", "inline-table"]);
+    // More atomic inline-level siblings than this are text set as boxes
+    // (split-text animations, KaTeX, icon fonts), not pieces of UI.
+    const MAX_ATOMIC_SIBLINGS = 20;
+    const atomicCounts = new Map();
+    function crowded(parent) {
+      if (!atomicCounts.has(parent)) {
+        let n = 0;
+        for (const c of parent.children) if (ATOMIC.has(getComputedStyle(c).display)) n++;
+        atomicCounts.set(parent, n);
+      }
+      return atomicCounts.get(parent) > MAX_ATOMIC_SIBLINGS;
+    }
+    // Next to words in a line of text, through any inline wrappers up to the
+    // box that holds the line: part of a sentence, so the sentence's.
+    function inRunningText(el) {
+      for (let p = el.parentElement; p; p = p.parentElement) {
+        for (const n of p.childNodes) if (n.nodeType === 3 && n.nodeValue.trim()) return true;
+        const d = getComputedStyle(p).display;
+        if (d !== "inline" && d !== "contents") return false;
+      }
+      return false;
+    }
+    function formsBox(el) {
       const cs = getComputedStyle(el);
       if (cs.display === "none" || cs.visibility === "hidden") return false;
       if (parseFloat(cs.opacity || "1") === 0) return false;
-      if (!BLOCK.has(cs.display)) return false;
+      if (!BLOCK.has(cs.display)) {
+        if (!ATOMIC.has(cs.display) || !el.parentElement) return false;
+        if (crowded(el.parentElement) || inRunningText(el)) return false;
+      }
       const r = el.getBoundingClientRect();
       if (r.width <= 0 || r.height <= 0) return false;
       return true;
+    }
+    const WIDGET_ROLES = new Set([
+      "button", "link", "checkbox", "radio", "switch", "tab", "menuitem",
+      "menuitemcheckbox", "menuitemradio", "option", "slider", "spinbutton",
+      "textbox", "combobox", "searchbox", "treeitem"
+    ]);
+    // Something a user acts on: a control, a link, or an ARIA widget.
+    function interactive(el) {
+      const role = el.getAttribute("role");
+      if (role) return WIDGET_ROLES.has(role);
+      const tag = el.tagName.toLowerCase();
+      if (tag === "a") return el.hasAttribute("href");
+      if (tag === "input") return el.type !== "hidden";
+      return tag === "button" || tag === "select" || tag === "textarea" || tag === "summary";
     }
     // Nothing inside a display:none or fully transparent element is painted.
     function paintsNothing(el) {
@@ -337,7 +387,7 @@ new Promise((resolve) => {
         const sel = parentSel + " > " + child.tagName.toLowerCase() +
           ":nth-of-type(" + nthOfType(child) + ")";
         if (!INCLUDE_HIDDEN && paintsNothing(child)) continue;
-        const r = visibleBlock(child) ? child.getBoundingClientRect() : null;
+        const r = formsBox(child) ? child.getBoundingClientRect() : null;
         const box = r && (INCLUDE_HIDDEN
           ? { x: r.x + window.scrollX, y: r.y + window.scrollY, width: r.width, height: r.height }
           : paintedBox(child, r));
@@ -364,6 +414,8 @@ new Promise((resolve) => {
             computed: computed(child),
             text: ownText(child).replace(/\\s+/g, " ").trim().slice(0, MAX_TEXT),
             ...(images.length ? { images } : {}),
+            ...(interactive(child) ? { interactive: true } : {}),
+            ...(child.hasAttribute("data-tv-atom") ? { atom: true } : {}),
             children
           });
         } else {
@@ -424,6 +476,8 @@ export function assignDirs(nodes, parentDir = "") {
             react: node.react ?? null,
             ...(node.text !== undefined ? { text: node.text } : {}),
             ...(node.images?.length ? { images: node.images } : {}),
+            ...(node.interactive ? { interactive: true } : {}),
+            ...(node.atom ? { atom: true } : {}),
             // Source-derived fields are filled in once frames are resolved (see shoot).
             identity: {
                 attributes: node.attributes ?? {},

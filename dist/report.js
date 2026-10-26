@@ -81,18 +81,17 @@ function printCorrelation(c) {
         console.log(pc.dim("    No changed line explains a visual change."));
     for (const cause of causes) {
         const where = `${causeLocation(cause)}${cause.side === "LEFT" ? " (deleted)" : ""}`;
-        const n = cause.effects.length;
         // Only properties whose declaration changed; the rest are results of layout.
         const props = [...new Set(cause.effects.flatMap((e) => e.props.filter((p) => p.own).map((p) => p.name)))];
         const propText = props.length ? `  ${props.slice(0, MAX_PROPS).join(", ")}${props.length > MAX_PROPS ? ", …" : ""}` : "";
         const kind = cause.kind === "content" || cause.kind === "data" ? `${cause.kind} (${cause.content})` : cause.kind;
         console.log(`    ${pc.cyan(where)}  ${pc.dim(cause.text ? `${cause.text}  · ${kind}` : kind)}`);
-        console.log(pc.dim(`      → ${n} element${n === 1 ? "" : "s"}${propText}`));
+        console.log(pc.dim(`      → ${unitCount(cause.effects)}${propText}`));
     }
     printRenderSites(c.renderSites ?? []);
     const notExercised = invisible.filter((i) => i.reason === "not-exercised").length;
     const extras = [
-        unexplained.length ? `${unexplained.length} unexplained visual change${unexplained.length === 1 ? "" : "s"}` : "",
+        unexplainedSummary(unexplained),
         invisible.length
             ? `${invisible.length} CSS line${invisible.length === 1 ? "" : "s"} with no visible effect` +
                 (notExercised ? ` (${notExercised} not exercised)` : "")
@@ -102,6 +101,42 @@ function printCorrelation(c) {
     if (extras.length)
         console.log(pc.dim(`    ${extras.join("  •  ")}  — see \`tunnelvision inspector\``));
     printHints(unexplained);
+}
+/** The atom a change is reported at: its own path, or its atom's when it's a part. */
+const unitOf = (c) => `${c.page}/${c.role === "part" && c.atom ? c.atom : c.dir}`;
+/** Atoms and containers among `effects`, e.g. `3 atoms, 2 containers`. */
+function units(effects) {
+    const atoms = new Set(effects.filter((e) => e.role !== "container").map(unitOf)).size;
+    const containers = effects.filter((e) => e.role === "container").length;
+    return [atoms ? plural(atoms, "atom") : "", containers ? plural(containers, "container") : ""].filter(Boolean).join(", ");
+}
+/**
+ * What a cause changed, in atoms and the containers around them, with what it
+ * only pushed or resized apart. Reports made before atoms existed count elements.
+ */
+export function unitCount(effects) {
+    if (effects.some((e) => !e.role))
+        return plural(effects.length, "element");
+    const knockOn = effects.filter((e) => e.via === "knock-on");
+    const direct = units(effects.filter((e) => e.via !== "knock-on"));
+    if (!knockOn.length)
+        return direct;
+    return `${direct ? `${direct}; ` : ""}knock-on effects on ${units(knockOn)}`;
+}
+/** Unexplained visual changes in atoms, leaving out the elements around them that are downstream of them. */
+export function unexplainedAtoms(unexplained) {
+    return new Set(unexplained.filter((u) => !u.downstreamOf).map(unitOf)).size;
+}
+/**
+ * How many unexplained visual changes there are, in atoms, not counting the
+ * elements that only changed because an unexplained change inside them did.
+ */
+export function unexplainedSummary(unexplained) {
+    if (!unexplained.length)
+        return "";
+    const roots = unexplainedAtoms(unexplained);
+    const around = unexplained.filter((u) => u.downstreamOf).length;
+    return `${plural(roots, "unexplained visual change")}${around ? ` (and ${plural(around, "element")} around them)` : ""}`;
 }
 const MAX_HINTS = 5;
 /** The hints on unexplained visual changes, once each, the most common first. */

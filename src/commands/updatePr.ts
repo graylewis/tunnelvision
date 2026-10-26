@@ -11,6 +11,7 @@ import { GitHub, parseRepo, resolveToken, type CommentableLines, type NewReviewC
 import { publishImages, type ImageUpload } from "../imagebranch.js";
 import { diffDir, resolvePaths, versionDir, type Paths } from "../paths.js";
 import type { ComponentSource } from "../reactsource.js";
+import { unexplainedAtoms } from "../report.js";
 import { readMeta, versionExists } from "../versions.js";
 import { resolvePair } from "./diff.js";
 import { buildDiff, CHANGE_STATUSES, type InspectorDiff, type InspectorNode, type InspectorPage } from "./inspector.js";
@@ -325,7 +326,7 @@ function codeFirstAnchors(data: InspectorDiff, lines: CommentableLines): { ancho
 		`${c.causes.length} changed lines or files caused visual changes`,
 		`${offDiff} outside the PR diff`,
 		`${fresh} new or removed elements from ${sites.length} render sites (inspector only)`,
-		`${c.unexplained.length} unexplained and ${c.invisible.length} invisible changes (inspector only)`,
+		`${unexplainedAtoms(c.unexplained)} unexplained and ${c.invisible.length} invisible changes (inspector only)`,
 	];
 	return { anchors, summary: parts.join(" · ") };
 }

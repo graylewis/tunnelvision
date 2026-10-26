@@ -44,7 +44,7 @@ export function buildDiff(paths, overrides, from, to) {
     const toDir = versionDir(paths, to);
     const outDir = diffDir(paths, from, to);
     const mapper = versionMapper(paths, from, to);
-    const report = addCorrelation(paths, diffVersions(fromDir, toDir, outDir, config, { from, to }, mapper));
+    const report = addCorrelation(paths, diffVersions(fromDir, toDir, outDir, config, { from, to }, mapper), config.atoms);
     // A removed element can share its path with a different element in the
     // target, so removals are looked up separately.
     const byFile = new Map();

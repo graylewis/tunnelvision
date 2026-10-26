@@ -8,8 +8,17 @@ export interface DiffConfig {
 	threshold: number;
 	/** Detect & ignore anti-aliasing differences. */
 	includeAA: boolean;
-	/** Page is "changed" if the mismatched-pixel percentage exceeds this. */
-	maxDiffPercent: number;
+	/**
+	 * An element or page is changed when at least this many pixels differ,
+	 * however large it is (see docs/adr/0014-visual-changes-are-counted-in-pixels.md).
+	 */
+	minDiffPixels: number;
+	/**
+	 * Opt-in: also require the mismatched pixels to be more than this
+	 * percentage of the image. Only for projects that can't make capture
+	 * deterministic: a small change inside a large element falls under it.
+	 */
+	maxDiffPercent?: number;
 }
 
 /** How per-element diffs decide which elements correspond between snapshots. */
@@ -63,6 +72,16 @@ export interface CheatModeConfig {
  * Temporary fixes for other tools' bugs, each on only where setup found the
  * bug, and each to be removed once the tool is fixed.
  */
+/** Which elements visual changes are reported at (docs/adr/0015-atoms-are-classified-after-capture.md). */
+export interface AtomsConfig {
+	/**
+	 * Components whose root element is an atom whatever it holds, for when the
+	 * rules split something a user sees as one thing (a stat card's label and
+	 * value). An element marked `data-tv-atom` is one too.
+	 */
+	components: string[];
+}
+
 export interface WorkaroundsConfig {
 	/**
 	 * Turbopack drops PostCSS's source map, so a processed stylesheet's map
@@ -122,6 +141,7 @@ export interface Config {
 	styles: StylesConfig;
 	updatePr: UpdatePrConfig;
 	cheatMode: CheatModeConfig;
+	atoms: AtomsConfig;
 	workarounds: WorkaroundsConfig;
 	/**
 	 * State plugins, as module specifiers, each optionally with its options:
@@ -145,7 +165,7 @@ export const DEFAULT_CONFIG: Config = {
 	diff: {
 		threshold: 0.1,
 		includeAA: false,
-		maxDiffPercent: 0.03,
+		minDiffPixels: 1,
 	},
 	match: {
 		attributes: ["data-testid", "data-test", "data-cy", "data-qa"],
@@ -160,6 +180,9 @@ export const DEFAULT_CONFIG: Config = {
 	cheatMode: {
 		enabled: false,
 		ignoreAttributes: [],
+	},
+	atoms: {
+		components: [],
 	},
 	workarounds: {
 		turbopackPostcssMaps: false,
@@ -178,6 +201,7 @@ function withDefaults(partial: Partial<Config>): Config {
 		styles: { ...DEFAULT_CONFIG.styles, ...(partial.styles ?? {}) },
 		updatePr: { ...DEFAULT_CONFIG.updatePr, ...(partial.updatePr ?? {}) },
 		cheatMode: { ...DEFAULT_CONFIG.cheatMode, ...(partial.cheatMode ?? {}) },
+		atoms: { ...DEFAULT_CONFIG.atoms, ...(partial.atoms ?? {}) },
 		workarounds: { ...DEFAULT_CONFIG.workarounds, ...(partial.workarounds ?? {}) },
 	};
 }
@@ -247,12 +271,13 @@ export interface Overrides {
 	wait?: number;
 	settle?: number;
 	threshold?: number;
+	minDiffPixels?: number;
 	maxDiffPercent?: number;
 	retina?: boolean;
 	scaleFactor?: number;
 	auth?: string;
 	concurrency?: number;
-	/** Capture one full-page screenshot per page instead of every visible block-level element. */
+	/** Capture one full-page screenshot per page instead of every visible element. */
 	onlyPages?: boolean;
 	/** Force cheat mode on or off, whatever the config says. */
 	cheat?: boolean;
@@ -267,6 +292,7 @@ export function applyOverrides(config: Config, o: Overrides): Config {
 		styles: { ...config.styles },
 		updatePr: { ...config.updatePr },
 		cheatMode: { ...config.cheatMode },
+		atoms: { ...config.atoms },
 		workarounds: { ...config.workarounds },
 	};
 	if (o.baseUrl !== undefined) next.baseUrl = o.baseUrl;
@@ -277,6 +303,7 @@ export function applyOverrides(config: Config, o: Overrides): Config {
 	if (o.retina !== undefined) next.retina = o.retina;
 	if (o.scaleFactor !== undefined) next.scaleFactor = o.scaleFactor;
 	if (o.threshold !== undefined) next.diff.threshold = o.threshold;
+	if (o.minDiffPixels !== undefined) next.diff.minDiffPixels = o.minDiffPixels;
 	if (o.maxDiffPercent !== undefined) next.diff.maxDiffPercent = o.maxDiffPercent;
 	if (o.auth !== undefined) next.authFile = o.auth;
 	if (o.concurrency !== undefined) next.concurrency = o.concurrency;

@@ -161,7 +161,7 @@ async function reviewLocked(opts: ReviewOptions, ctx: Awaited<ReturnType<typeof 
 		{ from: baseline.key, to: ctx.version.key },
 		versionMapper(ctx.paths, baseline.key, ctx.version.key),
 	);
-	addCorrelation(ctx.paths, report);
+	addCorrelation(ctx.paths, report, ctx.config.atoms);
 
 	printReport(report);
 	if (report.hasChanges) {

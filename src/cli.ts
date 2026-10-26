@@ -56,7 +56,8 @@ function byElementOption(): Option {
 function withDiffOptions(cmd: Command): Command {
 	return cmd
 		.option("--threshold <n>", "pixelmatch colour threshold (0-1)", num)
-		.option("--max-diff-percent <n>", "page mismatch %% cutoff for pass/fail", num)
+		.option("--min-diff-pixels <n>", "pixels that must differ for an element or page to count as changed (default 1)", num)
+		.option("--max-diff-percent <n>", "opt-in: also require this % of an element's pixels to differ", num)
 		.option("--json", "print a machine-readable JSON report")
 		.option("--report <path>", "write JSON report to a file (use - for stdout)");
 }
@@ -150,6 +151,7 @@ withDiffOptions(
 			from,
 			to,
 			threshold: opts.threshold,
+			minDiffPixels: opts.minDiffPixels,
 			maxDiffPercent: opts.maxDiffPercent,
 			json: opts.json,
 			report: opts.report,
@@ -177,6 +179,7 @@ withDiffOptions(
 			onlyPages: opts.onlyPages,
 			cheat: opts.cheat,
 			threshold: opts.threshold,
+			minDiffPixels: opts.minDiffPixels,
 			maxDiffPercent: opts.maxDiffPercent,
 			json: opts.json,
 			report: opts.report,
@@ -258,7 +261,8 @@ program
 	.option("--from <version>", "baseline version the opened page starts on")
 	.option("--to <version>", "target version the opened page starts on")
 	.option("--threshold <n>", "pixelmatch colour threshold (0-1)", num)
-	.option("--max-diff-percent <n>", "element mismatch % cutoff for changed", num)
+	.option("--min-diff-pixels <n>", "pixels that must differ for an element or page to count as changed (default 1)", num)
+	.option("--max-diff-percent <n>", "opt-in: also require this % of an element's pixels to differ", num)
 	.action((opts) =>
 		run(() =>
 			inspector({
@@ -269,6 +273,7 @@ program
 				from: opts.from,
 				to: opts.to,
 				threshold: opts.threshold,
+				minDiffPixels: opts.minDiffPixels,
 				maxDiffPercent: opts.maxDiffPercent,
 			}),
 		),
@@ -283,7 +288,8 @@ program
 	.option("--remote <name>", "git remote of the GitHub repository", "origin")
 	.option("--branch <name>", "orphan branch that hosts the images", DEFAULT_IMAGE_BRANCH)
 	.option("--threshold <n>", "pixelmatch colour threshold (0-1)", num)
-	.option("--max-diff-percent <n>", "element mismatch %% cutoff for changed", num)
+	.option("--min-diff-pixels <n>", "pixels that must differ for an element or page to count as changed (default 1)", num)
+	.option("--max-diff-percent <n>", "opt-in: also require this % of an element's pixels to differ", num)
 	.option("--dry-run", "print the comments without pushing images or posting")
 	.option("--mode <mode>", "code-first (a comment per changed line that caused changes) or visual-first (per changed element)")
 	.action((from, to, opts) =>
@@ -296,6 +302,7 @@ program
 				remote: opts.remote,
 				branch: opts.branch,
 				threshold: opts.threshold,
+				minDiffPixels: opts.minDiffPixels,
 				maxDiffPercent: opts.maxDiffPercent,
 				dryRun: opts.dryRun,
 				mode: opts.mode,

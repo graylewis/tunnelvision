@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { classify, type Role } from "./atoms.js";
+import type { AtomsConfig } from "./config.js";
 import type { DiffReport, PageDiff, PageStatus } from "./diffengine.js";
 import { IMAGES_VERSION, STYLE_MANIFEST, type ElementManifest, type ElementNode, type OwnImage } from "./elements.js";
 import { publicDir } from "./fileroutes.js";
@@ -93,6 +95,10 @@ export interface Effect {
 	size: number;
 	/** Other causes of this element's change, as `path:line` (just `path` for a changed binary file). */
 	alsoCausedBy?: string[];
+	/** Whether the element is an atom, a part of one or a container (see `atoms.ts`). */
+	role?: Role;
+	/** The atom a part belongs to, by path on the same side. */
+	atom?: string;
 }
 
 /** `data`: a line in the code of a unit of state that ran live (see state.ts), whose new data the element shows. */
@@ -126,6 +132,15 @@ export interface UnexplainedChange {
 	props: PropChange[];
 	/** Why no cause was found, when there's a hint (e.g. which rule took over). */
 	note?: string;
+	/** As on `Effect`. */
+	role?: Role;
+	atom?: string;
+	/**
+	 * The unexplained changes inside this element that all of its change comes
+	 * from, by path: it changed only because they did, so it's counted with them
+	 * rather than as an unexplained change of its own.
+	 */
+	downstreamOf?: string[];
 }
 
 /**
@@ -191,6 +206,8 @@ export interface CorrelateInput {
 	layoutProperties?: Set<string>;
 	/** The directory served at the site's root, relative to `root` (default `public`). */
 	publicDir?: string;
+	/** Components whose root is an atom whatever it holds (`atoms.components` in config). */
+	atomComponents?: ReadonlySet<string>;
 }
 
 const VISUAL: Set<PageStatus> = new Set(["changed", "size-mismatch"]);
@@ -419,6 +436,32 @@ export function correlate(input: CorrelateInput): Correlation {
 	/** Lines that sit inside a rule some element matched, per side, for invisible changes. */
 	const ruleLines: Record<Side, Map<string, Array<[number, number]>>> = { LEFT: new Map(), RIGHT: new Map() };
 
+	/**
+	 * Each element's role, and the atom it's reported at. Where an atom's
+	 * boundary moved between versions (a span became a button), the larger of
+	 * the two atoms is used, so the pair isn't split into a removal and an addition.
+	 */
+	const units = new Map<ElementNode, { role: Role; atom?: ElementNode }>();
+	const within = (outer: ElementNode, n: ElementNode) => n.dir === outer.dir || n.dir.startsWith(`${outer.dir}/`);
+	const addUnits = (page: CorrelatePage): void => {
+		const to = classify(page.to.manifest.elements, input.atomComponents);
+		const from = classify(page.from.manifest.elements, input.atomComponents);
+		for (const [a, role] of from.role) if (!page.match.fromTo.has(a)) units.set(a, { role, atom: from.atomOf.get(a) });
+		for (const b of to.role.keys()) {
+			let atom = to.atomOf.get(b);
+			const a = page.match.toFrom.get(b);
+			const before = a && from.atomOf.get(a);
+			const mapped = before && page.match.fromTo.get(before);
+			if (mapped && within(mapped, b) && (!atom || (mapped !== atom && within(mapped, atom)))) atom = mapped;
+			units.set(b, { role: atom === b ? "atom" : atom ? "part" : "container", atom });
+		}
+	};
+	const unitFields = (n: ElementNode): { role?: Role; atom?: string } => {
+		const u = units.get(n);
+		if (!u) return {};
+		return { role: u.role, ...(u.role === "part" && u.atom ? { atom: u.atom.dir } : {}) };
+	};
+
 	const jsx = (side: Side, node: ElementNode | null | undefined, via: EffectVia): Candidate | null => {
 		const src: ComponentSource | null | undefined = node?.component?.source;
 		if (!src || src.generated) return null;
@@ -460,6 +503,7 @@ export function correlate(input: CorrelateInput): Correlation {
 			family.set(n, { parent, prev });
 		});
 		for (const [b, a] of page.match.toFrom) toFrom.set(b, a);
+		addUnits(page);
 
 		/** Where a declaration was written. Inline styles point at their element's JSX line. */
 		const declLoc = (side: Side, styles: StyleManifest, ref: DeclRef, kind: CauseKind, via: EffectVia): Candidate | null => {
@@ -912,10 +956,12 @@ export function correlate(input: CorrelateInput): Correlation {
 		props: entry.props,
 		via,
 		size: entry.size,
+		...unitFields(entry.node),
 	});
 	const has = (effects: Effect[], entry: Changed) => effects.some((e) => e.page === entry.page && e.dir === entry.node.dir && e.status === entry.status);
 
 	const causes = new Map<string, Cause>();
+	const entryOfEffect = new Map<Effect, Changed>();
 	const keyOf = (c: Candidate) => `${c.side}:${causeLocation({ path: targetPath(c.side, c.path), line: c.line })}`;
 	const addEffect = (c: Candidate, entry: Changed, via: EffectVia) => {
 		const key = keyOf(c);
@@ -932,7 +978,11 @@ export function correlate(input: CorrelateInput): Correlation {
 			};
 			causes.set(key, cause);
 		}
-		if (!has(cause.effects, entry)) cause.effects.push(effectOf(entry, via));
+		if (!has(cause.effects, entry)) {
+			const effect = effectOf(entry, via);
+			cause.effects.push(effect);
+			entryOfEffect.set(effect, entry);
+		}
 	};
 
 	// A new or removed element's render site is its parent's JSX line. Those
@@ -951,6 +1001,39 @@ export function correlate(input: CorrelateInput): Correlation {
 		if (!has(site.effects, entry)) site.effects.push(effectOf(entry, via));
 	};
 
+	// An unexplained change can only explain its ancestors by being unexplained
+	// itself: one that changed nothing of its own, and whose changed pixels all
+	// lie inside unexplained changes below it, is downstream of them.
+	const scaleOf = new Map(input.pages.map((p) => [p.slug, p.to.manifest.scale]));
+	const unexplainedBelow = (n: ElementNode): Changed[] =>
+		(children.get(n) ?? []).flatMap((child) => {
+			const e = entryOf(child);
+			if (!e) return unexplainedBelow(child);
+			return resolved.has(e) ? [] : [e];
+		});
+	const downstreamOf = (entry: Changed): Changed[] => {
+		if (entry.own || entry.status === "removed" || entry.status === "added") return [];
+		const below = unexplainedBelow(entry.node);
+		if (!below.length) return [];
+		const box = diffByTo.get(file(entry.page, entry.node.dir))?.changedBox;
+		if (!box) return below;
+		const scale = scaleOf.get(entry.page) ?? 1;
+		const left = Math.round(entry.node.box.x * scale) / scale + box.x / scale;
+		const top = Math.round(entry.node.box.y * scale) / scale + box.y / scale;
+		const union = below.reduce(
+			(u, e) => ({
+				x0: Math.min(u.x0, e.node.box.x),
+				y0: Math.min(u.y0, e.node.box.y),
+				x1: Math.max(u.x1, e.node.box.x + e.node.box.width),
+				y1: Math.max(u.y1, e.node.box.y + e.node.box.height),
+			}),
+			{ x0: Infinity, y0: Infinity, x1: -Infinity, y1: -Infinity },
+		);
+		// A pixel of tolerance, for edges rounded differently in the two crops.
+		const within = left >= union.x0 - 1 && top >= union.y0 - 1 && left + box.width / scale <= union.x1 + 1 && top + box.height / scale <= union.y1 + 1;
+		return within ? below : [];
+	};
+
 	const unexplained: UnexplainedChange[] = [];
 	for (const entry of changed) {
 		const found = resolved.get(entry);
@@ -964,6 +1047,7 @@ export function correlate(input: CorrelateInput): Correlation {
 				}
 			}
 		} else {
+			const below = downstreamOf(entry);
 			unexplained.push({
 				page: entry.page,
 				dir: entry.node.dir,
@@ -971,6 +1055,8 @@ export function correlate(input: CorrelateInput): Correlation {
 				status: entry.status,
 				props: entry.props,
 				...(entry.note ? { note: entry.note } : {}),
+				...unitFields(entry.node),
+				...(below.length ? { downstreamOf: below.map((e) => e.node.dir) } : {}),
 			});
 		}
 	}
@@ -978,6 +1064,17 @@ export function correlate(input: CorrelateInput): Correlation {
 		const elements = site.effects.filter((e) => e.via === "new" || e.via === "removed");
 		site.representative = pickRepresentative(elements.length ? elements : site.effects, (e) => e.size);
 	}
+
+	/** The effect `e` is shown as: its atom's, when it's on a part and the atom changed too. */
+	const atomEffect = (cause: Cause, e: Effect): Effect => {
+		if (e.role !== "part" || !e.atom) return e;
+		const listed = cause.effects.find((x) => x.page === e.page && x.dir === e.atom && (x.status === "removed") === (e.status === "removed"));
+		if (listed) return listed;
+		const entry = entryOfEffect.get(e);
+		const atom = entry && units.get(entry.node)?.atom;
+		const atomEntry = atom && byNode.get(atom);
+		return atomEntry ? effectOf(atomEntry, e.via) : e;
+	};
 
 	// Cross-reference effects that share an element, and pick each cause's screenshot.
 	const causesOf = new Map<string, string[]>();
@@ -994,9 +1091,15 @@ export function correlate(input: CorrelateInput): Correlation {
 			if (others.length) e.alsoCausedBy = others;
 		}
 		// Knock-on effects include containers up to the whole page, so they're
-		// only shown when the line changed nothing directly.
+		// only shown when the line changed nothing directly. A part is shown as
+		// the atom it belongs to.
 		const direct = cause.effects.filter((e) => e.via !== "knock-on");
-		cause.representative = pickRepresentative(direct.length ? direct : cause.effects, (e) => e.size);
+		const atAtoms = new Map<string, Effect>();
+		for (const e of direct.length ? direct : cause.effects) {
+			const shown = atomEffect(cause, e);
+			atAtoms.set(`${shown.page}/${shown.status}/${shown.dir}`, shown);
+		}
+		cause.representative = pickRepresentative([...atAtoms.values()], (e) => e.size);
 	}
 
 	// Changed stylesheet lines that didn't cause anything.
@@ -1039,7 +1142,7 @@ export function correlationPages(report: DiffReport, fromDir: string, toDir: str
  * lines changed between the files they were captured from. Returns a reason
  * instead when that isn't possible.
  */
-export function correlateVersions(paths: Paths, report: DiffReport): Correlation | { skipped: string } {
+export function correlateVersions(paths: Paths, report: DiffReport, atomComponents?: ReadonlySet<string>): Correlation | { skipped: string } {
 	if (!report.pairs?.size) return { skipped: "no per-element captures on both sides" };
 	const changes = versionChanges(paths, report.from, report.to);
 	if ("skipped" in changes) return changes;
@@ -1050,6 +1153,7 @@ export function correlateVersions(paths: Paths, report: DiffReport): Correlation
 		root: realpath(paths.root),
 		top: realpath(topLevel(paths.root) ?? paths.root),
 		publicDir: publicDir(paths.root),
+		atomComponents,
 	});
 }
 
@@ -1072,8 +1176,8 @@ export function versionMapper(paths: Paths, from: string, to: string): LineMappe
 	return "skipped" in changes ? null : new LineMapper(changes, repoPrefix(paths.root));
 }
 
-/** Add `correlation` (or why it was skipped) to a report. */
-export function addCorrelation(paths: Paths, report: DiffReport): DiffReport {
+/** Add `correlation` (or why it was skipped) to a report. `atoms` is the project's `atoms` config. */
+export function addCorrelation(paths: Paths, report: DiffReport, atoms?: AtomsConfig): DiffReport {
 	const [from, to] = [readMeta(paths, report.from), readMeta(paths, report.to)];
 	if (from && to && from.state !== to.state) {
 		const which = !from.state ? `only ${to.key}` : !to.state ? `only ${from.key}` : "both, differently";
@@ -1091,7 +1195,7 @@ export function addCorrelation(paths: Paths, report: DiffReport): DiffReport {
 			: [];
 		if (state.length) report.state = state;
 	}
-	const result = correlateVersions(paths, report);
+	const result = correlateVersions(paths, report, new Set(atoms?.components ?? []));
 	if ("skipped" in result) report.correlationSkipped = result.skipped;
 	else report.correlation = result;
 	return report;

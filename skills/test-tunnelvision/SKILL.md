@@ -90,7 +90,7 @@ For each row, find its `path:line` in `correlation.causes[]` (deleted lines have
 
 - **found** — as expected.
 - **found, mis-traced** — the change is in `unexplained[]` instead of under its Cause, or under a different line. Usually a source-map problem (`tunnelvision doctor`, Vite `css.devSourcemap`) or a React 18/production build; say which.
-- **missed** — a subtle change with no Cause and no unexplained entry. Compare the two `page.png` crops of the element by eye. If the pixels really differ, the pixel threshold ate it: `diff.threshold` (0.1, per-pixel colour distance) or `diff.maxDiffPercent` (0.03, per element) — `tunnelvision diff <noise> <test> --threshold 0.05` re-diffs the stored captures without recapturing, so try it. If the pixels don't differ, the dev server didn't serve the change; re-check step 3.
+- **missed** — a subtle change with no Cause and no unexplained entry. Compare the two `page.png` crops of the element by eye. If the pixels really differ, the pixel threshold ate it: `diff.threshold` (0.1, per-pixel colour distance), `diff.minDiffPixels` (1, per element) or, if the project set one, `diff.maxDiffPercent` — `tunnelvision diff <noise> <test> --threshold 0.05` re-diffs the stored captures without recapturing, so try it. If the pixels don't differ, the dev server didn't serve the change; re-check step 3.
 
 ### Precision — anything reported that wasn't planted?
 

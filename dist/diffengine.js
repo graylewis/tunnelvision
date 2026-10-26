@@ -2,9 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import pixelmatch from "pixelmatch";
 import { PNG } from "pngjs";
-import { cropImage, cropRect, ELEMENT_IMAGE, ELEMENT_MANIFEST, PAGE_IMAGE, pngSize, readElementManifest, } from "./elements.js";
+import { BOXES_VERSION, cropImage, cropRect, ELEMENT_IMAGE, ELEMENT_MANIFEST, PAGE_IMAGE, pngSize, readElementManifest, } from "./elements.js";
 import { matchElements, matchOptions } from "./matching.js";
 import { readRedirect } from "./carryover.js";
+import { rendererDifference } from "./renderer.js";
 /**
  * All PNGs under `dir`, returned as POSIX-style paths relative to `dir`.
  * Recurses so per-element hierarchies diff the same way flat
@@ -133,6 +134,17 @@ export function mismatchBox(diff) {
     }
     return right < 0 ? null : { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
 }
+/**
+ * Whether an image pair counts as a visual change: enough pixels differ,
+ * whatever the image's size, so the smallest change found doesn't depend on
+ * how large the element around it is. A percentage cutoff only applies when
+ * a project opts into one.
+ */
+export function countsAsChanged(mismatched, percent, maxDiffPercent, config) {
+    if (mismatched === 0 || mismatched < config.diff.minDiffPixels)
+        return false;
+    return maxDiffPercent === undefined || percent > maxDiffPercent;
+}
 /** Pixel-diff one decoded image pair, writing a diff image when it counts as changed. */
 function diffPngs(a, b, outFile, entry, config) {
     try {
@@ -151,9 +163,7 @@ function diffPngs(a, b, outFile, entry, config) {
         });
         const total = width * height;
         const percent = total === 0 ? 0 : (mismatched / total) * 100;
-        const override = perPageCutoff(entry.filename, config);
-        const cutoff = override ?? config.diff.maxDiffPercent;
-        const changed = percent > cutoff;
+        const changed = countsAsChanged(mismatched, percent, perPageCutoff(entry.filename, config) ?? config.diff.maxDiffPercent, config);
         let diffImage;
         const changedBox = changed ? mismatchBox(diff) : null;
         if (changed) {
@@ -200,6 +210,7 @@ mapper) {
     const opts = matchOptions(config.match);
     const pairs = new Map();
     const pageSlugs = new Set([...fromFiles, ...toFiles].map((f) => f.split("/")[0]));
+    const mixedModels = [];
     // Redirects: a page recorded as landing on another page has no capture of
     // its own. Starting or stopping redirecting, or landing somewhere else, is
     // one change to the page, not every element in it coming or going.
@@ -230,6 +241,11 @@ mapper) {
         const b = readElementManifest(path.join(toDir, slug, ELEMENT_MANIFEST));
         if (!a || !b)
             continue;
+        // Divided into elements differently: only the whole page compares (below).
+        if ((a.version ?? 0) >= BOXES_VERSION !== (b.version ?? 0) >= BOXES_VERSION) {
+            mixedModels.push(slug);
+            continue;
+        }
         const pageA = new ElementPage(a, path.join(fromDir, slug, PAGE_IMAGE));
         const pageB = new ElementPage(b, path.join(toDir, slug, PAGE_IMAGE));
         const sameImage = a.scale === b.scale && pageA.sameImage(pageB);
@@ -321,8 +337,33 @@ mapper) {
         removedCount,
         hasChanges: changedCount + addedCount + removedCount > 0,
     };
+    const warnings = diffWarnings(fromDir, toDir, config);
+    if (mixedModels.length) {
+        warnings.push(`${mixedModels.length} page(s) were captured before and after elements became every node that forms one box (docs/adr/0013), so only whole pages are compared there; re-capture the older version to trace changes`);
+    }
+    if (warnings.length)
+        report.warnings = warnings;
     Object.defineProperty(report, "pairs", { value: pairs, enumerable: false });
     return report;
+}
+/** What to know before trusting which pixels counted as changed. */
+function diffWarnings(fromDir, toDir, config) {
+    const out = [];
+    const renderer = (dir) => {
+        try {
+            return JSON.parse(fs.readFileSync(path.join(dir, "meta.json"), "utf8")).renderer;
+        }
+        catch {
+            return undefined;
+        }
+    };
+    const differs = rendererDifference(renderer(fromDir), renderer(toDir));
+    if (differs)
+        out.push(`the versions were rendered differently (${differs}): pixels can differ with nothing changed, so re-capture both on one machine`);
+    if (config.diff.maxDiffPercent !== undefined) {
+        out.push(`diff.maxDiffPercent is set (${config.diff.maxDiffPercent}%), so a change smaller than that share of its element isn't counted; remove it to count changes in pixels`);
+    }
+    return out;
 }
 function sameRect(a, b) {
     return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;

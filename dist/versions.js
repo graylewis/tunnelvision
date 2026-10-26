@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { versionDir } from "./paths.js";
+import { currentRenderer } from "./renderer.js";
 function metaPath(paths, key) {
     return path.join(versionDir(paths, key), "meta.json");
 }
@@ -82,6 +83,7 @@ export function metaFromInfo(info, baseUrl, pageCount, rev) {
         ...(rev ? { rev } : {}),
         baseUrl,
         pageCount,
+        renderer: currentRenderer(),
     };
 }
 /**

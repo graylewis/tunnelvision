@@ -126,7 +126,7 @@ async function reviewLocked(opts, ctx) {
         return { ...result, code: capture.missing.length > 0 ? 1 : 0 };
     }
     const report = diffVersions(versionDir(ctx.paths, baseline.key), versionDir(ctx.paths, ctx.version.key), diffDir(ctx.paths, baseline.key, ctx.version.key), ctx.config, { from: baseline.key, to: ctx.version.key }, versionMapper(ctx.paths, baseline.key, ctx.version.key));
-    addCorrelation(ctx.paths, report);
+    addCorrelation(ctx.paths, report, ctx.config.atoms);
     printReport(report);
     if (report.hasChanges) {
         console.log(pc.dim(`  diff images: ${diffDir(ctx.paths, baseline.key, ctx.version.key)}`));

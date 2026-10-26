@@ -3,6 +3,7 @@ import path from "node:path";
 import { versionDir, type Paths } from "./paths.js";
 import type { VersionInfo } from "./git.js";
 import type { SheetCheck } from "./stylemaps.js";
+import { currentRenderer, type Renderer } from "./renderer.js";
 
 export interface VersionMeta {
 	key: string;
@@ -22,6 +23,8 @@ export interface VersionMeta {
 	styleMaps?: SheetCheck[];
 	/** The state plugins' identity (see `StateSession.identity`), when any were on. */
 	state?: string;
+	/** What rendered the screenshots; absent in captures made before it was recorded. */
+	renderer?: Renderer;
 }
 
 function metaPath(paths: Paths, key: string): string {
@@ -113,6 +116,7 @@ export function metaFromInfo(
 		...(rev ? { rev } : {}),
 		baseUrl,
 		pageCount,
+		renderer: currentRenderer(),
 	};
 }
 

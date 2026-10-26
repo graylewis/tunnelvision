@@ -14,7 +14,7 @@ export const DEFAULT_CONFIG = {
     diff: {
         threshold: 0.1,
         includeAA: false,
-        maxDiffPercent: 0.03,
+        minDiffPixels: 1,
     },
     match: {
         attributes: ["data-testid", "data-test", "data-cy", "data-qa"],
@@ -29,6 +29,9 @@ export const DEFAULT_CONFIG = {
     cheatMode: {
         enabled: false,
         ignoreAttributes: [],
+    },
+    atoms: {
+        components: [],
     },
     workarounds: {
         turbopackPostcssMaps: false,
@@ -46,6 +49,7 @@ function withDefaults(partial) {
         styles: { ...DEFAULT_CONFIG.styles, ...(partial.styles ?? {}) },
         updatePr: { ...DEFAULT_CONFIG.updatePr, ...(partial.updatePr ?? {}) },
         cheatMode: { ...DEFAULT_CONFIG.cheatMode, ...(partial.cheatMode ?? {}) },
+        atoms: { ...DEFAULT_CONFIG.atoms, ...(partial.atoms ?? {}) },
         workarounds: { ...DEFAULT_CONFIG.workarounds, ...(partial.workarounds ?? {}) },
     };
 }
@@ -109,6 +113,7 @@ export function applyOverrides(config, o) {
         styles: { ...config.styles },
         updatePr: { ...config.updatePr },
         cheatMode: { ...config.cheatMode },
+        atoms: { ...config.atoms },
         workarounds: { ...config.workarounds },
     };
     if (o.baseUrl !== undefined)
@@ -127,6 +132,8 @@ export function applyOverrides(config, o) {
         next.scaleFactor = o.scaleFactor;
     if (o.threshold !== undefined)
         next.diff.threshold = o.threshold;
+    if (o.minDiffPixels !== undefined)
+        next.diff.minDiffPixels = o.minDiffPixels;
     if (o.maxDiffPercent !== undefined)
         next.diff.maxDiffPercent = o.maxDiffPercent;
     if (o.auth !== undefined)

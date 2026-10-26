@@ -1,6 +1,6 @@
 ---
 name: setup-tunnelvision
-description: Set up tunnelvision in this project — install Playwright's Chromium if it's missing, check where Pages come from (Next.js/Astro routes or the sitemap) and the source-map settings, run `tunnelvision init`, capture a baseline and check its stylesheets' source maps (turning on the Turbopack PostCSS workaround when they need it), offer the post-commit hook, and test whether cheat mode finds exactly what normal captures do before making it the default. Use when the user asks to set up, install, initialise or configure tunnelvision, or to take a first baseline capture.
+description: Set up tunnelvision in this project — install Playwright's Chromium if it's missing, check where Pages come from (Next.js/Astro routes or the sitemap) and the source-map settings, run `tunnelvision init`, capture a baseline and check its stylesheets' source maps (turning on the Turbopack PostCSS workaround when they need it), offer the TanStack Query state plugin when the app uses it and check it replays, offer the post-commit hook, and test whether cheat mode finds exactly what normal captures do before making it the default. Use when the user asks to set up, install, initialise or configure tunnelvision, or to take a first baseline capture.
 ---
 
 # Set up tunnelvision
@@ -23,7 +23,7 @@ If `node_modules/.bin/tunnelvision` doesn't exist, install it as a dev dependenc
 tunnelvision doctor
 ```
 
-It reports, one line each: `playwright chromium`, `config`, `git repo`, `post-commit hook`, `next.js routes`, `astro routes` or `sitemap`, and a `!` warning about CSS source maps when they're needed and off, or when Turbopack runs the project's PostCSS (it drops PostCSS's maps; step 8 confirms it). Fix each ✗ with the matching step below, then re-run the doctor until it prints `All good.` (the `config` line stays ✗ until step 6 — that's expected). The `post-commit hook` line is informational (`·` when it isn't installed) and never fails the doctor; step 9 deals with it.
+It reports, one line each: `playwright chromium`, `config`, `state plugins` (only when some are configured), `git repo`, `post-commit hook`, `next.js routes`, `astro routes` or `sitemap`, and a `!` warning about CSS source maps when they're needed and off, or when Turbopack runs the project's PostCSS (it drops PostCSS's maps; step 8 confirms it). Fix each ✗ with the matching step below, then re-run the doctor until it prints `All good.` (the `config` line stays ✗ until step 6 — that's expected). The `post-commit hook` line is informational (`·` when it isn't installed) and never fails the doctor; step 10 deals with it.
 
 ## 3. Playwright's Chromium
 
@@ -106,7 +106,37 @@ Report back:
 - which stylesheets' maps were broken, and whether the workaround was turned on;
 - what was changed in the repo during setup.
 
-## 9. Post-commit hook
+## 9. State plugins
+
+Live data (counts, feeds, timestamps) looks different every time a page loads, so without help every review shows it as unexplained visual changes. A state plugin records a page's data in the baseline and replays it into later captures, re-fetching only the data whose code a commit changed, and explains what that new data changed by the line that changed it (`data (copy)` causes).
+
+tunnelvision ships one, for TanStack Query. Check `package.json` for `@tanstack/react-query` in `dependencies` or `devDependencies`. If it isn't there, skip this step. If it is, tell the user that in two sentences and ask, in one question, whether to turn it on. If they say no, move on.
+
+If they say yes:
+
+1. Add it to `tunnelvision.json`:
+   ```json
+   "plugins": ["tunnelvision/plugins/tanstack-query"]
+   ```
+   `tunnelvision doctor` should now show `state plugins  tanstack-query`.
+2. **Record.** Capture again so the baseline holds the data:
+   ```sh
+   tunnelvision shoot
+   ```
+   It prints `state: … recorded new`, plus a line per page for any query it couldn't record (still loading, an error, or code it couldn't trace). Each page's data is in `state.json` next to its `elements.json`. If no page recorded any unit, the plugin didn't find a QueryClient, or no captured page ran a query: go to step 6.
+3. **Replay.** Prove the replay holds on this app, on a throwaway branch so the user's history is untouched:
+   ```sh
+   git switch -c tunnelvision-state-check
+   git commit --allow-empty -m "tunnelvision: state plugin check"
+   tunnelvision review
+   ```
+4. **It passes when** the review prints `state: N unit(s) replayed, 0 recorded new` with N above 0, reports no changed elements, and prints no `replayed data was replaced after replay` line. That line means something overwrote the replayed data: a live fetch that started before the plugin could seed the cache, or the app setting query data itself. Changed elements with copy that looks like live data mean the same.
+5. **Clean up**: `git switch -` back, `git branch -D tunnelvision-state-check`, and remove that branch's Version (`ls -t .tunnelvision/versions | head -1` names it) with `rm -rf .tunnelvision/versions/<key>`.
+6. **If it fails**, remove `plugins` from `tunnelvision.json` and tell the user what the review showed and that live data will show up as unexplained changes. Otherwise offer to commit `tunnelvision.json`.
+
+Tell the user, once, what to expect from now on: data is frozen at what was recorded; a commit that changes a query's code (its `queryFn`, the API client it calls, a package it uses) runs that query live, and the report says so under **State**; and `tunnelvision rerecord` (optionally `--page /path` or `--unit tanstack-query:<text>`) re-captures the current commit with fresh data when they want it.
+
+## 10. Post-commit hook
 
 tunnelvision can review every commit on its own: a git `post-commit` hook runs `tunnelvision review --notify` in the background, and a desktop notification says when the result is ready (with buttons to open it on macOS). It's opt-in, so check and ask.
 
@@ -118,7 +148,7 @@ tunnelvision install-hook
 
 If a `post-commit` hook from something else already exists, install-hook exits 1 and asks for `--force`, which appends the tunnelvision block to it without touching the rest. Show the user the existing hook and confirm before re-running with `--force`. On macOS, install-hook also builds the notifier and sends a first notification, so the permission prompt comes up now rather than after the first commit; tell the user to allow it. If they say no, don't install it, and don't ask again.
 
-## 10. Cheat mode
+## 11. Cheat mode
 
 Cheat mode makes captures several times faster: a page whose *render fingerprint* (its DOM, CSS and the bytes of every script, image and font it uses, taken once it has hydrated) matches the previous Version's is carried over without being scrolled, settled or screenshotted. It trusts that the same inputs render the same pixels, so it only becomes the project's default once you've shown it finds exactly the same visual changes and Causes as a normal capture. Tell the user that in one sentence and ask, in one question, whether to run the check now: it takes a few minutes and makes a throwaway branch. If they say no, leave it off and move on.
 
@@ -131,6 +161,7 @@ Cheat mode makes captures several times faster: a page whose *render fingerprint
    - **JS only**: change something only client-side JavaScript decides, such as a framer-motion `animate`/`whileInView` end state, or the markup of a component that only renders in the browser (`client:only`, `useEffect`).
    - **Image bytes**: overwrite an image in `public/` (or wherever static files live) with a visibly different image under the same file name.
    - **Font**: swap a self-hosted font file, or change an `@font-face` `font-weight`.
+   - **Data layer** (only with a state plugin from step 9): change the code a query runs, such as a query parameter or a field mapping in the API client its `queryFn` calls. Both modes must report it as a `data` cause.
 3. **Capture the planted commit both ways**, cheat mode first so both carry over from the noise-floor Version:
    ```sh
    tunnelvision shoot --cheat
@@ -145,10 +176,10 @@ Cheat mode makes captures several times faster: a page whose *render fingerprint
    ```sh
    tunnelvision cheat on
    ```
-   This records the tunnelvision, framework and dev-server versions it was validated with in `tunnelvision.json`; when any of them change, captures run normally and `tunnelvision doctor` says so until this step is repeated. Offer to commit `tunnelvision.json`. If it fails, leave cheat mode off and tell the user which planted change it missed and why that kind of change can't be fingerprinted on this app.
+   This records the tunnelvision, framework, dev-server and state plugin versions it was validated with in `tunnelvision.json`; when any of them change, captures run normally and `tunnelvision doctor` says so until this step is repeated. Offer to commit `tunnelvision.json`. If it fails, leave cheat mode off and tell the user which planted change it missed and why that kind of change can't be fingerprinted on this app.
 6. **Clean up** as in `/test-tunnelvision` step 7, also removing `.tunnelvision/versions/<test-key>-cheat` and the two reports.
 
-## 11. What's next
+## 12. What's next
 
 Suggest, briefly:
 

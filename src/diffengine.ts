@@ -60,6 +60,10 @@ export interface DiffReport {
 	correlation?: Correlation;
 	/** Why there's no `correlation`. */
 	correlationSkipped?: string;
+	/** Things to know before reading the changes, e.g. that the versions replayed state differently. */
+	warnings?: string[];
+	/** Pages of the target whose recorded state wasn't all replayed, and why (see state.ts). */
+	state?: { page: string; notes: string[] }[];
 }
 
 /** A per-element page captured in both versions, and how its elements were paired. */

@@ -149,6 +149,8 @@ export function buildDiff(paths, overrides, from, to) {
         correlation: report.correlation ?? null,
         ...(report.correlationSkipped ? { correlationSkipped: report.correlationSkipped } : {}),
         repoRoot: topLevel(paths.root) ?? paths.root,
+        ...(report.warnings?.length ? { warnings: report.warnings } : {}),
+        ...(report.state?.length ? { state: report.state } : {}),
     };
 }
 /** Resolve `rel` under `base`, refusing anything that escapes it. */

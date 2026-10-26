@@ -193,6 +193,7 @@ i18n prefixes. If you use a base path, put it in `baseUrl`.
 | `tunnelvision shoot` | Capture screenshots of every page for the current version. |
 | `tunnelvision diff [from] [to]` | Diff two versions. Defaults to current-vs-previous. |
 | `tunnelvision review` | Capture the current version, then diff it against the previous one. |
+| `tunnelvision rerecord` | Re-capture the current version with state plugins' data taken afresh instead of replayed (`--page <path>`, `--unit <plugin[:text]>`). See [State plugins](#state-plugins). |
 | `tunnelvision auth <url>` | Log in via a browser and save an auth context for authenticated screenshots. |
 | `tunnelvision doctor` | Check Playwright's Chromium, git, config, the post-commit hook and pages (Next.js routes or sitemap). |
 | `tunnelvision clean` | Prune versions (`--keep <n>`), diffs (`--diffs`), or everything (`--all`). |
@@ -221,6 +222,46 @@ i18n prefixes. If you use a base path, put it in `baseUrl`.
 --json                  print a machine-readable report
 --report <path>         write JSON report (use - for stdout)
 ```
+
+## State plugins
+
+Live data (counts, feeds, "3 minutes ago") looks different on every load, so
+it shows up in every review as visual changes no line of code explains. A
+state plugin records each page's data in one Version and replays it into the
+next, so the only data that differs between Versions is data whose code
+changed:
+
+```json
+"plugins": ["tunnelvision/plugins/tanstack-query"]
+```
+
+- **Recorded once, carried forward.** Each page's data is stored in its
+  `state.json` and replayed into every later capture until you run
+  `tunnelvision rerecord`. While any plugin is on, the page's `Date` is frozen
+  at the time its data was recorded, so relative times don't drift.
+- **Live when its code changes.** When it's recorded, each unit of data (one
+  query, for TanStack Query) is re-run under V8 coverage to find the code it
+  came from: the functions that ran (the `queryFn`, the API client it calls),
+  the module scope of their files, and the packages they used. A commit that
+  changes any of that, or bumps one of those packages in the lockfile, runs
+  that unit live, and the report lists it under **State**.
+- **Explained by the line that changed it.** Copy (or an image) showing a
+  value the live data gained or lost is a `data` cause of that changed line,
+  in the report, the inspector and `update-pr` comments.
+- **What isn't recorded stays live**: a query that errored, was still loading,
+  or whose code couldn't be traced. The capture says which, and why.
+
+The TanStack Query plugin (v4 and v5) seeds the `QueryClient` at React's first
+commit, before queries subscribe and fetch, and holds every recorded query at
+its data until the screenshot. A Suspense query's request still goes out, but
+its response is discarded. `/setup-tunnelvision` offers the plugin when the
+app uses TanStack Query, and checks it replays before keeping it. A plugin is
+any module whose default export creates `{ name, version, replay(page, units),
+record(page) }` (see `src/state.ts`), listed by path or package name, with
+options as `["./my-plugin.js", { ... }]`. The design is in
+[ADR 0011](docs/adr/0011-state-plugins-record-and-replay.md).
+
+`--only-pages` captures don't run plugins yet.
 
 ## Per-element captures
 

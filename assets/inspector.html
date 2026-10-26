@@ -253,7 +253,7 @@ function causeAt(cause, short) {
 
 /** A cause's kind, with what it changed for a content cause: `content (image)`. */
 function causeKind(cause) {
-	return cause.kind === "content" ? `content (${cause.content})` : cause.kind;
+	return cause.kind === "content" || cause.kind === "data" ? `${cause.kind} (${cause.content})` : cause.kind;
 }
 
 const VIA = { direct: "sets it", inherited: "inherited", var: "via var()", jsx: "JSX line", content: "content", "knock-on": "knock-on", new: "new", removed: "removed", inside: "inside" };

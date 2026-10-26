@@ -6,7 +6,8 @@ import { loadConfig, updateConfigFile } from "../config.js";
 import { extractScript } from "../elements.js";
 import { fingerprintScript, VISUAL_ATTRIBUTES } from "../fingerprint.js";
 import { runDriver } from "../playwright.js";
-import { prepareCapture } from "./shoot.js";
+import { StateSession } from "../state.js";
+import { captureRev, prepareCapture } from "./shoot.js";
 /** Compare the fingerprints of loads of one page, and say what differed. */
 export function compareSamples(samples) {
     if (samples.every((s) => s.fingerprint === samples[0].fingerprint))
@@ -61,6 +62,9 @@ export async function fingerprint(opts) {
     const ctx = await prepareCapture({ ...opts, cheat: false });
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tunnelvision-fingerprint-"));
     const auth = path.isAbsolute(ctx.config.authFile) ? ctx.config.authFile : path.join(ctx.paths.root, ctx.config.authFile);
+    // Replay recorded state, as a capture would: live data varies from load to load.
+    const slugs = ctx.pages.map((page) => page.filename.replace(/\.png$/i, ""));
+    const state = await StateSession.open(ctx.paths, ctx.config, ctx.version.key, captureRev(ctx), slugs);
     try {
         for (let round = 0; round < 3; round++) {
             const config = round === 0 ? ctx.config : loadConfig(ctx.paths);
@@ -78,6 +82,7 @@ export async function fingerprint(opts) {
                     mode: "fingerprint",
                     knownUrls: ctx.pages.map((p) => p.url),
                     changedSelectors: [],
+                    hooks: state?.hooks(),
                 }, (ev) => {
                     if (ev.event === "fingerprint") {
                         samples[ev.index].push({ fingerprint: ev.fingerprint, dom: ev.dom ?? [], resources: ev.resources ?? [] });

@@ -147,11 +147,13 @@ function causeBody(a, cause, data, ctx) {
     const props = own.slice(0, MAX_PROPS).map((p) => `\`${cell(p.name)}\` ${cell(p.from ?? "—")} → ${cell(p.to ?? "—")}`);
     const how = rep.via !== "content"
         ? VIA[rep.via]
-        : cause.content === "image"
-            ? cause.line === undefined
-                ? "this file is the image the element shows"
-                : "this line changed the image the element shows"
-            : "this line has the element's changed copy";
+        : cause.kind === "data"
+            ? `this line changed the data the element shows (it ran live: its code changed)`
+            : cause.content === "image"
+                ? cause.line === undefined
+                    ? "this file is the image the element shows"
+                    : "this line changed the image the element shows"
+                : "this line has the element's changed copy";
     const extra = [["how", how]];
     if (props.length)
         extra.push(["changed", props.join("<br>") + (own.length > MAX_PROPS ? "<br>…" : "")]);

@@ -73,6 +73,9 @@ export interface WorkaroundsConfig {
 	turbopackPostcssMaps: boolean;
 }
 
+/** A state plugin's module specifier, alone or with the options it's created with. */
+export type PluginSpec = string | [string, Record<string, unknown>];
+
 export interface Viewport {
 	width: number;
 	height: number;
@@ -120,6 +123,12 @@ export interface Config {
 	updatePr: UpdatePrConfig;
 	cheatMode: CheatModeConfig;
 	workarounds: WorkaroundsConfig;
+	/**
+	 * State plugins, as module specifiers, each optionally with its options:
+	 * `["tunnelvision/plugins/tanstack-query", ["./tv/flags.js", { … }]]`
+	 * (see docs/adr/0011-state-plugins-record-and-replay.md).
+	 */
+	plugins: PluginSpec[];
 	/** Optional per-page overrides keyed by URL path (e.g. "/pricing"). */
 	pages?: Record<string, PageOverride>;
 }
@@ -155,6 +164,7 @@ export const DEFAULT_CONFIG: Config = {
 	workarounds: {
 		turbopackPostcssMaps: false,
 	},
+	plugins: [],
 };
 
 /** Deep-merge a partial config on top of defaults. */

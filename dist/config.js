@@ -33,6 +33,7 @@ export const DEFAULT_CONFIG = {
     workarounds: {
         turbopackPostcssMaps: false,
     },
+    plugins: [],
 };
 /** Deep-merge a partial config on top of defaults. */
 function withDefaults(partial) {

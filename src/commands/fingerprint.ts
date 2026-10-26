@@ -6,7 +6,8 @@ import { loadConfig, updateConfigFile, type Overrides } from "../config.js";
 import { extractScript } from "../elements.js";
 import { fingerprintScript, VISUAL_ATTRIBUTES } from "../fingerprint.js";
 import { runDriver, type DriverEvent } from "../playwright.js";
-import { prepareCapture } from "./shoot.js";
+import { StateSession } from "../state.js";
+import { captureRev, prepareCapture } from "./shoot.js";
 
 export interface FingerprintOptions extends Overrides {
 	root: string;
@@ -75,6 +76,9 @@ export async function fingerprint(opts: FingerprintOptions): Promise<number> {
 	const ctx = await prepareCapture({ ...opts, cheat: false });
 	const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tunnelvision-fingerprint-"));
 	const auth = path.isAbsolute(ctx.config.authFile) ? ctx.config.authFile : path.join(ctx.paths.root, ctx.config.authFile);
+	// Replay recorded state, as a capture would: live data varies from load to load.
+	const slugs = ctx.pages.map((page) => page.filename.replace(/\.png$/i, ""));
+	const state = await StateSession.open(ctx.paths, ctx.config, ctx.version.key, captureRev(ctx), slugs);
 	try {
 		for (let round = 0; round < 3; round++) {
 			const config = round === 0 ? ctx.config : loadConfig(ctx.paths);
@@ -94,6 +98,7 @@ export async function fingerprint(opts: FingerprintOptions): Promise<number> {
 						mode: "fingerprint",
 						knownUrls: ctx.pages.map((p) => p.url),
 						changedSelectors: [],
+						hooks: state?.hooks(),
 					},
 					(ev: DriverEvent) => {
 						if (ev.event === "fingerprint") {

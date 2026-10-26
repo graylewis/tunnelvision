@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { correlate, utilityClass, type CorrelateInput } from "../src/correlate.js";
+import { causeLocation, correlate, utilityClass, type CorrelateInput } from "../src/correlate.js";
 import type { PageDiff } from "../src/diffengine.js";
 import type { ElementManifest, ElementNode, OwnImage } from "../src/elements.js";
 import type { FileChanges, Hunk } from "../src/git.js";
@@ -969,4 +969,42 @@ test("a change whose declaration is in a stylesheet with a broken source map say
 		result.unexplained.map((u) => [u.dir, u.note]),
 		[["main/card/inner", "body is in src/app/globals.css, which can't be traced: Turbopack dropped PostCSS's source map"]],
 	);
+});
+
+// --- data causes (state plugins) ------------------------------------------------
+
+test("copy showing data from a unit that ran live because its code changed is explained by that code's changed line", () => {
+	const base = input({
+		from: { rules: [], elements: {} },
+		to: { rules: [], elements: {} },
+		changed: { "main/card": "changed", "main/after": "changed" },
+		text: { "main/card": ["Revenue $48,210", "Revenue $51,002"], "main/after": ["Welcome", "Hello"] },
+		changes: { "src/api.js": { added: [[8, '\treturn request("/api/stats?v=2");']], deleted: [[8, '\treturn request("/api/stats");']] } },
+	});
+	base.pages[0].data = [{ unit: 'tanstack-query ["stats"]', causes: [{ side: "RIGHT", path: "src/api.js", line: 8 }], added: [51002], removed: [48210] }];
+	const result = correlate(base);
+	assert.deepEqual(
+		result.causes.map((c) => [causeLocation(c), c.kind, c.content, c.text, c.effects.map((e) => e.dir)]),
+		[["src/api.js:8", "data", "copy", 'return request("/api/stats?v=2");', ["main/card"]]],
+	);
+	// Copy no data explains stays unexplained, with a hint about the unit that ran live.
+	assert.deepEqual(
+		result.unexplained.map((u) => [u.dir, u.note]),
+		[["main/after", 'copy changed ("Welcome" → "Hello") but no changed line has it; tanstack-query ["stats"] ran live on this page because its code changed']],
+	);
+});
+
+test("a changed line holding the copy wins over a data cause", () => {
+	const base = input({
+		from: { rules: [], elements: {} },
+		to: { rules: [], elements: {} },
+		changed: { "main/card": "changed" },
+		text: { "main/card": ["Grid view", "List view"] },
+		changes: {
+			"src/App.jsx": { added: [[4, "<p>List view</p>"]] },
+			"src/api.js": { added: [[8, "x"]] },
+		},
+	});
+	base.pages[0].data = [{ unit: "q", causes: [{ side: "RIGHT", path: "src/api.js", line: 8 }], added: ["List view"], removed: [] }];
+	assert.deepEqual(correlate(base).causes.map((c) => [causeLocation(c), c.kind]), [["src/App.jsx:4", "content"]]);
 });

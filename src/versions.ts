@@ -20,6 +20,8 @@ export interface VersionMeta {
 	pageCount: number;
 	/** Problems found with stylesheets' source maps, including the ones a workaround patched. */
 	styleMaps?: SheetCheck[];
+	/** The state plugins' identity (see `StateSession.identity`), when any were on. */
+	state?: string;
 }
 
 function metaPath(paths: Paths, key: string): string {

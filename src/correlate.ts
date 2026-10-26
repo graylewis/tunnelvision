@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { DiffReport, PageDiff, PageStatus } from "./diffengine.js";
 import { IMAGES_VERSION, STYLE_MANIFEST, type ElementManifest, type ElementNode, type OwnImage } from "./elements.js";
@@ -8,6 +9,7 @@ import type { ElementMatch } from "./matching.js";
 import { realpath, type ComponentSource } from "./reactsource.js";
 import { LineMapper } from "./remap.js";
 import { readMeta, versionRev } from "./versions.js";
+import { dataChanges, readRecording, recordingNotes, type DataChange } from "./state.js";
 import { versionDir, type Paths } from "./paths.js";
 import { pickRepresentative } from "./representative.js";
 import { problemReason } from "./stylemaps.js";
@@ -93,7 +95,8 @@ export interface Effect {
 	alsoCausedBy?: string[];
 }
 
-export type CauseKind = "declaration" | "selector" | "variable" | "jsx" | "content";
+/** `data`: a line in the code of a unit of state that ran live (see state.ts), whose new data the element shows. */
+export type CauseKind = "declaration" | "selector" | "variable" | "jsx" | "content" | "data";
 
 /** What a content cause changed: an element's own text, or one of its own images. */
 export type ContentKind = "copy" | "image";
@@ -170,6 +173,8 @@ export interface CorrelatePage {
 	from: PageSide;
 	to: PageSide;
 	match: ElementMatch;
+	/** Units of state on the page that ran live because their code changed (paths project-relative). */
+	data?: DataChange[];
 }
 
 export interface CorrelateInput {
@@ -243,6 +248,21 @@ function declText(rule: StyleRule, ref: DeclRef): string {
 }
 
 /** The words of `text`, lowercased: runs of letters and digits. */
+/**
+ * Whether copy shows a value from a unit's data: a string of 2+ characters
+ * as written, or a number of 2+ digits however it's formatted (`48337` in
+ * `$48,337`).
+ */
+function showsValue(text: string | undefined, v: string | number): boolean {
+	if (!text) return false;
+	if (typeof v === "number") {
+		const digits = String(Math.abs(v)).replace(".", "");
+		return digits.length >= 2 && text.replace(/[^\d]/g, "").includes(digits);
+	}
+	const s = v.trim();
+	return s.length >= 2 && text.includes(s);
+}
+
 function words(text: string): string[] {
 	return text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
 }
@@ -501,6 +521,25 @@ export function correlate(input: CorrelateInput): Correlation {
 			return found.map((l) => ({ side, path: l.path, line: l.line, kind: "content", content: "copy", via: "content", text: l.text.trim() }));
 		};
 
+		/**
+		 * The changed lines of the units whose new data `text` shows (or whose
+		 * old data `before` showed), for a change no changed line explains.
+		 */
+		const dataLoc = (shows: (dc: DataChange) => boolean, content: ContentKind): { left: Candidate[]; right: Candidate[] } => {
+			const left: Candidate[] = [];
+			const right: Candidate[] = [];
+			for (const dc of page.data ?? []) {
+				if (!shows(dc)) continue;
+				for (const c of dc.causes) {
+					const p = repoPath(c.path);
+					if (!p || c.line === undefined) continue;
+					const text = c.side === "RIGHT" ? input.changes.get(p)?.added.get(c.line) : deleted.get(p)?.lines.get(c.line);
+					(c.side === "RIGHT" ? right : left).push({ side: c.side, path: p, line: c.line, kind: "data", content, via: "content", ...(text ? { text: text.trim() } : {}) });
+				}
+			}
+			return { left, right };
+		};
+
 		const imageCandidate = (side: Side, path: string, line?: number, text?: string): Candidate => ({
 			side,
 			path,
@@ -598,6 +637,11 @@ export function correlate(input: CorrelateInput): Correlation {
 			if (lost.length || got.length) {
 				const { left, right } = imageLoc(a, b, lost, got);
 				consider(entry, left, right);
+				if (entry.hits.length === hits) {
+					const named = (values: (string | number)[], names: string[]) => values.some((v) => typeof v === "string" && names.some((n) => holdsName(v, n)));
+					const data = dataLoc((dc) => named(dc.added, got) || named(dc.removed, lost), "image");
+					consider(entry, data.left, data.right);
+				}
 				if (entry.hits.length > hits) {
 					entry.own = true;
 					return null;
@@ -712,6 +756,12 @@ export function correlate(input: CorrelateInput): Correlation {
 					copyLoc("LEFT", a, searchTerms(gained(after, before)), before),
 					copyLoc("RIGHT", b, searchTerms(gained(before, after)), after),
 				);
+				if (entry.hits.length === hits) {
+					const was = a.text;
+					const now = b.text;
+					const { left, right } = dataLoc((dc) => dc.added.some((v) => showsValue(now, v)) || dc.removed.some((v) => showsValue(was, v)), "copy");
+					consider(entry, left, right);
+				}
 				if (entry.hits.length > hits) entry.own = true;
 				else notes.push(`copy changed (${quote(a.text)} → ${quote(b.text)}) but no changed line has it`);
 			}
@@ -720,6 +770,9 @@ export function correlate(input: CorrelateInput): Correlation {
 			consider(entry, [jsx("LEFT", a, "jsx")], [jsx("RIGHT", b, "jsx")]);
 			// First, since it's the likeliest reason no changed line was found.
 			if (untraced.size) notes.unshift(...untraced);
+			if (!entry.hits.length && page.data?.length) {
+				notes.push(`${page.data.map((dc) => dc.unit).join(", ")} ran live on this page because its code changed`);
+			}
 			if (switched.length) notes.push(`winner changed (${switched.slice(0, 3).join("; ")}${switched.length > 3 ? "; …" : ""})`);
 			if (notes.length) entry.note = notes.join("; ");
 		});
@@ -977,6 +1030,7 @@ export function correlationPages(report: DiffReport, fromDir: string, toDir: str
 		from: { manifest: pair.from, styles: readStyleManifest(path.join(fromDir, slug, STYLE_MANIFEST)) },
 		to: { manifest: pair.to, styles: readStyleManifest(path.join(toDir, slug, STYLE_MANIFEST)) },
 		match: pair.match,
+		data: dataChanges(readRecording(path.join(fromDir, slug)), readRecording(path.join(toDir, slug))),
 	}));
 }
 
@@ -1020,6 +1074,23 @@ export function versionMapper(paths: Paths, from: string, to: string): LineMappe
 
 /** Add `correlation` (or why it was skipped) to a report. */
 export function addCorrelation(paths: Paths, report: DiffReport): DiffReport {
+	const [from, to] = [readMeta(paths, report.from), readMeta(paths, report.to)];
+	if (from && to && from.state !== to.state) {
+		const which = !from.state ? `only ${to.key}` : !to.state ? `only ${from.key}` : "both, differently";
+		(report.warnings ??= []).push(
+			`state plugins replayed data in ${which}: data differences between these versions may not come from code (see docs/adr/0011)`,
+		);
+	}
+	if (to?.state) {
+		const dir = versionDir(paths, report.to);
+		const state = fs.existsSync(dir)
+			? fs.readdirSync(dir)
+					.map((page) => ({ page, recording: readRecording(path.join(dir, page)) }))
+					.map(({ page, recording }) => ({ page, notes: recording ? recordingNotes(recording) : [] }))
+					.filter((p) => p.notes.length)
+			: [];
+		if (state.length) report.state = state;
+	}
 	const result = correlateVersions(paths, report);
 	if ("skipped" in result) report.correlationSkipped = result.skipped;
 	else report.correlation = result;

@@ -226,7 +226,9 @@ function causeBody(a: Anchor, cause: Cause, data: InspectorDiff, ctx: BodyContex
 	const how =
 		rep.via !== "content"
 			? VIA[rep.via]
-			: cause.content === "image"
+			: cause.kind === "data"
+				? `this line changed the data the element shows (it ran live: its code changed)`
+				: cause.content === "image"
 				? cause.line === undefined
 					? "this file is the image the element shows"
 					: "this line changed the image the element shows"

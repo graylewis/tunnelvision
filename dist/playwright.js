@@ -332,6 +332,7 @@ async function openPage(browser, opts, index, job, ask, tell) {
     });
     try {
         const page = await context.newPage();
+        await opts.hooks?.beforeLoad?.(index, page);
         const bodies = new Map();
         const pending = [];
         page.on("response", (res) => {
@@ -371,6 +372,7 @@ async function openPage(browser, opts, index, job, ask, tell) {
         if (job.wait)
             await page.waitForTimeout(job.wait);
         await evaluate(page, HYDRATE_JS);
+        await opts.hooks?.hydrated?.(index, page);
         await Promise.all([...pending]);
         const { fp, dom, resources } = await fingerprint(context, page, opts, bodies);
         if (opts.mode === "fingerprint") {
@@ -381,6 +383,7 @@ async function openPage(browser, opts, index, job, ask, tell) {
         if (opts.cheat) {
             const reply = await ask({ index, event: "fingerprint", fingerprint: fp });
             if (reply && "carry" in reply && reply.carry) {
+                await opts.hooks?.captured?.(index, page);
                 await context.close();
                 return null;
             }
@@ -463,7 +466,10 @@ export async function runDriver(pages, opts, onEvent) {
                 if (!opened)
                     return;
                 try {
-                    await capture.use(() => settleAndRead(opened.page, opts, index, job, ask, tell));
+                    await capture.use(async () => {
+                        await settleAndRead(opened.page, opts, index, job, ask, tell);
+                        await opts.hooks?.captured?.(index, opened.page);
+                    });
                 }
                 finally {
                     await opened.context.close();

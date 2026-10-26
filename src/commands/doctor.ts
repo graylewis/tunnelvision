@@ -6,6 +6,7 @@ import { discoverPages } from "../pagesource.js";
 import { FRAMEWORK_NAMES } from "../fileroutes.js";
 import { checkPlaywright } from "../playwright.js";
 import { loadConfig } from "../config.js";
+import { loadPlugins } from "../state.js";
 import { environmentVersions, versionChanges } from "../environment.js";
 import { cssPipeline } from "../stylemaps.js";
 import fs from "node:fs";
@@ -69,6 +70,20 @@ export async function doctor(opts: DoctorOptions): Promise<number> {
 		console.log(pc.dim(`      it's git-ignored there; \`tunnelvision init\` moves it to ${CONFIG_FILE} so it can be committed`));
 	}
 
+	// state plugins: none is fine; one that doesn't load fails every capture
+	if (config) {
+		try {
+			const { plugins } = loadConfig(paths);
+			if (plugins.length) {
+				const loaded = await loadPlugins(paths.root, plugins).catch((err: Error) => err);
+				if (loaded instanceof Error) line(false, "state plugins", loaded.message);
+				else line(true, "state plugins", loaded.map((p) => `${p.name} ${p.version}`).join(", "));
+			}
+		} catch {
+			// the config line above covers a config that doesn't load
+		}
+	}
+
 	// git
 	const git = isGitRepo(opts.root);
 	line(git, "git repo", git ? "versions keyed by commit SHA" : "will use timestamp keys");
@@ -117,8 +132,8 @@ export async function doctor(opts: DoctorOptions): Promise<number> {
 	// cheat mode: opt-in, so being off isn't a failure; being stale is worth a look
 	if (config) {
 		try {
-			const { enabled, validatedWith } = loadConfig(paths).cheatMode;
-			const changes = enabled && validatedWith ? versionChanges(validatedWith, environmentVersions(opts.root)) : [];
+			const { cheatMode: { enabled, validatedWith }, plugins } = loadConfig(paths);
+			const changes = enabled && validatedWith ? versionChanges(validatedWith, environmentVersions(opts.root, plugins)) : [];
 			if (!enabled) {
 				console.log(`  ${pc.dim("·")} cheat mode${pc.dim("  off; /setup-tunnelvision checks whether this project can use it")}`);
 			} else if (!validatedWith || changes.length > 0) {

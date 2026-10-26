@@ -17,7 +17,7 @@ export interface CheatOptions {
 export async function cheat(opts: CheatOptions): Promise<number> {
 	const paths = resolvePaths(opts.root);
 	const config = loadConfig(paths);
-	const current = environmentVersions(opts.root);
+	const current = environmentVersions(opts.root, config.plugins);
 
 	if (opts.action === "on") {
 		updateConfigFile(paths, (raw) => {

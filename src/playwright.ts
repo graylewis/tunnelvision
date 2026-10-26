@@ -67,6 +67,18 @@ export interface CaptureOptions {
 	knownUrls: string[];
 	/** Selectors of style rules the commit changed (see `changedrules.ts`). */
 	changedSelectors: string[];
+	/** Called around each page's load, for state plugins (see `state.ts`). */
+	hooks?: PageHooks;
+}
+
+/** Points in a page's capture where state plugins run. A hook that throws fails the page. */
+export interface PageHooks {
+	/** Before the page loads: init scripts, routes, the clock. */
+	beforeLoad?(index: number, page: PwPage): Promise<void>;
+	/** Once it has hydrated, before the render fingerprint and before it's settled. */
+	hydrated?(index: number, page: PwPage): Promise<void>;
+	/** Once it's captured (or carried over), before its context closes. */
+	captured?(index: number, page: PwPage): Promise<void>;
 }
 
 /** What a capture produced, by the names it reports them under. */
@@ -420,6 +432,7 @@ async function openPage(
 	});
 	try {
 		const page = await context.newPage();
+		await opts.hooks?.beforeLoad?.(index, page);
 		const bodies = new Map<string, string>();
 		const pending: Promise<void>[] = [];
 		page.on("response", (res) => {
@@ -457,6 +470,7 @@ async function openPage(
 		await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
 		if (job.wait) await page.waitForTimeout(job.wait);
 		await evaluate(page, HYDRATE_JS);
+		await opts.hooks?.hydrated?.(index, page);
 		await Promise.all([...pending]);
 		const { fp, dom, resources } = await fingerprint(context, page, opts, bodies);
 		if (opts.mode === "fingerprint") {
@@ -467,6 +481,7 @@ async function openPage(
 		if (opts.cheat) {
 			const reply = await ask({ index, event: "fingerprint", fingerprint: fp });
 			if (reply && "carry" in reply && reply.carry) {
+				await opts.hooks?.captured?.(index, page);
 				await context.close();
 				return null;
 			}
@@ -549,7 +564,10 @@ export async function runDriver(
 					const opened = await load.use(() => openPage(browser, opts, index, job, ask, tell));
 					if (!opened) return;
 					try {
-						await capture.use(() => settleAndRead(opened.page, opts, index, job, ask, tell));
+						await capture.use(async () => {
+							await settleAndRead(opened.page, opts, index, job, ask, tell);
+							await opts.hooks?.captured?.(index, opened.page);
+						});
 					} finally {
 						await opened.context.close();
 					}

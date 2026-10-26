@@ -22,6 +22,17 @@ export function printReport(report) {
     console.log("");
     console.log(pc.bold(`Diff  ${report.from}  ->  ${report.to}`));
     console.log("");
+    for (const w of report.warnings ?? [])
+        console.log(pc.yellow(`  ! ${w}`));
+    if (report.warnings?.length)
+        console.log("");
+    if (report.state?.length) {
+        console.log(pc.bold("  State"));
+        for (const { page, notes } of report.state)
+            for (const note of notes)
+                console.log(pc.dim(`    ${page}: ${note}`));
+        console.log("");
+    }
     const rows = report.pages.filter((p) => p.status !== "unchanged");
     if (rows.length === 0) {
         console.log(pc.green("  No visual changes detected."));
@@ -74,7 +85,7 @@ function printCorrelation(c) {
         // Only properties whose declaration changed; the rest are results of layout.
         const props = [...new Set(cause.effects.flatMap((e) => e.props.filter((p) => p.own).map((p) => p.name)))];
         const propText = props.length ? `  ${props.slice(0, MAX_PROPS).join(", ")}${props.length > MAX_PROPS ? ", …" : ""}` : "";
-        const kind = cause.kind === "content" ? `content (${cause.content})` : cause.kind;
+        const kind = cause.kind === "content" || cause.kind === "data" ? `${cause.kind} (${cause.content})` : cause.kind;
         console.log(`    ${pc.cyan(where)}  ${pc.dim(cause.text ? `${cause.text}  · ${kind}` : kind)}`);
         console.log(pc.dim(`      → ${n} element${n === 1 ? "" : "s"}${propText}`));
     }

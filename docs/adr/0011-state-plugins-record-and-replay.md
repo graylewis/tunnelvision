@@ -11,7 +11,7 @@ Live data makes two captures of the same code look different: counts tick, feeds
 A plugin is a Node module with two hooks, run by the Node driver (ADR 0012):
 
 - `replay(page, units)` runs before `goto`, with only the units core chose to replay, and installs whatever init scripts or routes it needs.
-- `record(page)` runs after hydration, before the render fingerprint, and returns units `{ id, data, rerun }`. `rerun` is a handle to an in-page function that reproduces the unit's data.
+- `record(page)` runs after hydration, before the render fingerprint, and returns units `{ id, data, rerun }`. `rerun` is a handle to an in-page function that reproduces the unit's data. From then until the screenshot, the page must keep showing exactly what was recorded. Without that, a polled query refetched between recording and screenshot, and the first Version's screenshot disagreed with the Recording the next Version replayed: 14 changes on a commit that changed no code.
 
 Core does everything else, so every plugin gets the same invalidation and reporting:
 
@@ -52,6 +52,8 @@ It ships inside tunnelvision (`tunnelvision/plugins/tanstack-query`), so it can'
 
 ## Consequences
 
+- V8 reports only functions that ran, and a module's top-level code ran at import, before the trace. So a unit's code also lists every function in the files it ran, from parsing the JavaScript the browser actually ran and mapping each function's ends back to the source. Lines outside all of them are module scope. A bundler's module wrapper, which spans its whole file, counts as module scope, not as a function. A trace that finds none of the project's code is untraceable, so nothing is ever replayed that invalidation couldn't reach.
+- A data cause explains a visual change only when the element's copy (or image) shows a value the unit's data gained or lost: a string of 2+ characters as written, or a number of 2+ digits however it's formatted. A changed line holding the copy takes precedence. Other unexplained changes on that page get a hint naming the unit, but no guessed cause.
 - A unit that runs live because its code changed also brings in all the data drift since it was recorded, and every visual change it produces is blamed on its changed lines. Reports label these units for that reason.
 - Server code is never part of a unit's code, because the trace runs in the browser. Mapping the URLs a queryFn fetched to Next.js route handlers is a possible later addition. Backends in other repos are never covered.
 - `rerun` assumes queries are safe to re-run, which holds for reads. Mutations are never units.

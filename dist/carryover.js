@@ -49,25 +49,32 @@ export function hashOf(value) {
  * they ship from outside the repository) may have too, which the diff can't
  * see, so nothing is carried over.
  */
-const LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb"];
+export const LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml", "bun.lock", "bun.lockb"];
 /**
- * The nearest ancestor Version to carry over from: a Version already captured
- * under this key, else the newest Version of the nearest first-parent
- * ancestor commit (HEAD included) that has one. `why` explains a null.
+ * The nearest ancestor Version: one already captured under this key, else
+ * the newest Version of the nearest first-parent ancestor commit (HEAD
+ * included) that has one.
+ */
+export function nearestVersion(paths, key) {
+    const newestFirst = listVersions(paths).filter((v) => versionRev(v)).reverse();
+    const same = newestFirst.find((v) => v.key === key);
+    if (same)
+        return same;
+    for (const sha of firstParentShas(paths.root)) {
+        const meta = newestFirst.find((v) => v.sha && sha.startsWith(v.sha));
+        if (meta)
+            return meta;
+    }
+    return null;
+}
+/**
+ * The nearest ancestor Version to carry over from (see `nearestVersion`).
+ * `why` explains a null.
  */
 export function findReference(paths, key, rev) {
     if (!rev)
         return { reference: null, why: "this capture can't be diffed (not in git)" };
-    const versions = listVersions(paths).filter((v) => versionRev(v));
-    const newestFirst = [...versions].reverse();
-    let meta = newestFirst.find((v) => v.key === key) ?? null;
-    if (!meta) {
-        for (const sha of firstParentShas(paths.root)) {
-            meta = newestFirst.find((v) => v.sha && sha.startsWith(v.sha)) ?? null;
-            if (meta)
-                break;
-        }
-    }
+    const meta = nearestVersion(paths, key);
     if (!meta)
         return { reference: null, why: "no earlier Version of this branch" };
     const refRev = versionRev(meta);

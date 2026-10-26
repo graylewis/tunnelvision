@@ -108,6 +108,10 @@ export interface InspectorDiff {
 	correlationSkipped?: string;
 	/** Repository top level, which cause paths are relative to. */
 	repoRoot: string;
+	/** Things to know before reading the changes (see `DiffReport.warnings`). */
+	warnings?: string[];
+	/** Target pages whose recorded state wasn't all replayed, and why (see `DiffReport.state`). */
+	state?: { page: string; notes: string[] }[];
 }
 
 export const CHANGE_STATUSES = new Set<NodeStatus>(["changed", "added", "removed", "size-mismatch", "error"]);
@@ -261,6 +265,8 @@ export function buildDiff(paths: Paths, overrides: Overrides, from: string, to: 
 		correlation: report.correlation ?? null,
 		...(report.correlationSkipped ? { correlationSkipped: report.correlationSkipped } : {}),
 		repoRoot: topLevel(paths.root) ?? paths.root,
+		...(report.warnings?.length ? { warnings: report.warnings } : {}),
+		...(report.state?.length ? { state: report.state } : {}),
 	};
 }
 

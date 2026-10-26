@@ -2,7 +2,7 @@
 import { Command, Option } from "commander";
 import pc from "picocolors";
 import { init } from "./commands/init.js";
-import { shoot } from "./commands/shoot.js";
+import { rerecord, shoot } from "./commands/shoot.js";
 import { diff } from "./commands/diff.js";
 import { review } from "./commands/review.js";
 import { auth } from "./commands/auth.js";
@@ -84,6 +84,24 @@ withCaptureOptions(program.command("shoot").description("Capture screenshots of 
     concurrency: opts.concurrency,
     onlyPages: opts.onlyPages,
     cheat: opts.cheat,
+})));
+withCaptureOptions(program
+    .command("rerecord")
+    .description("Re-capture the current version with state plugins' data taken afresh instead of replayed")
+    .option("--page <path>", "only this page (URL path, e.g. /pricing); repeatable", (v, acc = []) => [...acc, v])
+    .option("--unit <plugin[:text]>", "only this plugin's units, with text in their id (e.g. tanstack-query:stats)")).action((opts) => run(() => rerecord({
+    root: ROOT,
+    baseUrl: opts.baseUrl,
+    width: opts.width,
+    height: opts.height,
+    wait: opts.wait,
+    settle: opts.settle,
+    retina: opts.retina,
+    scaleFactor: opts.scaleFactor,
+    auth: opts.auth,
+    concurrency: opts.concurrency,
+    pages: opts.page,
+    unit: opts.unit,
 })));
 withDiffOptions(program
     .command("diff")

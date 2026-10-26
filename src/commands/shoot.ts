@@ -44,6 +44,7 @@ import {
 import { fingerprintScript } from "../fingerprint.js";
 import { matchOptions } from "../matching.js";
 import { environmentVersions, versionChanges } from "../environment.js";
+import { StateSession, type Rerecord } from "../state.js";
 
 export interface ShootOptions extends Overrides {
 	root: string;
@@ -62,6 +63,8 @@ export interface CaptureContext {
 	byElement: boolean;
 	/** Carry pages over by render fingerprint, without settling them (see `fingerprint.ts`). */
 	cheat: boolean;
+	/** State to record afresh instead of replaying (`tunnelvision rerecord`). */
+	rerecord?: Rerecord;
 }
 
 /** Load config + discover and resolve pages and the version key. Throws on fatal problems. */
@@ -88,7 +91,7 @@ function useCheatMode(opts: ShootOptions, config: Config): boolean {
 	if (opts.cheat !== undefined) return opts.cheat;
 	const { enabled, validatedWith } = config.cheatMode;
 	if (!enabled) return false;
-	const changes = validatedWith ? versionChanges(validatedWith, environmentVersions(opts.root)) : ["never validated"];
+	const changes = validatedWith ? versionChanges(validatedWith, environmentVersions(opts.root, config.plugins)) : ["never validated"];
 	if (changes.length === 0) return true;
 	console.log(
 		pc.yellow(
@@ -131,6 +134,9 @@ export async function runCapture(ctx: CaptureContext): Promise<RunResult> {
 
 	if (ctx.byElement) {
 		return runElementCapture(ctx, rev, auth);
+	}
+	if (ctx.config.plugins.length) {
+		console.log(pc.yellow("  state plugins don't run with --only-pages yet: these screenshots show live data"));
 	}
 
 	const { config } = ctx;
@@ -198,10 +204,16 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 	const { reference, why } = findReference(ctx.paths, ctx.version.key, rev);
 	if (reference) console.log(pc.dim(`  carrying over from ${reference.meta.key}`));
 	else console.log(pc.dim(`  capturing everything: ${why}`));
+	const slugs = ctx.pages.map((page) => page.filename.replace(/\.png$/i, ""));
+	const state = await StateSession.open(ctx.paths, config, ctx.version.key, rev, slugs, ctx.rerecord ?? null);
+	if (state) {
+		const from = state.from ? `replaying recorded state from ${state.from}` : "recording state (no earlier Recording)";
+		console.log(pc.dim(`  ${state.names.join(", ")}: ${from}`));
+		if (state.from && !state.diffed) console.log(pc.yellow(`  can't diff against ${state.from}, so every unit of state runs live`));
+	}
 
 	const staging = path.join(ctx.paths.versions, `.${ctx.version.key}.${process.pid}`);
 	fs.rmSync(staging, { recursive: true, force: true });
-	const slugs = ctx.pages.map((page) => page.filename.replace(/\.png$/i, ""));
 	const jobs: PageJob[] = ctx.pages.map((page, i) => ({
 		url: page.url,
 		output: path.join(staging, slugs[i], PAGE_IMAGE),
@@ -209,7 +221,7 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 	}));
 	const extractJs = extractScript(config.match.attributes, config.styles.properties, config.includeHidden);
 	const fingerprintJs = fingerprintScript(config.cheatMode.ignoreAttributes);
-	const settings = jobs.map((job, i) => settingsHash(ctx, job, extractJs, scale, auth, ctx.pages[i].url));
+	const settings = jobs.map((job, i) => settingsHash(ctx, job, extractJs, scale, auth, ctx.pages[i].url, state?.identity ?? null));
 	// Fingerprints are kept against the script that took them, so a changed ignore list never matches.
 	const stored = (fp: string) => hashOf([fingerprintJs, fp]);
 	const opts = matchOptions(config.match);
@@ -336,12 +348,19 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 				cheat: ctx.cheat && Boolean(reference),
 				knownUrls: ctx.pages.map((p) => p.url),
 				changedSelectors: reference?.changedSelectors ?? [],
+				hooks: state?.hooks(),
 			},
 			onEvent,
 		);
 	} catch (err) {
 		fs.rmSync(staging, { recursive: true, force: true });
 		throw err;
+	}
+
+	if (state) {
+		slugs.forEach((slug, i) => {
+			if (produced.includes(`${slug}/${PAGE_IMAGE}`)) state.write(i, path.join(staging, slug));
+		});
 	}
 
 	// Swap the finished capture in, replacing any earlier one under this key.
@@ -361,6 +380,14 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 		console.log(pc.yellow(`  Couldn't read CSS rules on ${noStyles.length} page(s); visual changes there can't be traced to CSS.`));
 	}
 	maps.summarize();
+	if (state) {
+		const t = state.totals();
+		const parts = [`${t.replayed} unit(s) replayed`, `${t.new} recorded new`, t.changed && `${t.changed} live because their code changed`, t.notRecorded && `${t.notRecorded} left live (not recordable)`];
+		console.log(pc.dim(`  state: ${parts.filter(Boolean).join(", ")}`));
+		slugs.forEach((slug, i) => {
+			for (const note of state.notes(i)) console.log(pc.yellow(`  ${slug}: ${note}`));
+		});
+	}
 
 	console.log(pc.dim(`  ${elementCount} elements recorded (cropped from each page screenshot on demand)`));
 	const summary = [
@@ -370,7 +397,11 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 	].filter(Boolean);
 	console.log(pc.dim(`  ${[...summary, `${((Date.now() - started) / 1000).toFixed(1)}s`].join(" · ")}`));
 	const styleMaps = maps.all();
-	writeMeta(ctx.paths, { ...metaFromInfo(ctx.version, config.baseUrl, ctx.pages.length, rev), ...(styleMaps.length ? { styleMaps } : {}) });
+	writeMeta(ctx.paths, {
+		...metaFromInfo(ctx.version, config.baseUrl, ctx.pages.length, rev),
+		...(styleMaps.length ? { styleMaps } : {}),
+		...(state ? { state: state.identity } : {}),
+	});
 	return { produced, missing, exitCode: 0 };
 }
 
@@ -507,7 +538,15 @@ function sameUrl(a: string, b: string): boolean {
  * Everything that decides what a capture of a page holds. A reference page
  * captured with different settings is never carried over.
  */
-function settingsHash(ctx: CaptureContext, job: PageJob, extractJs: string, scale: number, auth: string | undefined, url: string): string {
+function settingsHash(
+	ctx: CaptureContext,
+	job: PageJob,
+	extractJs: string,
+	scale: number,
+	auth: string | undefined,
+	url: string,
+	state: string | null,
+): string {
 	let authState: string | null = null;
 	try {
 		authState = auth ? fs.readFileSync(auth, "utf8") : null;
@@ -527,6 +566,8 @@ function settingsHash(ctx: CaptureContext, job: PageJob, extractJs: string, scal
 		waitFor: job.waitFor ?? null,
 		auth: authState && hashOf(authState),
 		url,
+		// Replayed state decides what's rendered.
+		state,
 	});
 }
 
@@ -586,7 +627,7 @@ function addComponents(nodes: ElementNode[], components: Map<ElementNode, Compon
 }
 
 /** Snapshot the files this capture was taken from, so it can be diffed at them later. */
-function captureRev(ctx: CaptureContext): string | null {
+export function captureRev(ctx: CaptureContext): string | null {
 	return ctx.version.fromGit ? snapshotTree(ctx.paths.root, ctx.version.key) : null;
 }
 
@@ -622,5 +663,46 @@ export async function shoot(opts: ShootOptions): Promise<number> {
 	}
 	console.log(pc.dim(`  saved to ${path.relative(ctx.paths.root, ctx.outputDir)}`));
 
+	return result.missing.length > 0 ? 1 : 0;
+}
+
+export interface RerecordOptions extends ShootOptions {
+	/** URL paths of the pages to re-record (all when empty). */
+	pages?: string[];
+	/** `plugin` or `plugin:text`: only that plugin's units, with `text` in their id. */
+	unit?: string;
+}
+
+/**
+ * Re-capture the current commit's Version with recorded state taken afresh
+ * from the running app instead of replayed. Its screenshots and Recording are
+ * replaced together, since they have to agree, and the next review diffs
+ * against the new data. Produces no review of its own.
+ */
+export async function rerecord(opts: RerecordOptions): Promise<number> {
+	const ctx = await prepareCapture({ ...opts, cheat: false });
+	if (!ctx.config.plugins.length) throw new Error("No state plugins are configured (`plugins` in tunnelvision.json), so there's nothing to re-record.");
+	if (!ctx.byElement) throw new Error("State plugins don't run with --only-pages yet.");
+	let pages: Set<string> | null = null;
+	if (opts.pages?.length) {
+		const byPath = new Map(ctx.pages.map((p) => [p.pathAndQuery, p.filename.replace(/\.png$/i, "")]));
+		const unknown = opts.pages.filter((p) => !byPath.has(p));
+		if (unknown.length) throw new Error(`No page at ${unknown.join(", ")}. Pages: ${[...byPath.keys()].join(", ")}`);
+		pages = new Set(opts.pages.map((p) => byPath.get(p)!));
+	}
+	const [plugin, ...rest] = opts.unit ? opts.unit.split(":") : [];
+	ctx.rerecord = { pages, plugin: plugin || null, text: rest.length ? rest.join(":") : null };
+	await assertReachable(ctx.config.baseUrl);
+	const what = [pages ? `${pages.size} page(s)` : "every page", plugin ? `${plugin} units${ctx.rerecord.text ? ` matching ${ctx.rerecord.text}` : ""}` : "all units"];
+	console.log(pc.bold(`Re-recording state: ${what.join(", ")}`) + pc.dim(` → version ${ctx.version.key}`));
+	logSource(ctx);
+	const result = await runCapture(ctx);
+	console.log("");
+	console.log(pc.green(`  ✓ ${result.produced.length} captured`));
+	if (result.missing.length > 0) {
+		console.log(pc.red(`  ✗ ${result.missing.length} failed:`));
+		for (const m of result.missing) console.log(pc.red(`      ${m}`));
+	}
+	console.log(pc.dim(`  saved to ${path.relative(ctx.paths.root, ctx.outputDir)}; the next review diffs against this data`));
 	return result.missing.length > 0 ? 1 : 0;
 }

@@ -11,7 +11,7 @@ import { resolvePaths } from "../paths.js";
 export async function cheat(opts) {
     const paths = resolvePaths(opts.root);
     const config = loadConfig(paths);
-    const current = environmentVersions(opts.root);
+    const current = environmentVersions(opts.root, config.plugins);
     if (opts.action === "on") {
         updateConfigFile(paths, (raw) => {
             raw.cheatMode = { ...config.cheatMode, ...(raw.cheatMode ?? {}), enabled: true, validatedWith: current };

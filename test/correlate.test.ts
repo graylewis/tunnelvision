@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { causeLocation, correlate, utilityClass, type CorrelateInput } from "../src/correlate.js";
+import { causeLocation, classTokens, correlate, utilityClass, type CorrelateInput } from "../src/correlate.js";
 import type { PageDiff } from "../src/diffengine.js";
 import type { ElementManifest, ElementNode, OwnImage } from "../src/elements.js";
 import type { FileChanges, Hunk } from "../src/git.js";
@@ -1112,4 +1112,28 @@ test("where an atom's boundary moved between versions, the larger atom is used",
 	assert.deepEqual(roles(["to"]), [["main/card/inner", "part", "main/card"]]);
 	assert.deepEqual(roles(["from"]), [["main/card/inner", "part", "main/card"]]);
 	assert.deepEqual(roles([]), [["main/card/inner", "atom", undefined]]);
+});
+
+test("a class's name in a comment or in prose isn't where the class was added", () => {
+	const result = gridSwap(".static", ".relative", {
+		"src/DataTable.tsx": {
+			added: [
+				[229, "  /** Border x relative to the table wrapper. */"],
+				[360, '        "relative overflow-hidden rounded-md",'],
+			],
+		},
+	});
+	assert.deepEqual(where(result), [["src/DataTable.tsx", 360, "RIGHT", "jsx"]]);
+});
+
+test("class tokens come from a line's strings, never its comments", () => {
+	assert.deepEqual(classTokens('<div className="relative grid" /> // relative to the page'), ["relative", "grid"]);
+	assert.deepEqual(classTokens("  /** Border x relative to the table wrapper. */"), []);
+	assert.deepEqual(classTokens(" * relative to the wrapper"), []);
+	// JSX text has no strings, so it counts whole, but its comments don't.
+	assert.deepEqual(classTokens("<p>It's relative {/* not hidden */}</p>"), ["<p>It", "s", "relative", "{}</p>"]);
+	assert.deepEqual(classTokens('className={`relative ${open ? "block" : "hidden"}`}'), ["relative", "${open", "?", "block", ":", "hidden", "}"]);
+	// The middle of a multi-line template literal has no quotes of its own.
+	assert.deepEqual(classTokens("    flex items-center"), ["flex", "items-center"]);
+	assert.deepEqual(classTokens('backgroundImage: "url(https://x.dev/a.png)",'), ["url(https://x.dev/a.png)"]);
 });

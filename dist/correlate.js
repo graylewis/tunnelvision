@@ -70,9 +70,54 @@ function gained(from, to) {
     }
     return [...out];
 }
-/** The tokens of a line of source that could be class names: runs between whitespace and quotes. */
-function tokens(text) {
-    return text.split(/[\s"'`]+/).filter(Boolean);
+/**
+ * The tokens of a line of source that could be class names. Class names are
+ * written in strings (`className="…"`, `cn("…")`, `cva(…)`), and utilities like
+ * `relative` or `hidden` are also English words, so on a line with string
+ * literals only their contents count, and comments never do. A line with no
+ * strings, like the middle of a multi-line template literal, counts whole.
+ */
+export function classTokens(text) {
+    const trimmed = text.trim();
+    // Inside a block comment, or opening one that runs onto later lines.
+    if (trimmed.startsWith("*") || (trimmed.startsWith("/*") && !trimmed.includes("*/")))
+        return [];
+    let code = "";
+    const strings = [];
+    let quote = null;
+    let current = "";
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (quote) {
+            if (ch === "\\")
+                current += text[++i] ?? "";
+            else if (ch === quote) {
+                strings.push(current);
+                [current, quote] = ["", null];
+            }
+            else
+                current += ch;
+        }
+        else if (ch === '"' || ch === "`" || (ch === "'" && !/[\p{L}\p{N}]/u.test(text[i - 1] ?? ""))) {
+            // An apostrophe inside a word (JSX text like "it's") doesn't open a string.
+            quote = ch;
+        }
+        else if (ch === "/" && text[i + 1] === "/") {
+            break;
+        }
+        else if (ch === "/" && text[i + 1] === "*") {
+            const end = text.indexOf("*/", i + 2);
+            if (end < 0)
+                break;
+            i = end + 1;
+        }
+        else
+            code += ch;
+    }
+    // A string still open at the end of the line continues onto the next.
+    if (quote)
+        strings.push(current);
+    return (strings.length ? strings.join(" ") : code).split(/[\s"'`]+/).filter(Boolean);
 }
 /** `\:` to `:`, `\32 ` to `2`: a CSS identifier as written in markup. */
 function unescapeCss(ident) {
@@ -161,7 +206,7 @@ export function correlate(input) {
     const tokenCounts = (lines) => {
         const out = new Map();
         for (const text of lines.values())
-            for (const t of tokens(text))
+            for (const t of classTokens(text))
                 out.set(t, (out.get(t) ?? 0) + 1);
         return out;
     };
@@ -172,7 +217,7 @@ export function correlate(input) {
                 continue;
             const net = (t) => (counts[side].get(t) ?? 0) > (counts[other].get(t) ?? 0);
             for (const [line, text] of lines)
-                sourceLines[side].push({ path: sidePath, line, text, words: new Set(words(text)), swapped: new Set(tokens(text).filter(net)) });
+                sourceLines[side].push({ path: sidePath, line, text, words: new Set(words(text)), swapped: new Set(classTokens(text).filter(net)) });
         }
     }
     const diffByTo = new Map();

@@ -171,7 +171,7 @@ Cheat mode makes captures several times faster: a page whose *render fingerprint
    tunnelvision diff <noise-key> <test-key> --report .tunnelvision/normal-report.json
    ```
    The cheat capture's output says how many pages it carried over; a planted change on a carried-over page is a miss.
-4. **Compare the two reports.** Cheat mode passes when, for every manifest row, it reports the same changed elements (`pages[]` entries whose `status` isn't `unchanged`) and the same Causes (`correlation.causes[]`: `path`, `line`, `side`) as normal mode. Normal mode re-captures every page, so it can also report noise that cheat mode doesn't (an element still animating on a page with no planted change); confirm each such entry is noise by the signatures in `/test-tunnelvision` step 5 and leave it out. Anything a planted change caused that only normal mode reports is a failure, and so is anything only cheat mode reports.
+4. **Compare the two reports.** Cheat mode passes when, for every manifest row, it reports the same changed elements (`images[]` entries whose `status` isn't `unchanged`) and the same Causes (`correlation.causes[]`: `path`, `line`, `side`) as normal mode. Normal mode re-captures every page, so it can also report noise that cheat mode doesn't (an element still animating on a page with no planted change); confirm each such entry is noise by the signatures in `/test-tunnelvision` step 5 and leave it out. Anything a planted change caused that only normal mode reports is a failure, and so is anything only cheat mode reports.
 5. **Decide.** If it passes:
    ```sh
    tunnelvision cheat on

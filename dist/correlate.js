@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { classify } from "./atoms.js";
+import { holdsStyleBlocks, styleBlockSpans } from "./changedrules.js";
 import { IMAGES_VERSION, STYLE_MANIFEST } from "./elements.js";
 import { publicDir } from "./fileroutes.js";
-import { changedLines, isGitRepo, repoPrefix, topLevel } from "./git.js";
+import { changedLines, fileAt, isGitRepo, repoPrefix, topLevel } from "./git.js";
 import { imageFiles, imageName } from "./imagesource.js";
 import { realpath } from "./reactsource.js";
 import { LineMapper } from "./remap.js";
@@ -202,6 +203,8 @@ export function correlate(input) {
             ? Boolean(added.get(p)?.has(line))
             : Boolean(deleted.get(p)?.lines.has(line));
     const targetPath = (side, p) => (side === "RIGHT" ? p : (deleted.get(p)?.path ?? p));
+    /** A changed line inside a `<style>` block of a file that has them. */
+    const inStyleBlock = (side, p, line) => (input.styleBlocks?.[side].get(p) ?? []).some(([start, end]) => line >= start && line <= end);
     const sourceLines = { LEFT: [], RIGHT: [] };
     const tokenCounts = (lines) => {
         const out = new Map();
@@ -216,8 +219,11 @@ export function correlate(input) {
             if (STYLESHEET.test(sidePath))
                 continue;
             const net = (t) => (counts[side].get(t) ?? 0) > (counts[other].get(t) ?? 0);
-            for (const [line, text] of lines)
+            for (const [line, text] of lines) {
+                if (inStyleBlock(side, sidePath, line))
+                    continue;
                 sourceLines[side].push({ path: sidePath, line, text, words: new Set(words(text)), swapped: new Set(classTokens(text).filter(net)) });
+            }
         }
     }
     const diffByTo = new Map();
@@ -929,12 +935,15 @@ export function correlate(input) {
     const used = new Set([...causes.values()].map((c) => `${c.side}:${c.path}:${c.line}`));
     const invisible = [];
     const inRule = (side, p, line) => (ruleLines[side].get(p) ?? []).some(([start, end]) => line >= start && line <= end);
-    const stylesheet = (p) => STYLESHEET.test(p) || ruleLines.LEFT.has(p) || ruleLines.RIGHT.has(p);
+    // In a file whose `<style>` blocks are known, only lines inside them are CSS.
+    const cssLine = (side, p, line) => input.styleBlocks?.[side].has(p)
+        ? inStyleBlock(side, p, line)
+        : STYLESHEET.test(p) || ruleLines.LEFT.has(p) || ruleLines.RIGHT.has(p);
     for (const [p, c] of input.changes) {
         for (const [side, lines, sidePath] of [["RIGHT", c.added, p], ["LEFT", c.deleted, c.oldPath]]) {
-            if (!stylesheet(sidePath))
-                continue;
             for (const line of lines.keys()) {
+                if (!cssLine(side, sidePath, line))
+                    continue;
                 if (used.has(`${side}:${p}:${line}`) || (side === "LEFT" && absorbed.has(`${sidePath}:${line}`)))
                     continue;
                 invisible.push({ path: p, line, side, reason: inRule(side, sidePath, line) ? "no-effect" : "not-exercised" });
@@ -964,21 +973,25 @@ export function correlationPages(report, fromDir, toDir) {
 export function correlateVersions(paths, report, atomComponents) {
     if (!report.pairs?.size)
         return { skipped: "no per-element captures on both sides" };
-    const changes = versionChanges(paths, report.from, report.to);
+    const revs = versionRevs(paths, report.from, report.to);
+    if ("skipped" in revs)
+        return revs;
+    const changes = revChanges(paths, revs);
     if ("skipped" in changes)
         return changes;
     return correlate({
         pages: correlationPages(report, versionDir(paths, report.from), versionDir(paths, report.to)),
-        diffs: report.pages,
+        diffs: report.images,
         changes,
         root: realpath(paths.root),
         top: realpath(topLevel(paths.root) ?? paths.root),
         publicDir: publicDir(paths.root),
         atomComponents,
+        styleBlocks: changedStyleBlocks(paths, changes, revs),
     });
 }
-/** Lines changed between the files versions `from` and `to` were captured from, or why they can't be known. */
-export function versionChanges(paths, from, to) {
+/** The commits versions `from` and `to` were captured from, or why they can't be known. */
+function versionRevs(paths, from, to) {
     if (!isGitRepo(paths.root))
         return { skipped: "not a git repository" };
     const [fromRev, toRev] = [from, to].map((key) => {
@@ -988,7 +1001,29 @@ export function versionChanges(paths, from, to) {
     if (!fromRev || !toRev) {
         return { skipped: "a version was captured from uncommitted changes before snapshots existed; re-capture it" };
     }
-    return changedLines(paths.root, fromRev, toRev) ?? { skipped: `couldn't diff ${fromRev.slice(0, 7)}..${toRev.slice(0, 7)}` };
+    return { from: fromRev, to: toRev };
+}
+function revChanges(paths, revs) {
+    return changedLines(paths.root, revs.from, revs.to) ?? { skipped: `couldn't diff ${revs.from.slice(0, 7)}..${revs.to.slice(0, 7)}` };
+}
+/** Lines changed between the files versions `from` and `to` were captured from, or why they can't be known. */
+export function versionChanges(paths, from, to) {
+    const revs = versionRevs(paths, from, to);
+    return "skipped" in revs ? revs : revChanges(paths, revs);
+}
+/** Where the `<style>` blocks are in changed files that can hold them, on each side (see `CorrelateInput.styleBlocks`). */
+function changedStyleBlocks(paths, changes, revs) {
+    const out = { LEFT: new Map(), RIGHT: new Map() };
+    for (const [p, c] of changes) {
+        for (const [side, rev, file, lines] of [["RIGHT", revs.to, p, c.added], ["LEFT", revs.from, c.oldPath, c.deleted]]) {
+            if (lines.size === 0 || !holdsStyleBlocks(file))
+                continue;
+            const text = fileAt(paths.root, rev, file);
+            if (text !== null)
+                out[side].set(file, styleBlockSpans(text));
+        }
+    }
+    return out;
 }
 /** Carries source lines of version `from` over to version `to`, for matching their elements; null when that isn't possible. */
 export function versionMapper(paths, from, to) {

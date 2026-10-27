@@ -174,6 +174,8 @@ export function problemReason(problem) {
     switch (problem) {
         case "no-map":
             return "its stylesheet has no source map";
+        case "not-in-file":
+            return "its <style> block isn't in the file as written";
         case "missing-source":
             return "its source map names a file that isn't on disk";
         case "postcss-output":
@@ -199,6 +201,8 @@ export function describeCheck(check, context) {
     switch (check.problem) {
         case "no-map":
             return `${what} has no source map and isn't a file line for line${offer}`;
+        case "not-in-file":
+            return `${what} has a <style> block that isn't in the file as written (a template, or HTML the server rewrote)`;
         case "missing-source":
             return `${what}: its source map names files that aren't on disk${detail}`;
         case "postcss-output":

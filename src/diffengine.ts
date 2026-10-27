@@ -21,9 +21,9 @@ import { readRedirect } from "./carryover.js";
 import { rendererDifference, type Renderer } from "./renderer.js";
 import type { LineMapper } from "./remap.js";
 
-export type PageStatus = "unchanged" | "changed" | "added" | "removed" | "size-mismatch" | "error";
+export type ImageStatus = "unchanged" | "changed" | "added" | "removed" | "size-mismatch" | "error";
 
-export interface PageDiff {
+export interface ImageDiff {
 	/** Relative path of the image: the target's, or the baseline's when removed. */
 	filename: string;
 	/** The baseline's path, when an element was matched at a different path. */
@@ -32,7 +32,7 @@ export interface PageDiff {
 	matchedBy?: MatchedBy;
 	/** The element's baseline partner sits under a different parent. */
 	moved?: boolean;
-	status: PageStatus;
+	status: ImageStatus;
 	/** Percentage of mismatched pixels (0-100), when a pixel diff ran. */
 	diffPercent?: number;
 	mismatchedPixels?: number;
@@ -47,7 +47,7 @@ export interface PageDiff {
 export interface DiffReport {
 	from: string;
 	to: string;
-	pages: PageDiff[];
+	images: ImageDiff[];
 	changedCount: number;
 	addedCount: number;
 	removedCount: number;
@@ -168,7 +168,7 @@ function hasImage(p: ElementPage, node: ElementNode): boolean {
 }
 
 /** Pixel-diff two image files, writing a diff image when they count as changed. */
-function diffImages(fromFile: string, toFile: string, outFile: string, entry: PageDiff, config: Config): PageDiff {
+function diffImages(fromFile: string, toFile: string, outFile: string, entry: ImageDiff, config: Config): ImageDiff {
 	try {
 		const a = fs.readFileSync(fromFile);
 		const b = fs.readFileSync(toFile);
@@ -213,7 +213,7 @@ export function countsAsChanged(mismatched: number, percent: number, maxDiffPerc
 }
 
 /** Pixel-diff one decoded image pair, writing a diff image when it counts as changed. */
-function diffPngs(a: PNG, b: PNG, outFile: string, entry: PageDiff, config: Config): PageDiff {
+function diffPngs(a: PNG, b: PNG, outFile: string, entry: ImageDiff, config: Config): ImageDiff {
 	try {
 		if (a.width !== b.width || a.height !== b.height) {
 			return {
@@ -278,7 +278,7 @@ export function diffVersions(
 ): DiffReport {
 	const fromFiles = listPngs(fromDir);
 	const toFiles = listPngs(toDir);
-	const pages: PageDiff[] = [];
+	const images: ImageDiff[] = [];
 	fs.mkdirSync(outDir, { recursive: true });
 
 	const abs = (dir: string, rel: string) => path.join(dir, ...rel.split("/"));
@@ -308,7 +308,7 @@ export function diffVersions(
 			: rb
 				? `now redirects to ${where(rb)}`
 				: `no longer redirects to ${where(ra as { url: string })}`;
-		pages.push({ filename: `${slug}/${PAGE_IMAGE}`, status: "changed", message });
+		images.push({ filename: `${slug}/${PAGE_IMAGE}`, status: "changed", message });
 	}
 
 	for (const slug of pageSlugs) {
@@ -334,11 +334,11 @@ export function diffVersions(
 					doneTo.add(own);
 					const partner = match.toFrom.get(n);
 					if (!partner) {
-						if (hasImage(pageB, n)) pages.push({ filename: own, status: "added", message: "new element" });
+						if (hasImage(pageB, n)) images.push({ filename: own, status: "added", message: "new element" });
 					} else {
 						const other = rel(partner);
 						doneFrom.add(other);
-						const entry: PageDiff = {
+						const entry: ImageDiff = {
 							filename: own,
 							status: "unchanged",
 							matchedBy: match.matchedBy.get(n),
@@ -350,7 +350,7 @@ export function diffVersions(
 						if (sameImage && rectFrom && rectTo && sameRect(rectFrom, rectTo)) {
 							// The same pixels from the same screenshot.
 							const total = rectTo.width * rectTo.height;
-							pages.push({ ...entry, diffPercent: 0, mismatchedPixels: 0, totalPixels: total });
+							images.push({ ...entry, diffPercent: 0, mismatchedPixels: 0, totalPixels: total });
 							visit(n.children, side);
 							continue;
 						}
@@ -359,10 +359,10 @@ export function diffVersions(
 						const inFrom = Boolean(imgFrom);
 						const inTo = Boolean(imgTo);
 						if (imgFrom && imgTo) {
-							pages.push(diffPngs(imgFrom, imgTo, abs(outDir, own), entry, config));
+							images.push(diffPngs(imgFrom, imgTo, abs(outDir, own), entry, config));
 						} else if (inFrom || inTo) {
 							// The element exists on both sides but one screenshot is missing.
-							pages.push({
+							images.push({
 								...entry,
 								status: inTo ? "added" : "removed",
 								message: `screenshot missing in ${inTo ? "baseline" : "target"}`,
@@ -371,7 +371,7 @@ export function diffVersions(
 					}
 				} else if (!match.fromTo.has(n)) {
 					doneFrom.add(own);
-					if (hasImage(pageA, n)) pages.push({ filename: own, status: "removed", message: "element no longer present" });
+					if (hasImage(pageA, n)) images.push({ filename: own, status: "removed", message: "element no longer present" });
 				}
 				visit(n.children, side);
 			}
@@ -386,27 +386,27 @@ export function diffVersions(
 		const inFrom = fromFiles.has(filename) && !doneFrom.has(filename);
 		const inTo = toFiles.has(filename) && !doneTo.has(filename);
 		if (inFrom && !inTo) {
-			pages.push({ filename, status: "removed", message: "present in baseline only" });
+			images.push({ filename, status: "removed", message: "present in baseline only" });
 		} else if (!inFrom && inTo) {
-			pages.push({ filename, status: "added", message: "new page" });
+			images.push({ filename, status: "added", message: "new page" });
 		} else if (inFrom && inTo) {
-			pages.push(
+			images.push(
 				diffImages(abs(fromDir, filename), abs(toDir, filename), abs(outDir, filename), { filename, status: "unchanged" }, config),
 			);
 		}
 	}
-	pages.sort((x, y) => x.filename.localeCompare(y.filename));
+	images.sort((x, y) => x.filename.localeCompare(y.filename));
 
-	const changedCount = pages.filter(
+	const changedCount = images.filter(
 		(p) => p.status === "changed" || p.status === "size-mismatch" || p.status === "error",
 	).length;
-	const addedCount = pages.filter((p) => p.status === "added").length;
-	const removedCount = pages.filter((p) => p.status === "removed").length;
+	const addedCount = images.filter((p) => p.status === "added").length;
+	const removedCount = images.filter((p) => p.status === "removed").length;
 
 	const report: DiffReport = {
 		from: labels.from,
 		to: labels.to,
-		pages,
+		images,
 		changedCount,
 		addedCount,
 		removedCount,

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { decodedMappings, LEAST_UPPER_BOUND, originalPositionFor } from "@jridgewell/trace-mapping";
+import { styleBlocks } from "./changedrules.js";
 import { loadMapRef, realpath, rootRelative, toFilePath } from "./reactsource.js";
 import { MapChecker } from "./stylemaps.js";
 /**
@@ -43,10 +44,32 @@ export function sameLines(served, file) {
     return a.length === b.length && a.every((line, i) => line === b[i]);
 }
 /**
+ * The 0-based line of `file` a `<style>` block's text starts on: the block
+ * whose text is exactly the sheet's or, of several, the one starting where the
+ * browser says the sheet does. Null when no single block is the sheet.
+ */
+export function blockLine(file, sheet) {
+    // The HTML parser turns CRLF into LF before the browser sees the text.
+    const same = styleBlocks(file.replace(/\r\n/g, "\n")).filter((b) => b.css === sheet.text);
+    const block = same.length === 1 ? same[0] : same.find((b) => b.startLine - 1 === sheet.startLine);
+    return block ? block.startLine - 1 : null;
+}
+/** The file a URL's path names when it's a directory (`/`, `/docs/`) or an extensionless page: its `index.html`, or `<path>.html`. */
+function servedFile(file) {
+    try {
+        if (fs.statSync(file).isDirectory())
+            return path.join(file, "index.html");
+        return file;
+    }
+    catch {
+        return path.extname(file) === "" && fs.existsSync(`${file}.html`) ? `${file}.html` : file;
+    }
+}
+/**
  * Bumped when the locations found for the same sheets change, so rules
  * located the old way aren't carried over (see `settingsHash` in `shoot.ts`).
  */
-export const LOCATOR_VERSION = 3;
+export const LOCATOR_VERSION = 4;
 /** How a sheet is named in messages. */
 function sheetLabel(sheet, root) {
     if (sheet.devId)
@@ -63,7 +86,7 @@ export class StyleLocator {
     }
     async mapping(sheet) {
         const label = sheetLabel(sheet, this.root);
-        const file = sheet.devId ?? (/^(https?|file):\/\//.test(sheet.sourceURL) ? toFilePath(sheet.sourceURL, this.root) : null);
+        const file = sheet.devId ?? (/^(https?|file):\/\//.test(sheet.sourceURL) ? servedFile(toFilePath(sheet.sourceURL, this.root)) : null);
         if (sheet.sourceMapURL) {
             // An inline map's sources are relative to the CSS file, not the page a
             // <style> sits in (Astro puts dev CSS in the page's HTML), where
@@ -76,20 +99,28 @@ export class StyleLocator {
         }
         // Only a sheet known to be one of the project's files is the project's to fix; others (a CDN's, a library's <style>) just get counted.
         const own = file !== null && fs.existsSync(file) && !path.isAbsolute(rootRelative(file, this.root));
-        const none = {
-            mapping: { kind: "none", untraced: { file: own ? rootRelative(file, this.root) : label, problem: "no-map" } },
-            checks: [{ sheet: label, ...(own ? { file: rootRelative(file, this.root) } : {}), problem: "no-map" }],
-        };
-        // A <style> block written in an HTML document starts partway through it.
-        // One Vite put there (`devId`) holds just its file, so it can still match.
-        if (!file || (sheet.startLine > 0 && !sheet.devId))
-            return none;
+        const none = (problem) => ({
+            mapping: { kind: "none", untraced: { file: own ? rootRelative(file, this.root) : label, problem } },
+            checks: [{ sheet: label, ...(own ? { file: rootRelative(file, this.root) } : {}), problem }],
+        });
+        if (!file)
+            return none("no-map");
+        let text;
         try {
-            return sameLines(sheet.text, fs.readFileSync(file, "utf8")) ? { mapping: { kind: "file", path: file }, checks: [] } : none;
+            text = fs.readFileSync(file, "utf8");
         }
         catch {
-            return none;
+            return none("no-map");
         }
+        // A <style> block written in an HTML document starts partway through it.
+        // One Vite put there (`devId`) holds just its file, so it can match the whole file.
+        if (!sheet.devId && (sheet.startLine > 0 || (sheet.startColumn ?? 0) > 0)) {
+            const line = blockLine(text, sheet);
+            if (line !== null)
+                return { mapping: { kind: "block", path: file, line }, checks: [] };
+            return none(own ? "not-in-file" : "no-map");
+        }
+        return sameLines(sheet.text, text) ? { mapping: { kind: "file", path: file }, checks: [] } : none("no-map");
     }
     /** Check each file a sheet's map names. */
     async checkMap(map, sheet) {
@@ -164,6 +195,8 @@ export class StyleLocator {
             return { untraced: m.untraced };
         if (m.kind === "file")
             return { path: rootRelative(m.path, this.root), line: line + 1 };
+        if (m.kind === "block")
+            return { path: rootRelative(m.path, this.root), line: m.line + line + 1 };
         const at = this.copyPosition(m, line, column);
         if (!at)
             return null;

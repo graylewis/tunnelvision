@@ -24,6 +24,8 @@ import { rootRelative, toFilePath } from "./reactsource.js";
 export type MapProblem =
 	/** The sheet has no source map, and isn't its file line for line. */
 	| "no-map"
+	/** The sheet is a `<style>` block whose text isn't in its document's file as written (a template, or HTML the server rewrote). */
+	| "not-in-file"
 	/** The map names a file that isn't on disk. */
 	| "missing-source"
 	/** The map's copy is PostCSS's output for the file: the bundler dropped PostCSS's map. */
@@ -247,6 +249,8 @@ export function problemReason(problem: MapProblem): string {
 	switch (problem) {
 		case "no-map":
 			return "its stylesheet has no source map";
+		case "not-in-file":
+			return "its <style> block isn't in the file as written";
 		case "missing-source":
 			return "its source map names a file that isn't on disk";
 		case "postcss-output":
@@ -272,6 +276,8 @@ export function describeCheck(check: SheetCheck, context: { turbopack: boolean; 
 	switch (check.problem) {
 		case "no-map":
 			return `${what} has no source map and isn't a file line for line${offer}`;
+		case "not-in-file":
+			return `${what} has a <style> block that isn't in the file as written (a template, or HTML the server rewrote)`;
 		case "missing-source":
 			return `${what}: its source map names files that aren't on disk${detail}`;
 		case "postcss-output":

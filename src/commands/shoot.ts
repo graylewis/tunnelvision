@@ -514,6 +514,7 @@ async function probeStyleMaps(url: string, authFile: string | undefined, locator
 			sourceURL: href,
 			sourceMapURL: text.match(/\/\*[#@]\s*sourceMappingURL=([^\s*]+)\s*\*\/\s*$/)?.[1] ?? null,
 			startLine: 0,
+			startColumn: 0,
 			devId: null,
 			text,
 		};

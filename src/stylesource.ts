@@ -2,8 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { decodedMappings, LEAST_UPPER_BOUND, originalPositionFor, type TraceMap } from "@jridgewell/trace-mapping";
+import { styleBlocks } from "./changedrules.js";
 import { loadMapRef, realpath, rootRelative, toFilePath } from "./reactsource.js";
-import { MapChecker, type CssPipeline, type SheetCheck, type SourceVerdict, type Untraced } from "./stylemaps.js";
+import { MapChecker, type CssPipeline, type MapProblem, type SheetCheck, type SourceVerdict, type Untraced } from "./stylemaps.js";
 import type { RawDecl, RawRange, RawSheet, RawStyles, SourceLoc, StyleDecl, StyleRule } from "./styles.js";
 
 /**
@@ -15,7 +16,11 @@ import type { RawDecl, RawRange, RawSheet, RawStyles, SourceLoc, StyleDecl, Styl
  *      file as it is on disk right now. Plain CSS in Vite dev is served
  *      unchanged, and CSS Modules only rename classes, so class names are
  *      ignored in the comparison;
- *   3. not at all. Its rules still take part in the cascade, just without a
+ *   3. for a `<style>` block written in an HTML document, as the block in the
+ *      document's file whose text is exactly the sheet's. Found by its text
+ *      rather than where the browser says it starts, since a dev server that
+ *      injects into the HTML shifts every line after the injection;
+ *   4. not at all. Its rules still take part in the cascade, just without a
  *      source line.
  *
  * A map is only trusted as far as `stylemaps.ts` finds it points at the files
@@ -37,7 +42,14 @@ interface MapMapping {
 	sparse: boolean;
 }
 
-type SheetMapping = MapMapping | { kind: "file"; path: string } | { kind: "none"; untraced: Untraced };
+/** A `<style>` block in its document's file: `line` is the 0-based line its text starts on. */
+interface BlockMapping {
+	kind: "block";
+	path: string;
+	line: number;
+}
+
+type SheetMapping = MapMapping | { kind: "file"; path: string } | BlockMapping | { kind: "none"; untraced: Untraced };
 
 type Position = { path: string; line: number } | { untraced: Untraced } | null;
 
@@ -101,10 +113,32 @@ export function sameLines(served: string, file: string): boolean {
 }
 
 /**
+ * The 0-based line of `file` a `<style>` block's text starts on: the block
+ * whose text is exactly the sheet's or, of several, the one starting where the
+ * browser says the sheet does. Null when no single block is the sheet.
+ */
+export function blockLine(file: string, sheet: Pick<RawSheet, "text" | "startLine">): number | null {
+	// The HTML parser turns CRLF into LF before the browser sees the text.
+	const same = styleBlocks(file.replace(/\r\n/g, "\n")).filter((b) => b.css === sheet.text);
+	const block = same.length === 1 ? same[0] : same.find((b) => b.startLine - 1 === sheet.startLine);
+	return block ? block.startLine - 1 : null;
+}
+
+/** The file a URL's path names when it's a directory (`/`, `/docs/`) or an extensionless page: its `index.html`, or `<path>.html`. */
+function servedFile(file: string): string {
+	try {
+		if (fs.statSync(file).isDirectory()) return path.join(file, "index.html");
+		return file;
+	} catch {
+		return path.extname(file) === "" && fs.existsSync(`${file}.html`) ? `${file}.html` : file;
+	}
+}
+
+/**
  * Bumped when the locations found for the same sheets change, so rules
  * located the old way aren't carried over (see `settingsHash` in `shoot.ts`).
  */
-export const LOCATOR_VERSION = 3;
+export const LOCATOR_VERSION = 4;
 
 /** How a sheet is named in messages. */
 function sheetLabel(sheet: RawSheet, root: string): string {
@@ -125,7 +159,7 @@ export class StyleLocator {
 	private async mapping(sheet: RawSheet): Promise<{ mapping: SheetMapping; checks: SheetCheck[] }> {
 		const label = sheetLabel(sheet, this.root);
 		const file =
-			sheet.devId ?? (/^(https?|file):\/\//.test(sheet.sourceURL) ? toFilePath(sheet.sourceURL, this.root) : null);
+			sheet.devId ?? (/^(https?|file):\/\//.test(sheet.sourceURL) ? servedFile(toFilePath(sheet.sourceURL, this.root)) : null);
 		if (sheet.sourceMapURL) {
 			// An inline map's sources are relative to the CSS file, not the page a
 			// <style> sits in (Astro puts dev CSS in the page's HTML), where
@@ -137,18 +171,25 @@ export class StyleLocator {
 		}
 		// Only a sheet known to be one of the project's files is the project's to fix; others (a CDN's, a library's <style>) just get counted.
 		const own = file !== null && fs.existsSync(file) && !path.isAbsolute(rootRelative(file, this.root));
-		const none = {
-			mapping: { kind: "none", untraced: { file: own ? rootRelative(file, this.root) : label, problem: "no-map" } } as SheetMapping,
-			checks: [{ sheet: label, ...(own ? { file: rootRelative(file, this.root) } : {}), problem: "no-map" } as SheetCheck],
-		};
-		// A <style> block written in an HTML document starts partway through it.
-		// One Vite put there (`devId`) holds just its file, so it can still match.
-		if (!file || (sheet.startLine > 0 && !sheet.devId)) return none;
+		const none = (problem: MapProblem) => ({
+			mapping: { kind: "none", untraced: { file: own ? rootRelative(file, this.root) : label, problem } } as SheetMapping,
+			checks: [{ sheet: label, ...(own ? { file: rootRelative(file, this.root) } : {}), problem } as SheetCheck],
+		});
+		if (!file) return none("no-map");
+		let text: string;
 		try {
-			return sameLines(sheet.text, fs.readFileSync(file, "utf8")) ? { mapping: { kind: "file", path: file }, checks: [] } : none;
+			text = fs.readFileSync(file, "utf8");
 		} catch {
-			return none;
+			return none("no-map");
 		}
+		// A <style> block written in an HTML document starts partway through it.
+		// One Vite put there (`devId`) holds just its file, so it can match the whole file.
+		if (!sheet.devId && (sheet.startLine > 0 || (sheet.startColumn ?? 0) > 0)) {
+			const line = blockLine(text, sheet);
+			if (line !== null) return { mapping: { kind: "block", path: file, line }, checks: [] };
+			return none(own ? "not-in-file" : "no-map");
+		}
+		return sameLines(sheet.text, text) ? { mapping: { kind: "file", path: file }, checks: [] } : none("no-map");
 	}
 
 	/** Check each file a sheet's map names. */
@@ -216,6 +257,7 @@ export class StyleLocator {
 		if (!m) return null;
 		if (m.kind === "none") return { untraced: m.untraced };
 		if (m.kind === "file") return { path: rootRelative(m.path, this.root), line: line + 1 };
+		if (m.kind === "block") return { path: rootRelative(m.path, this.root), line: m.line + line + 1 };
 		const at = this.copyPosition(m, line, column);
 		if (!at) return null;
 		const copy = m.copies.get(at.source);

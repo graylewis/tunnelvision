@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { causeLocation, classTokens, correlate, utilityClass, type CorrelateInput } from "../src/correlate.js";
-import type { PageDiff } from "../src/diffengine.js";
+import type { ImageDiff } from "../src/diffengine.js";
 import type { ElementManifest, ElementNode, OwnImage } from "../src/elements.js";
 import type { FileChanges, Hunk } from "../src/git.js";
 import type { ElementMatch } from "../src/matching.js";
@@ -146,8 +146,8 @@ function input(opts: {
 		scale: 1,
 		elements,
 	});
-	const diffs: PageDiff[] = [
-		...all(b).map((n): PageDiff => ({
+	const diffs: ImageDiff[] = [
+		...all(b).map((n): ImageDiff => ({
 			filename: `index/${n.dir}/element.png`,
 			status: onlyB.has(n.dir) ? "added" : (opts.changed[n.dir] ?? "unchanged"),
 			mismatchedPixels: opts.changed[n.dir] ? 50 : 0,
@@ -155,7 +155,7 @@ function input(opts: {
 		})),
 		...all(a)
 			.filter((n) => onlyA.has(n.dir))
-			.map((n): PageDiff => ({ filename: `index/${n.dir}/element.png`, status: "removed" })),
+			.map((n): ImageDiff => ({ filename: `index/${n.dir}/element.png`, status: "removed" })),
 	];
 	const lines = (ls: Line[] = []) => new Map(ls.map((l): [number, string] => (typeof l === "number" ? [l, ""] : l)));
 	const changes = new Map<string, FileChanges>(
@@ -1136,4 +1136,42 @@ test("class tokens come from a line's strings, never its comments", () => {
 	// The middle of a multi-line template literal has no quotes of its own.
 	assert.deepEqual(classTokens("    flex items-center"), ["flex", "items-center"]);
 	assert.deepEqual(classTokens('backgroundImage: "url(https://x.dev/a.png)",'), ["url(https://x.dev/a.png)"]);
+});
+
+// `<style>` blocks in an HTML page: index.html's block spans lines 4–12, and the rest of the file is markup.
+const pageBlocks = (): CorrelateInput["styleBlocks"] => ({ LEFT: new Map([["index.html", [[4, 12]]]]), RIGHT: new Map([["index.html", [[4, 12]]]]) });
+const pageRule = (line: number, value: string): StyleRule => ({
+	selector: ".card",
+	loc: { path: "index.html", line, endLine: line },
+	decls: [{ name: "color", value, loc: { path: "index.html", line } }],
+});
+
+test("in an HTML page, changed lines inside <style> blocks are CSS and the markup around them isn't", () => {
+	const color = (value: string) => ({ computed: { color: value }, winners: { color: winner(0) } });
+	const result = correlate({
+		...input({
+			from: { rules: [pageRule(6, "black")], elements: { "main/card": color("black") } },
+			to: { rules: [pageRule(6, "navy")], elements: { "main/card": color("navy") } },
+			changed: { "main/card": "changed" },
+			changes: { "index.html": { added: [6, 9, 40], deleted: [6, 41] } },
+		}),
+		styleBlocks: pageBlocks(),
+	});
+	assert.deepEqual(where(result), [["index.html", 6, "RIGHT", "declaration"]]);
+	assert.deepEqual(
+		result.invisible.map((i) => [i.path, i.line, i.side, i.reason]),
+		[["index.html", 9, "RIGHT", "not-exercised"]],
+	);
+});
+
+test("copy isn't looked for inside a page's <style> blocks", () => {
+	const opts = {
+		from: { rules: [], elements: {} },
+		to: { rules: [], elements: {} },
+		changed: { "main/card": "changed" as const },
+		text: { "main/card": ["Save changes", "Save draft"] as [string, string] },
+		changes: { "index.html": { added: [[7, '\t\t\t.card::after { content: "Save draft"; }'] as [number, string]] } },
+	};
+	assert.deepEqual(where(correlate(input(opts))), [["index.html", 7, "RIGHT", "content"]]);
+	assert.deepEqual(where(correlate({ ...input(opts), styleBlocks: pageBlocks() })), []);
 });

@@ -71,9 +71,65 @@ test("a Vite <style> inside a page's HTML matches its file line for line", async
 	assert.deepEqual(rules[0].loc, { path: "src/styles/global.css", line: 4, endLine: 4 });
 });
 
-test("a <style> written in the HTML itself isn't matched to a file", async () => {
-	const { root, styles } = project();
-	const { checks } = await new StyleLocator(root).rules(styles({ devId: null, sourceURL: "http://localhost:4321/about" }));
+/** A static site whose pages hold `<style>` blocks, and a sheet the browser reports for one of them. */
+function page(html: string, file = "about.html") {
+	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "tv-styleblock-")));
+	fs.writeFileSync(path.join(root, file), html);
+	const styles = (text: string, sheet: Partial<RawStyles["sheets"][0]> = {}, ruleLine = 1): RawStyles => ({
+		sheets: [{ id: "s1", sourceURL: "http://localhost:5201/about.html", sourceMapURL: null, startLine: 3, startColumn: 8, devId: null, text, ...sheet }],
+		rules: [{ sheet: "s1", selector: ".card", selectorRange: range(ruleLine), styleRange: range(ruleLine), decls: [{ name: "color", value: "navy", range: range(ruleLine) }] }],
+		nodes: {},
+	});
+	return { root, styles };
+}
+
+const CARD = "\n\t\t.card {\n\t\t\tcolor: navy;\n\t\t}\n\t";
+const HTML = `<!DOCTYPE html>\n<html>\n<head>\n\t<style>${CARD}</style>\n</head>\n<body><div class="card">Hi</div></body>\n</html>\n`;
+
+test("a <style> written in an HTML page is traced to its lines in the page's file", async () => {
+	const { root, styles } = page(HTML);
+	const { rules, checks } = await new StyleLocator(root).rules(styles(CARD));
+	assert.deepEqual(checks, []);
+	// The block's text starts on line 4 (`<style>`), so its line 1 is the file's line 5.
+	assert.deepEqual(rules[0].loc, { path: "about.html", line: 5, endLine: 5 });
+	assert.deepEqual(rules[0].decls[0].loc, { path: "about.html", line: 5 });
+});
+
+test("a <style> block is found by its text when the dev server shifted the page's lines", async () => {
+	const { root, styles } = page(HTML);
+	// A script injected above the block: the browser says it starts three lines further down.
+	const { rules } = await new StyleLocator(root).rules(styles(CARD, { startLine: 6 }));
+	assert.deepEqual(rules[0].decls[0].loc, { path: "about.html", line: 5 });
+});
+
+test("of identical <style> blocks, the one starting where the browser says is chosen, and otherwise none", async () => {
+	const html = `<html>\n<head>\n<style>${CARD}</style>\n<style>${CARD}</style>\n</head>\n</html>\n`;
+	const { root, styles } = page(html);
+	const second = await new StyleLocator(root).rules(styles(CARD, { startLine: 7, startColumn: 7 }));
+	assert.deepEqual(second.rules[0].decls[0].loc, { path: "about.html", line: 9 });
+	const neither = await new StyleLocator(root).rules(styles(CARD, { startLine: 20 }));
+	assert.equal(neither.rules[0].decls[0].loc, null);
+	assert.deepEqual(neither.checks, [{ sheet: "inline <style>", file: "about.html", problem: "not-in-file" }]);
+});
+
+test("a <style> block that isn't in the file as written stays untraced, and says why", async () => {
+	const { root, styles } = page(HTML.replace("navy", "{{ brand }}"));
+	const { rules, checks } = await new StyleLocator(root).rules(styles(CARD));
+	assert.equal(rules[0].loc, null);
+	assert.deepEqual(rules[0].untraced, { file: "about.html", problem: "not-in-file" });
+	assert.deepEqual(checks, [{ sheet: "inline <style>", file: "about.html", problem: "not-in-file" }]);
+});
+
+test("a page served at a directory URL is its index.html", async () => {
+	const { root, styles } = page(HTML, "index.html");
+	const { rules, checks } = await new StyleLocator(root).rules(styles(CARD, { sourceURL: "http://localhost:5201/" }));
+	assert.deepEqual(checks, []);
+	assert.deepEqual(rules[0].decls[0].loc, { path: "index.html", line: 5 });
+});
+
+test("a <style> on a page that isn't one of the project's files is still just counted", async () => {
+	const { root, styles } = page(HTML);
+	const { checks } = await new StyleLocator(root).rules(styles(CARD, { sourceURL: "http://localhost:5201/elsewhere" }));
 	assert.deepEqual(checks, [{ sheet: "inline <style>", problem: "no-map" }]);
 });
 

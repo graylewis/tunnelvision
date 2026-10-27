@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { classify, type Role } from "./atoms.js";
+import { holdsStyleBlocks, styleBlockSpans } from "./changedrules.js";
 import type { AtomsConfig } from "./config.js";
-import type { DiffReport, PageDiff, PageStatus } from "./diffengine.js";
+import type { DiffReport, ImageDiff, ImageStatus } from "./diffengine.js";
 import { IMAGES_VERSION, STYLE_MANIFEST, type ElementManifest, type ElementNode, type OwnImage } from "./elements.js";
 import { publicDir } from "./fileroutes.js";
-import { changedLines, isGitRepo, repoPrefix, topLevel, type FileChanges } from "./git.js";
+import { changedLines, fileAt, isGitRepo, repoPrefix, topLevel, type FileChanges } from "./git.js";
 import { imageFiles, imageName } from "./imagesource.js";
 import type { ElementMatch } from "./matching.js";
 import { realpath, type ComponentSource } from "./reactsource.js";
@@ -87,7 +88,7 @@ export interface Effect {
 	dir: string;
 	/** Its path in the baseline, when it differs. */
 	fromDir?: string;
-	status: PageStatus;
+	status: ImageStatus;
 	/** Tracked properties whose values changed on the element. */
 	props: PropChange[];
 	via: EffectVia;
@@ -128,7 +129,7 @@ export interface UnexplainedChange {
 	page: string;
 	dir: string;
 	fromDir?: string;
-	status: PageStatus;
+	status: ImageStatus;
 	props: PropChange[];
 	/** Why no cause was found, when there's a hint (e.g. which rule took over). */
 	note?: string;
@@ -195,7 +196,7 @@ export interface CorrelatePage {
 export interface CorrelateInput {
 	pages: CorrelatePage[];
 	/** Element diffs from `diffVersions`. */
-	diffs: PageDiff[];
+	diffs: ImageDiff[];
 	/** Changed lines keyed by repository-relative path in the target. */
 	changes: Map<string, FileChanges>;
 	/** Project root, which rule and component paths are relative to. */
@@ -208,9 +209,15 @@ export interface CorrelateInput {
 	publicDir?: string;
 	/** Components whose root is an atom whatever it holds (`atoms.components` in config). */
 	atomComponents?: ReadonlySet<string>;
+	/**
+	 * The 1-based line spans of `<style>` blocks in changed files that can hold
+	 * them, per side, by repository path. Lines inside them are CSS; the rest
+	 * of the file is markup.
+	 */
+	styleBlocks?: Record<Side, Map<string, Array<[number, number]>>>;
 }
 
-const VISUAL: Set<PageStatus> = new Set(["changed", "size-mismatch"]);
+const VISUAL: Set<ImageStatus> = new Set(["changed", "size-mismatch"]);
 const STYLESHEET = /\.(css|scss|sass|less|styl|pcss|postcss)$/i;
 export const LAYOUT_PROPERTIES = new Set(["width", "height", "min-width", "min-height", "max-width", "max-height"]);
 /** Words too common to say which line some copy came from, unless nothing else changed. */
@@ -243,7 +250,7 @@ interface Changed {
 	node: ElementNode;
 	/** Target node, or the baseline's for removed elements. */
 	fromNode?: ElementNode;
-	status: PageStatus;
+	status: ImageStatus;
 	props: PropChange[];
 	/** Some property changed because its declaration did, or its content did on a changed line or file, so the change is the element's own. */
 	own: boolean;
@@ -433,7 +440,11 @@ export function correlate(input: CorrelateInput): Correlation {
 				: Boolean(deleted.get(p)?.lines.has(line));
 	const targetPath = (side: Side, p: string) => (side === "RIGHT" ? p : (deleted.get(p)?.path ?? p));
 
-	// Changed lines copy or class names could be on, with their words: anything but stylesheets.
+	/** A changed line inside a `<style>` block of a file that has them. */
+	const inStyleBlock = (side: Side, p: string, line: number) =>
+		(input.styleBlocks?.[side].get(p) ?? []).some(([start, end]) => line >= start && line <= end);
+
+	// Changed lines copy or class names could be on, with their words: anything but stylesheets and `<style>` blocks.
 	// `swapped` is the line's tokens the change added to its file (RIGHT) or removed from it (LEFT).
 	type SourceLine = { path: string; line: number; text: string; words: Set<string>; swapped: Set<string> };
 	const sourceLines: Record<Side, SourceLine[]> = { LEFT: [], RIGHT: [] };
@@ -447,12 +458,15 @@ export function correlate(input: CorrelateInput): Correlation {
 		for (const [side, other, lines, sidePath] of [["RIGHT", "LEFT", c.added, p], ["LEFT", "RIGHT", c.deleted, c.oldPath]] as const) {
 			if (STYLESHEET.test(sidePath)) continue;
 			const net = (t: string) => (counts[side].get(t) ?? 0) > (counts[other].get(t) ?? 0);
-			for (const [line, text] of lines) sourceLines[side].push({ path: sidePath, line, text, words: new Set(words(text)), swapped: new Set(classTokens(text).filter(net)) });
+			for (const [line, text] of lines) {
+				if (inStyleBlock(side, sidePath, line)) continue;
+				sourceLines[side].push({ path: sidePath, line, text, words: new Set(words(text)), swapped: new Set(classTokens(text).filter(net)) });
+			}
 		}
 	}
 
-	const diffByTo = new Map<string, PageDiff>();
-	const diffByFrom = new Map<string, PageDiff>();
+	const diffByTo = new Map<string, ImageDiff>();
+	const diffByFrom = new Map<string, ImageDiff>();
 	for (const d of input.diffs) (d.status === "removed" ? diffByFrom : diffByTo).set(d.filename, d);
 	const file = (page: string, dir: string) => `${page}/${dir}/element.png`;
 
@@ -682,7 +696,7 @@ export function correlate(input: CorrelateInput): Correlation {
 		};
 
 		/** Whether the changed pixels `d` recorded for `node` all lie inside `image`'s box. */
-		const changedInside = (d: PageDiff, node: ElementNode, image: OwnImage): boolean => {
+		const changedInside = (d: ImageDiff, node: ElementNode, image: OwnImage): boolean => {
 			const box = d.changedBox;
 			if (!box) return false;
 			const scale = page.to.manifest.scale || 1;
@@ -699,7 +713,7 @@ export function correlate(input: CorrelateInput): Correlation {
 		 * unknown, not changed. Captures made before own images were recorded
 		 * have nothing to compare.
 		 */
-		const traceImages = (entry: Changed, d: PageDiff, a: ElementNode, b: ElementNode): string | null => {
+		const traceImages = (entry: Changed, d: ImageDiff, a: ElementNode, b: ElementNode): string | null => {
 			if ((page.from.manifest.version ?? 0) < IMAGES_VERSION || (page.to.manifest.version ?? 0) < IMAGES_VERSION) return null;
 			const before = a.images ?? [];
 			const after = b.images ?? [];
@@ -780,7 +794,7 @@ export function correlate(input: CorrelateInput): Correlation {
 		};
 
 		const area = (n: ElementNode | undefined, scale: number) => (n ? Math.round(n.box.width * scale) * Math.round(n.box.height * scale) : 0);
-		const sizeOf = (d: PageDiff, a: ElementNode | undefined, b: ElementNode | undefined) =>
+		const sizeOf = (d: ImageDiff, a: ElementNode | undefined, b: ElementNode | undefined) =>
 			d.mismatchedPixels ?? Math.max(area(a, page.from.manifest.scale), area(b, page.to.manifest.scale));
 
 		walk(page.to.manifest.elements, (b) => {
@@ -1141,11 +1155,15 @@ export function correlate(input: CorrelateInput): Correlation {
 	const invisible: InvisibleChange[] = [];
 	const inRule = (side: Side, p: string, line: number) =>
 		(ruleLines[side].get(p) ?? []).some(([start, end]) => line >= start && line <= end);
-	const stylesheet = (p: string) => STYLESHEET.test(p) || ruleLines.LEFT.has(p) || ruleLines.RIGHT.has(p);
+	// In a file whose `<style>` blocks are known, only lines inside them are CSS.
+	const cssLine = (side: Side, p: string, line: number) =>
+		input.styleBlocks?.[side].has(p)
+			? inStyleBlock(side, p, line)
+			: STYLESHEET.test(p) || ruleLines.LEFT.has(p) || ruleLines.RIGHT.has(p);
 	for (const [p, c] of input.changes) {
 		for (const [side, lines, sidePath] of [["RIGHT", c.added, p], ["LEFT", c.deleted, c.oldPath]] as const) {
-			if (!stylesheet(sidePath)) continue;
 			for (const line of lines.keys()) {
+				if (!cssLine(side, sidePath, line)) continue;
 				if (used.has(`${side}:${p}:${line}`) || (side === "LEFT" && absorbed.has(`${sidePath}:${line}`))) continue;
 				invisible.push({ path: p, line, side, reason: inRule(side, sidePath, line) ? "no-effect" : "not-exercised" });
 			}
@@ -1178,21 +1196,24 @@ export function correlationPages(report: DiffReport, fromDir: string, toDir: str
  */
 export function correlateVersions(paths: Paths, report: DiffReport, atomComponents?: ReadonlySet<string>): Correlation | { skipped: string } {
 	if (!report.pairs?.size) return { skipped: "no per-element captures on both sides" };
-	const changes = versionChanges(paths, report.from, report.to);
+	const revs = versionRevs(paths, report.from, report.to);
+	if ("skipped" in revs) return revs;
+	const changes = revChanges(paths, revs);
 	if ("skipped" in changes) return changes;
 	return correlate({
 		pages: correlationPages(report, versionDir(paths, report.from), versionDir(paths, report.to)),
-		diffs: report.pages,
+		diffs: report.images,
 		changes,
 		root: realpath(paths.root),
 		top: realpath(topLevel(paths.root) ?? paths.root),
 		publicDir: publicDir(paths.root),
 		atomComponents,
+		styleBlocks: changedStyleBlocks(paths, changes, revs),
 	});
 }
 
-/** Lines changed between the files versions `from` and `to` were captured from, or why they can't be known. */
-export function versionChanges(paths: Paths, from: string, to: string): Map<string, FileChanges> | { skipped: string } {
+/** The commits versions `from` and `to` were captured from, or why they can't be known. */
+function versionRevs(paths: Paths, from: string, to: string): { from: string; to: string } | { skipped: string } {
 	if (!isGitRepo(paths.root)) return { skipped: "not a git repository" };
 	const [fromRev, toRev] = [from, to].map((key) => {
 		const meta = readMeta(paths, key);
@@ -1201,7 +1222,34 @@ export function versionChanges(paths: Paths, from: string, to: string): Map<stri
 	if (!fromRev || !toRev) {
 		return { skipped: "a version was captured from uncommitted changes before snapshots existed; re-capture it" };
 	}
-	return changedLines(paths.root, fromRev, toRev) ?? { skipped: `couldn't diff ${fromRev.slice(0, 7)}..${toRev.slice(0, 7)}` };
+	return { from: fromRev, to: toRev };
+}
+
+function revChanges(paths: Paths, revs: { from: string; to: string }): Map<string, FileChanges> | { skipped: string } {
+	return changedLines(paths.root, revs.from, revs.to) ?? { skipped: `couldn't diff ${revs.from.slice(0, 7)}..${revs.to.slice(0, 7)}` };
+}
+
+/** Lines changed between the files versions `from` and `to` were captured from, or why they can't be known. */
+export function versionChanges(paths: Paths, from: string, to: string): Map<string, FileChanges> | { skipped: string } {
+	const revs = versionRevs(paths, from, to);
+	return "skipped" in revs ? revs : revChanges(paths, revs);
+}
+
+/** Where the `<style>` blocks are in changed files that can hold them, on each side (see `CorrelateInput.styleBlocks`). */
+function changedStyleBlocks(
+	paths: Paths,
+	changes: Map<string, FileChanges>,
+	revs: { from: string; to: string },
+): Record<Side, Map<string, Array<[number, number]>>> {
+	const out: Record<Side, Map<string, Array<[number, number]>>> = { LEFT: new Map(), RIGHT: new Map() };
+	for (const [p, c] of changes) {
+		for (const [side, rev, file, lines] of [["RIGHT", revs.to, p, c.added], ["LEFT", revs.from, c.oldPath, c.deleted]] as const) {
+			if (lines.size === 0 || !holdsStyleBlocks(file)) continue;
+			const text = fileAt(paths.root, rev, file);
+			if (text !== null) out[side].set(file, styleBlockSpans(text));
+		}
+	}
+	return out;
 }
 
 /** Carries source lines of version `from` over to version `to`, for matching their elements; null when that isn't possible. */

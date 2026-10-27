@@ -49,7 +49,7 @@ export function buildDiff(paths, overrides, from, to) {
     // target, so removals are looked up separately.
     const byFile = new Map();
     const removedByFile = new Map();
-    for (const p of report.pages)
+    for (const p of report.images)
         (p.status === "removed" ? removedByFile : byFile).set(p.filename, p);
     const statusOf = (file, inFrom, inTo, removed = false) => {
         const d = removed ? removedByFile.get(file) : byFile.get(file);

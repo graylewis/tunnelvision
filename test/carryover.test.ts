@@ -323,7 +323,7 @@ test("diffVersions: a page that starts redirecting is one change", () => {
 		redirect(a, "product", "index");
 		redirect(b, "product", "index");
 		const report = diffVersions(a, b, path.join(root, "out"), DEFAULT_CONFIG, { from: "a", to: "b" }, null);
-		const notable = report.pages.filter((p) => p.status !== "unchanged");
+		const notable = report.images.filter((p) => p.status !== "unchanged");
 		assert.deepEqual(notable, [{ filename: "login/page.png", status: "changed", message: "now redirects to /index" }]);
 	} finally {
 		fs.rmSync(root, { recursive: true, force: true });

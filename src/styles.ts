@@ -37,8 +37,10 @@ export interface RawSheet {
 	id: string;
 	sourceURL: string;
 	sourceMapURL: string | null;
-	/** Where the sheet starts inside its document, for `<style>` blocks in HTML. */
+	/** Where the sheet starts inside its document (0-based), for `<style>` blocks in HTML. */
 	startLine: number;
+	/** The column on `startLine` it starts at; absent in captures from before it was recorded. */
+	startColumn?: number;
 	/** Vite dev's `data-vite-dev-id` on the owning `<style>`: an absolute file path. */
 	devId: string | null;
 	text: string;

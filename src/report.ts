@@ -2,9 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
 import { causeLocation, type Correlation, type Effect, type RenderSite, type UnexplainedChange } from "./correlate.js";
-import type { DiffReport, PageStatus } from "./diffengine.js";
+import type { DiffReport, ImageStatus } from "./diffengine.js";
+import { ELEMENT_IMAGE } from "./elements.js";
 
-const STATUS_STYLE: Record<PageStatus, (s: string) => string> = {
+const STATUS_STYLE: Record<ImageStatus, (s: string) => string> = {
 	unchanged: (s) => pc.dim(s),
 	changed: (s) => pc.yellow(s),
 	added: (s) => pc.green(s),
@@ -13,7 +14,7 @@ const STATUS_STYLE: Record<PageStatus, (s: string) => string> = {
 	error: (s) => pc.red(s),
 };
 
-const STATUS_LABEL: Record<PageStatus, string> = {
+const STATUS_LABEL: Record<ImageStatus, string> = {
 	unchanged: "unchanged",
 	changed: "CHANGED",
 	added: "added",
@@ -34,11 +35,11 @@ export function printReport(report: DiffReport): void {
 		console.log("");
 	}
 
-	const rows = report.pages.filter((p) => p.status !== "unchanged");
+	const rows = report.images.filter((p) => p.status !== "unchanged");
 	if (rows.length === 0) {
 		console.log(pc.green("  No visual changes detected."));
 	} else {
-		for (const p of report.pages) {
+		for (const p of report.images) {
 			if (p.status === "unchanged") continue;
 			const style = STATUS_STYLE[p.status];
 			const label = style(STATUS_LABEL[p.status].padEnd(9));
@@ -60,11 +61,15 @@ export function printReport(report: DiffReport): void {
 		console.log(pc.dim(`  Causes not traced: ${report.correlationSkipped}.`));
 	}
 
-	const unchanged = report.pages.filter((p) => p.status === "unchanged").length;
+	const unchanged = report.images.filter((p) => p.status === "unchanged").length;
+	// A page's image is `<slug>/page.png`, or `<slug>.png` with --only-pages; everything else is an element.
+	const elements = report.images.filter((p) => p.filename.endsWith(`/${ELEMENT_IMAGE}`)).length;
+	const pages = report.images.length - elements;
+	const compared = [plural(pages, "page"), elements > 0 && plural(elements, "element")].filter(Boolean).join(", ");
 	console.log("");
 	console.log(
 		pc.dim(
-			`  ${report.pages.length} pages  •  ${report.changedCount} changed  •  ` +
+			`  ${compared}  •  ${report.changedCount} changed  •  ` +
 				`${report.addedCount} added  •  ${report.removedCount} removed  •  ${unchanged} unchanged`,
 		),
 	);

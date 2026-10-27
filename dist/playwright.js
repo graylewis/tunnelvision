@@ -274,6 +274,7 @@ async function readStyles(page, tree, want) {
             sourceURL: h.sourceURL ?? "",
             sourceMapURL: h.sourceMapURL || null,
             startLine: h.startLine ?? 0,
+            startColumn: h.startColumn ?? 0,
             devId: owners.get(sid)?.["data-vite-dev-id"] ?? null,
             text,
         });

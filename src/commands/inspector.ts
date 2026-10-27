@@ -6,7 +6,7 @@ import pc from "picocolors";
 import { PNG } from "pngjs";
 import { applyOverrides, configExists, DEFAULT_CONFIG, loadConfig, type Overrides } from "../config.js";
 import { diffDir, resolvePaths, versionDir, type Paths } from "../paths.js";
-import { diffVersions, type DiffReport, type PageDiff, type PageStatus } from "../diffengine.js";
+import { diffVersions, type DiffReport, type ImageDiff, type ImageStatus } from "../diffengine.js";
 import { listVersions, versionExists } from "../versions.js";
 import { addCorrelation, versionMapper, type Correlation } from "../correlate.js";
 import { topLevel } from "../git.js";
@@ -49,7 +49,7 @@ export interface InspectorOptions extends Overrides {
 }
 
 /** Diff status of a node, plus `missing` when neither version has an image for it. */
-export type NodeStatus = PageStatus | "missing";
+export type NodeStatus = ImageStatus | "missing";
 
 export interface InspectorNode {
 	tag: string;
@@ -147,9 +147,9 @@ export function buildDiff(paths: Paths, overrides: Overrides, from: string, to: 
 	const report = addCorrelation(paths, diffVersions(fromDir, toDir, outDir, config, { from, to }, mapper), config.atoms);
 	// A removed element can share its path with a different element in the
 	// target, so removals are looked up separately.
-	const byFile = new Map<string, PageDiff>();
-	const removedByFile = new Map<string, PageDiff>();
-	for (const p of report.pages) (p.status === "removed" ? removedByFile : byFile).set(p.filename, p);
+	const byFile = new Map<string, ImageDiff>();
+	const removedByFile = new Map<string, ImageDiff>();
+	for (const p of report.images) (p.status === "removed" ? removedByFile : byFile).set(p.filename, p);
 
 	const statusOf = (file: string, inFrom: boolean, inTo: boolean, removed = false) => {
 		const d = removed ? removedByFile.get(file) : byFile.get(file);

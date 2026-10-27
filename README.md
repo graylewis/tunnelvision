@@ -399,7 +399,11 @@ visual changes each line caused.
   physical ones they map to, by the element's `writing-mode` and `direction`.
 - **Source lines** come from each stylesheet's source map, or, for CSS served
   unchanged (plain CSS, CSS Modules in Vite dev), from the file itself once
-  its text is confirmed to match. With Vite and PostCSS, Tailwind or Sass, set
+  its text is confirmed to match. A `<style>` block written in an HTML page
+  is found in the page's file (its `index.html` for a directory URL) the same
+  way, as the block with exactly its text, so a dev server injecting into the
+  page doesn't throw its lines off; a block that isn't in the file as written
+  (a template) stays untraced and says so. With Vite and PostCSS, Tailwind or Sass, set
   `css: { devSourcemap: true }`; `doctor` checks for it.
 - **Maps are checked** before they're trusted: every file a map names must
   be on disk, and the map's copy of it must be the file. `shoot` warns about

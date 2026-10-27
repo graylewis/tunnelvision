@@ -201,7 +201,7 @@ export function diffVersions(fromDir, toDir, outDir, config, labels,
 mapper) {
     const fromFiles = listPngs(fromDir);
     const toFiles = listPngs(toDir);
-    const pages = [];
+    const images = [];
     fs.mkdirSync(outDir, { recursive: true });
     const abs = (dir, rel) => path.join(dir, ...rel.split("/"));
     // Element screenshots already handled by identity matching.
@@ -234,7 +234,7 @@ mapper) {
             : rb
                 ? `now redirects to ${where(rb)}`
                 : `no longer redirects to ${where(ra)}`;
-        pages.push({ filename: `${slug}/${PAGE_IMAGE}`, status: "changed", message });
+        images.push({ filename: `${slug}/${PAGE_IMAGE}`, status: "changed", message });
     }
     for (const slug of pageSlugs) {
         const a = readElementManifest(path.join(fromDir, slug, ELEMENT_MANIFEST));
@@ -260,7 +260,7 @@ mapper) {
                     const partner = match.toFrom.get(n);
                     if (!partner) {
                         if (hasImage(pageB, n))
-                            pages.push({ filename: own, status: "added", message: "new element" });
+                            images.push({ filename: own, status: "added", message: "new element" });
                     }
                     else {
                         const other = rel(partner);
@@ -277,7 +277,7 @@ mapper) {
                         if (sameImage && rectFrom && rectTo && sameRect(rectFrom, rectTo)) {
                             // The same pixels from the same screenshot.
                             const total = rectTo.width * rectTo.height;
-                            pages.push({ ...entry, diffPercent: 0, mismatchedPixels: 0, totalPixels: total });
+                            images.push({ ...entry, diffPercent: 0, mismatchedPixels: 0, totalPixels: total });
                             visit(n.children, side);
                             continue;
                         }
@@ -286,11 +286,11 @@ mapper) {
                         const inFrom = Boolean(imgFrom);
                         const inTo = Boolean(imgTo);
                         if (imgFrom && imgTo) {
-                            pages.push(diffPngs(imgFrom, imgTo, abs(outDir, own), entry, config));
+                            images.push(diffPngs(imgFrom, imgTo, abs(outDir, own), entry, config));
                         }
                         else if (inFrom || inTo) {
                             // The element exists on both sides but one screenshot is missing.
-                            pages.push({
+                            images.push({
                                 ...entry,
                                 status: inTo ? "added" : "removed",
                                 message: `screenshot missing in ${inTo ? "baseline" : "target"}`,
@@ -301,7 +301,7 @@ mapper) {
                 else if (!match.fromTo.has(n)) {
                     doneFrom.add(own);
                     if (hasImage(pageA, n))
-                        pages.push({ filename: own, status: "removed", message: "element no longer present" });
+                        images.push({ filename: own, status: "removed", message: "element no longer present" });
                 }
                 visit(n.children, side);
             }
@@ -315,23 +315,23 @@ mapper) {
         const inFrom = fromFiles.has(filename) && !doneFrom.has(filename);
         const inTo = toFiles.has(filename) && !doneTo.has(filename);
         if (inFrom && !inTo) {
-            pages.push({ filename, status: "removed", message: "present in baseline only" });
+            images.push({ filename, status: "removed", message: "present in baseline only" });
         }
         else if (!inFrom && inTo) {
-            pages.push({ filename, status: "added", message: "new page" });
+            images.push({ filename, status: "added", message: "new page" });
         }
         else if (inFrom && inTo) {
-            pages.push(diffImages(abs(fromDir, filename), abs(toDir, filename), abs(outDir, filename), { filename, status: "unchanged" }, config));
+            images.push(diffImages(abs(fromDir, filename), abs(toDir, filename), abs(outDir, filename), { filename, status: "unchanged" }, config));
         }
     }
-    pages.sort((x, y) => x.filename.localeCompare(y.filename));
-    const changedCount = pages.filter((p) => p.status === "changed" || p.status === "size-mismatch" || p.status === "error").length;
-    const addedCount = pages.filter((p) => p.status === "added").length;
-    const removedCount = pages.filter((p) => p.status === "removed").length;
+    images.sort((x, y) => x.filename.localeCompare(y.filename));
+    const changedCount = images.filter((p) => p.status === "changed" || p.status === "size-mismatch" || p.status === "error").length;
+    const addedCount = images.filter((p) => p.status === "added").length;
+    const removedCount = images.filter((p) => p.status === "removed").length;
     const report = {
         from: labels.from,
         to: labels.to,
-        pages,
+        images,
         changedCount,
         addedCount,
         removedCount,

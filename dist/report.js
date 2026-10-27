@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import pc from "picocolors";
 import { causeLocation } from "./correlate.js";
+import { ELEMENT_IMAGE } from "./elements.js";
 const STATUS_STYLE = {
     unchanged: (s) => pc.dim(s),
     changed: (s) => pc.yellow(s),
@@ -33,12 +34,12 @@ export function printReport(report) {
                 console.log(pc.dim(`    ${page}: ${note}`));
         console.log("");
     }
-    const rows = report.pages.filter((p) => p.status !== "unchanged");
+    const rows = report.images.filter((p) => p.status !== "unchanged");
     if (rows.length === 0) {
         console.log(pc.green("  No visual changes detected."));
     }
     else {
-        for (const p of report.pages) {
+        for (const p of report.images) {
             if (p.status === "unchanged")
                 continue;
             const style = STATUS_STYLE[p.status];
@@ -63,9 +64,13 @@ export function printReport(report) {
         console.log("");
         console.log(pc.dim(`  Causes not traced: ${report.correlationSkipped}.`));
     }
-    const unchanged = report.pages.filter((p) => p.status === "unchanged").length;
+    const unchanged = report.images.filter((p) => p.status === "unchanged").length;
+    // A page's image is `<slug>/page.png`, or `<slug>.png` with --only-pages; everything else is an element.
+    const elements = report.images.filter((p) => p.filename.endsWith(`/${ELEMENT_IMAGE}`)).length;
+    const pages = report.images.length - elements;
+    const compared = [plural(pages, "page"), elements > 0 && plural(elements, "element")].filter(Boolean).join(", ");
     console.log("");
-    console.log(pc.dim(`  ${report.pages.length} pages  •  ${report.changedCount} changed  •  ` +
+    console.log(pc.dim(`  ${compared}  •  ${report.changedCount} changed  •  ` +
         `${report.addedCount} added  •  ${report.removedCount} removed  •  ${unchanged} unchanged`));
     console.log("");
 }

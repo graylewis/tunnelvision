@@ -158,10 +158,20 @@ export function styleBlocks(source: string): { css: string; startLine: number }[
 	return out;
 }
 
+/** The 1-based first and last lines each `<style>` block's CSS takes up. */
+export function styleBlockSpans(source: string): Array<[number, number]> {
+	return styleBlocks(source).map(({ css, startLine }) => [startLine, startLine + css.split("\n").length - 1]);
+}
+
 /** Whether a file can hold style rules. */
 export function holdsStyles(file: string): boolean {
 	const ext = path.extname(file).toLowerCase();
 	return STYLESHEET.has(ext) || WITH_STYLE_BLOCKS.has(ext);
+}
+
+/** Whether a file can hold `<style>` blocks among its other lines. */
+export function holdsStyleBlocks(file: string): boolean {
+	return WITH_STYLE_BLOCKS.has(path.extname(file).toLowerCase());
 }
 
 function selectorsIn(file: string, text: string, lines: Map<number, string>, into: Set<string>): void {

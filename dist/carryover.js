@@ -195,6 +195,11 @@ export function carryPage(reference, root, slug, settings, fingerprint, outDir) 
             }
         };
         collect(elements.elements);
+        // The page's DOM is unchanged, so inline styles of ancestors that aren't
+        // elements (<html>, wrappers with no box of their own) keep their owners too.
+        for (const r of styles.rules)
+            if (r.inline !== undefined)
+                same.set(r.inline, r.inline);
         nextStyles = { ...styles, rules: styles.rules.map((r) => remapRule(reference.mapper, r, same)) };
     }
     catch (err) {

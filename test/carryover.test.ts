@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { PNG } from "pngjs";
-import { assembleStyles, planElements, REDIRECT_RECORD } from "../src/carryover.js";
+import { assembleStyles, carryPage, pageRecord, planElements, REDIRECT_RECORD, type Reference } from "../src/carryover.js";
 import { changedSelectors, EVERYTHING, scanBlocks, selectorAt, staticSelector } from "../src/changedrules.js";
 import { compareSamples } from "../src/commands/fingerprint.js";
 import { fingerprintScript, stripDevStamps } from "../src/fingerprint.js";
@@ -365,4 +365,26 @@ test("fingerprintScript: the in-page script parses", () => {
 	assert.doesNotThrow(() => new Function(`return (${fingerprintScript(["x"])})`));
 	assert.ok(!fingerprintScript().includes("__CLEAN__") && !fingerprintScript().includes("__OVERLAYS__"));
 	assert.ok(fingerprintScript().includes("nextjs-portal"), "dev overlays are left out of the fingerprint");
+});
+
+test("carryPage: a page whose ancestors outside the element tree have inline styles is carried over", () => {
+	const ref = fs.mkdtempSync(path.join(os.tmpdir(), "tv-carry-ref-"));
+	const out = fs.mkdtempSync(path.join(os.tmpdir(), "tv-carry-out-"));
+	const page = path.join(ref, "home");
+	fs.mkdirSync(page);
+	const png = new PNG({ width: 10, height: 10 });
+	fs.writeFileSync(path.join(page, "page.png"), PNG.sync.write(png));
+	const tree = [el("div")];
+	fs.writeFileSync(path.join(page, "elements.json"), JSON.stringify({ version: 5, url: "/", extractedAt: "", scale: 1, elements: tree }));
+	// <html style="color-scheme: light"> (next-themes) is inherited but never an element.
+	const rules: StyleRule[] = [
+		{ sheet: null, inline: "html", selector: "style attribute", selectorRange: null, decls: [{ name: "color-scheme", value: "light", range: null }] },
+		{ sheet: null, inline: "body > div", selector: "style attribute", selectorRange: null, decls: [{ name: "color", value: "red", range: null }] },
+	] as unknown as StyleRule[];
+	fs.writeFileSync(path.join(page, "styles.json"), JSON.stringify({ version: 1, rules, elements: {} }));
+	fs.writeFileSync(path.join(page, "capture.json"), JSON.stringify(pageRecord("settings", "fp")));
+	const reference = { meta: { key: "abc1234" }, dir: ref, mapper: new LineMapper(new Map()), changedSelectors: [] } as unknown as Reference;
+	assert.equal(carryPage(reference, ref, "home", "settings", "fp", out), true);
+	const carried = JSON.parse(fs.readFileSync(path.join(out, "home", "styles.json"), "utf8")) as StyleManifest;
+	assert.deepEqual(carried.rules.map((r) => r.inline), ["html", "body > div"]);
 });

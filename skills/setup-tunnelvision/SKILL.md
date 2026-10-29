@@ -156,17 +156,27 @@ Cheat mode makes captures several times faster: a page whose *render fingerprint
    ```sh
    tunnelvision fingerprint --save
    ```
-   It loads every page twice and compares. Attributes that changed between loads of the same code (render timings, random ids) are added to `cheatMode.ignoreAttributes` in `tunnelvision.json` and it checks again. Pages it still reports can't be carried over: `style` or `class` changing means the page was still animating or loading when fingerprinted (it waits up to 5s); `resources` names files whose bytes changed between loads. Cheat mode is still safe with a few such pages (they're just captured normally), but if most pages are unstable, stop here, leave it off and tell the user why.
+   It loads every page twice and compares. Attributes that changed between loads of the same code (render timings, random ids) are added to `cheatMode.ignoreAttributes` in `tunnelvision.json` and it checks again. Run it on the user's working branch, never the step 2 test branch, so the saved `ignoreAttributes` survive cleanup. Pages it still reports can't be carried over: `style` or `class` changing means the page was still animating or loading when fingerprinted (it waits up to 5s); `resources` names files whose bytes changed between loads. Cheat mode is still safe with a few such pages (they're just captured normally).
+
+   **Gotchas.** When the same culprit shows on most pages, it comes from shared code (the layout, an SDK) and usually has a one-line fix. Match it against this table before giving up:
+
+   | Fingerprint says | Source | Fix |
+   | --- | --- | --- |
+   | `resources: blob:…` on every page | A worker or script built from a Blob at runtime, almost always a session-recording SDK in dev: Sentry Session Replay's compression worker, PostHog, LogRocket, FullStory, Hotjar | Leave the SDK's recording out in local dev only (gate it on `NODE_ENV === "development"` or the framework's equivalent), keeping deployed environments as they are. Propose the change, apply it once the user agrees, restart the dev server |
+   | `attributes: content` on every page | Per-request trace ids in `<meta name="sentry-trace">` / `<meta name="baggage">`, or a CSRF/nonce `<meta>` | `--save` ignores it; nothing to change in the app |
+   | `attributes: nonce` | A CSP nonce regenerated per request | `--save` ignores it |
+
+   For a culprit the table doesn't name, find it before deciding: load one reported page twice with Playwright, logging each `blob:` response's URL and the first 200 characters of its body, and the varying attributes' elements. Name the SDK or component to the user. Re-run `tunnelvision fingerprint` after each fix. If most pages are still unstable, stop here, leave cheat mode off and tell the user what varies and where it comes from.
 2. **Plant changes.** Follow `/test-tunnelvision` steps 1–3: preconditions, the test branch and noise-floor Version (`tunnelvision shoot --no-cheat`), and the planted-changes commit with its manifest. Add rows aimed at what a fingerprint could miss, wherever the app has a place for them (say which you skipped and why):
    - **JS only**: change something only client-side JavaScript decides, such as a framer-motion `animate`/`whileInView` end state, or the markup of a component that only renders in the browser (`client:only`, `useEffect`).
    - **Image bytes**: overwrite an image in `public/` (or wherever static files live) with a visibly different image under the same file name.
    - **Font**: swap a self-hosted font file, or change an `@font-face` `font-weight`.
    - **Data layer** (only with a state plugin from step 9): change the code a query runs, such as a query parameter or a field mapping in the API client its `queryFn` calls. Both modes must report it as a `data` cause.
-3. **Capture the planted commit both ways**, cheat mode first so both carry over from the noise-floor Version:
+3. **Capture the planted commit both ways**, cheat mode first. Its Version moves out of `versions/` before the normal capture, so both carry over (and replay state) from the noise-floor Version:
    ```sh
    tunnelvision shoot --cheat
    tunnelvision diff <noise-key> <test-key> --report .tunnelvision/cheat-report.json
-   mv .tunnelvision/versions/<test-key> .tunnelvision/versions/<test-key>-cheat
+   mv .tunnelvision/versions/<test-key> .tunnelvision/cheat-<test-key>
    tunnelvision shoot --no-cheat
    tunnelvision diff <noise-key> <test-key> --report .tunnelvision/normal-report.json
    ```
@@ -176,8 +186,8 @@ Cheat mode makes captures several times faster: a page whose *render fingerprint
    ```sh
    tunnelvision cheat on
    ```
-   This records the tunnelvision, framework, dev-server and state plugin versions it was validated with in `tunnelvision.json`; when any of them change, captures run normally and `tunnelvision doctor` says so until this step is repeated. Offer to commit `tunnelvision.json`. If it fails, leave cheat mode off and tell the user which planted change it missed and why that kind of change can't be fingerprinted on this app.
-6. **Clean up** as in `/test-tunnelvision` step 7, also removing `.tunnelvision/versions/<test-key>-cheat` and the two reports.
+   This records the tunnelvision, framework, dev-server and state plugin versions it was validated with in `tunnelvision.json`; when any of them change, captures run normally and `tunnelvision doctor` says so until this step is repeated. Tell the user that environment changes aren't tracked: if captures later stop carrying pages over, `tunnelvision fingerprint` shows what started varying, usually an SDK newly switched on in dev (the step 1 gotchas). Offer to commit `tunnelvision.json`. If it fails, leave cheat mode off and tell the user which planted change it missed and why that kind of change can't be fingerprinted on this app.
+6. **Clean up** as in `/test-tunnelvision` step 7, also removing `.tunnelvision/cheat-<test-key>` and the two reports.
 
 ## 12. What's next
 

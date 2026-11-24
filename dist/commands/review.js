@@ -1,73 +1,19 @@
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pc from "picocolors";
-import { diffDir, versionDir } from "../paths.js";
+import prompts from "prompts";
+import { applyOverrides, loadConfig } from "../config.js";
+import { diffDir, resolvePaths, versionDir } from "../paths.js";
 import { diffVersions } from "../diffengine.js";
 import { addCorrelation, versionMapper } from "../correlate.js";
-import { latestExcluding } from "../versions.js";
+import { latestExcluding, listVersions, serverModeOf, versionRev } from "../versions.js";
+import { resolveVersion } from "../git.js";
+import { planServer } from "../server.js";
 import { printReport, writeJsonReport } from "../report.js";
 import { notify } from "../notify.js";
 import { findSandhog, sandhogLink } from "../sandhog.js";
-import { logSource, prepareCapture, runCapture } from "./shoot.js";
+import { logReused, logSource, runCapture, shoot, withServedApp } from "./shoot.js";
 const CLI = fileURLToPath(new URL("../cli.js", import.meta.url));
-/** Fail fast if the base URL is not reachable (mirrors shoot). */
-async function assertReachable(baseUrl) {
-    try {
-        const controller = new AbortController();
-        const t = setTimeout(() => controller.abort(), 5000);
-        await fetch(baseUrl, { signal: controller.signal, redirect: "manual" }).finally(() => clearTimeout(t));
-    }
-    catch (err) {
-        throw new Error(`Could not reach ${baseUrl} (${err.message}).\n` +
-            "Start your app (or set the base URL with --base-url) and try again.");
-    }
-}
-function isAlive(pid) {
-    try {
-        process.kill(pid, 0);
-        return true;
-    }
-    catch (err) {
-        return err.code === "EPERM";
-    }
-}
-/**
- * Wait until no other review is running in this project, then hold the lock
- * until the returned function is called. Background reviews from quick
- * successive commits run one after another, each diffing against the last.
- */
-async function lockReviews(paths) {
-    const file = path.join(paths.dir, "review.lock");
-    let waiting = false;
-    for (;;) {
-        try {
-            fs.writeFileSync(file, String(process.pid), { flag: "wx" });
-            return () => fs.rmSync(file, { force: true });
-        }
-        catch (err) {
-            if (err.code !== "EEXIST")
-                throw err;
-        }
-        let pid = NaN;
-        try {
-            pid = Number(fs.readFileSync(file, "utf8"));
-        }
-        catch {
-            continue; // Released in the meantime.
-        }
-        if (!Number.isInteger(pid) || !isAlive(pid)) {
-            // Left behind by a review that was killed.
-            fs.rmSync(file, { force: true });
-            continue;
-        }
-        if (!waiting) {
-            console.log(pc.dim(`  waiting for another review (pid ${pid}) to finish…`));
-            waiting = true;
-        }
-        await new Promise((r) => setTimeout(r, 1000));
-    }
-}
 export async function review(opts) {
     try {
         const outcome = await runReview(opts);
@@ -87,38 +33,86 @@ export async function review(opts) {
     }
 }
 async function runReview(opts) {
-    const ctx = await prepareCapture(opts);
-    await assertReachable(ctx.config.baseUrl);
-    const release = await lockReviews(ctx.paths);
-    try {
-        return await reviewLocked(opts, ctx);
+    await maybeRebaseline(opts);
+    let baseline = null;
+    const run = await withServedApp(opts, (ctx) => runCapture(ctx), (ctx) => {
+        // The baseline is decided BEFORE capturing: the newest existing version that
+        // isn't the current key (the current version may not exist on disk yet).
+        baseline = latestExcluding(ctx.paths, ctx.version.key);
+        console.log(pc.bold(`Reviewing ${ctx.pages.length} pages`) + pc.dim(` → version ${ctx.version.key}`));
+        logSource(ctx);
+        if (ctx.version.dirty) {
+            console.log(pc.yellow("  working tree is dirty; stored under a -dirty key"));
+        }
+        if (baseline && serverModeOf(baseline) !== ctx.serve.mode) {
+            const how = (mode) => (mode === "owned" ? "tunnelvision's own dev server" : "a running server");
+            console.log(pc.yellow(`  ${baseline.key} was captured from ${how(serverModeOf(baseline))} and this one is from ${how(ctx.serve.mode)}: ` +
+                "differences between the two show as visual changes"));
+            if (ctx.serve.mode === "owned" && versionRev(baseline)) {
+                console.log(pc.dim(`  recapture it the same way with \`tunnelvision shoot --at ${baseline.key}\`, or review with --rebaseline`));
+            }
+        }
+    });
+    const { ctx } = run;
+    let capture;
+    if ("reused" in run) {
+        logReused(ctx, run.reused);
+        capture = { produced: [], missing: [], exitCode: 0 };
+        // Copied under a new key: diff against what the copied Version was diffed against.
+        const from = baseline;
+        if (run.reused.key !== ctx.version.key && from?.key === run.reused.key) {
+            const keys = new Set([run.reused.key, ctx.version.key]);
+            baseline = listVersions(ctx.paths).filter((v) => !keys.has(v.key)).at(-1) ?? null;
+        }
     }
-    finally {
-        release();
+    else {
+        capture = run.result;
+        console.log(pc.green(`  ✓ ${capture.produced.length} captured`));
+        if (capture.missing.length > 0) {
+            console.log(pc.red(`  ✗ ${capture.missing.length} failed`));
+            for (const m of capture.missing)
+                console.log(pc.red(`      ${m}`));
+        }
     }
+    return diffAndReport(opts, ctx, baseline, capture);
 }
-async function reviewLocked(opts, ctx) {
-    // Determine the baseline BEFORE capturing: the newest existing version that
-    // isn't the current key (the current version may not exist on disk yet).
-    const baseline = latestExcluding(ctx.paths, ctx.version.key);
-    console.log(pc.bold(`Reviewing ${ctx.pages.length} pages`) + pc.dim(` → version ${ctx.version.key}`));
-    logSource(ctx);
-    if (ctx.version.dirty) {
-        console.log(pc.yellow("  working tree is dirty; stored under a -dirty key"));
+/**
+ * Recapture the baseline through tunnelvision's own dev server when it was
+ * captured from a running one, so the switch itself doesn't show as visual
+ * changes: with --rebaseline, or when asked in a terminal.
+ */
+async function maybeRebaseline(opts) {
+    const paths = resolvePaths(opts.root);
+    const config = applyOverrides(loadConfig(paths), opts);
+    if (planServer(opts.root, config).mode !== "owned")
+        return;
+    const baseline = latestExcluding(paths, resolveVersion(opts.root).key);
+    if (!baseline || serverModeOf(baseline) === "owned" || !versionRev(baseline))
+        return;
+    let yes = Boolean(opts.rebaseline);
+    if (!yes && process.stdin.isTTY && process.stdout.isTTY && !opts.json && opts.report !== "-") {
+        const answer = await prompts({
+            type: "confirm",
+            name: "yes",
+            message: `${baseline.key} was captured from a running server; recapture it with tunnelvision's own dev server first, so the switch doesn't show as changes?`,
+            initial: true,
+        });
+        yes = Boolean(answer.yes);
     }
-    const capture = await runCapture(ctx);
+    if (!yes)
+        return;
+    const code = await shoot({ ...opts, at: baseline.key });
+    if (code !== 0)
+        throw new Error(`Recapturing ${baseline.key} failed.`);
+    console.log("");
+}
+async function diffAndReport(opts, ctx, baseline, capture) {
     const result = {
         paths: ctx.paths,
         to: ctx.version.key,
         pageCount: ctx.pages.length,
         failedCount: capture.missing.length,
     };
-    console.log(pc.green(`  ✓ ${capture.produced.length} captured`));
-    if (capture.missing.length > 0) {
-        console.log(pc.red(`  ✗ ${capture.missing.length} failed`));
-        for (const m of capture.missing)
-            console.log(pc.red(`      ${m}`));
-    }
     if (!baseline) {
         console.log("");
         console.log(pc.cyan("  Baseline established — nothing to diff against yet."));

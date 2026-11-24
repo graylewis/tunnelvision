@@ -4,6 +4,7 @@ import { DEFAULT_SETTLE_MS } from "./stabilize.js";
 import { DEFAULT_TRACKED_PROPERTIES } from "./styles.js";
 export const DEFAULT_CONFIG = {
     baseUrl: "http://localhost:3000",
+    server: {},
     viewport: { width: 1280, height: 800 },
     wait: 1000,
     settle: DEFAULT_SETTLE_MS,
@@ -44,6 +45,7 @@ function withDefaults(partial) {
         ...DEFAULT_CONFIG,
         ...partial,
         viewport: { ...DEFAULT_CONFIG.viewport, ...(partial.viewport ?? {}) },
+        server: { ...DEFAULT_CONFIG.server, ...(partial.server ?? {}) },
         diff: { ...DEFAULT_CONFIG.diff, ...(partial.diff ?? {}) },
         match: { ...DEFAULT_CONFIG.match, ...(partial.match ?? {}) },
         styles: { ...DEFAULT_CONFIG.styles, ...(partial.styles ?? {}) },
@@ -108,6 +110,7 @@ export function applyOverrides(config, o) {
     const next = {
         ...config,
         viewport: { ...config.viewport },
+        server: { ...config.server },
         diff: { ...config.diff },
         match: { ...config.match },
         styles: { ...config.styles },
@@ -116,8 +119,11 @@ export function applyOverrides(config, o) {
         atoms: { ...config.atoms },
         workarounds: { ...config.workarounds },
     };
-    if (o.baseUrl !== undefined)
+    // A server named on the command line is one already running: capture it as it is.
+    if (o.baseUrl !== undefined) {
         next.baseUrl = o.baseUrl;
+        next.server.external = true;
+    }
     if (o.width !== undefined)
         next.viewport.width = o.width;
     if (o.height !== undefined)

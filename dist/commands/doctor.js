@@ -9,6 +9,7 @@ import { loadConfig } from "../config.js";
 import { loadPlugins } from "../state.js";
 import { environmentVersions, versionChanges } from "../environment.js";
 import { cssPipeline } from "../stylemaps.js";
+import { planServer } from "../server.js";
 import fs from "node:fs";
 import path from "node:path";
 /** Dependencies that make Vite transform CSS, so its lines no longer match the source without a source map. */
@@ -77,6 +78,25 @@ export async function doctor(opts) {
         }
         catch {
             // the config line above covers a config that doesn't load
+        }
+    }
+    // dev server: tunnelvision's own on a snapshot, or one already running
+    if (config) {
+        try {
+            const loaded = loadConfig(paths);
+            const plan = planServer(opts.root, loaded);
+            if (plan.mode === "owned") {
+                const port = plan.portFixed ? `port ${plan.port} (server.port)` : `port ${plan.port}`;
+                console.log(`  ${pc.green("✓")} dev server${pc.dim(`  tunnelvision starts its own for each capture: ${plan.command.replace(/\{port\}/g, String(plan.port)).replace(/\{host\}/g, plan.host)} on ${port}`)}`);
+                console.log(pc.dim(`      \`tunnelvision auth\` logs in on your own server (${loaded.baseUrl}); captures carry the session over`));
+            }
+            else {
+                console.log(`  ${pc.yellow("!")} dev server${pc.dim(`  capturing the server at ${plan.url}: ${plan.why}`)}`);
+                console.log(pc.dim("      edits and reloads during a capture show in it; a server tunnelvision starts itself (server.command) avoids that"));
+            }
+        }
+        catch {
+            // the config line already reported it
         }
     }
     // git

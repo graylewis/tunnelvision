@@ -92,6 +92,38 @@ export interface WorkaroundsConfig {
 	turbopackPostcssMaps: boolean;
 }
 
+/**
+ * How the app is served for capture (see
+ * docs/adr/0016-tunnelvision-owns-the-dev-server.md). By default tunnelvision
+ * starts the framework's dev server itself, on a snapshot of the code in
+ * `.tunnelvision/worktree`, for the length of each capture.
+ */
+export interface ServerConfig {
+	/**
+	 * Capture the server already running at this URL instead of starting one
+	 * (`true`: at `baseUrl`). For apps tunnelvision can't start from a
+	 * snapshot. Edits and reloads during a capture then show in it.
+	 */
+	external?: string | true;
+	/**
+	 * The command that starts the dev server, run in the worktree, with
+	 * `{port}` and `{host}` replaced. Detected for Next.js, Vite and Astro.
+	 */
+	command?: string;
+	/** The port the server is started on. Defaults to one derived from the project, the same every run. */
+	port?: number;
+	/**
+	 * Git-ignored files the app needs to run, copied into the worktree as
+	 * globs relative to the project root (`.env*` files always are), such as
+	 * generated clients: `["src/generated/**"]`.
+	 */
+	copyIgnored?: string[];
+	/** Milliseconds the server gets to start answering. */
+	startTimeout?: number;
+	/** Milliseconds the running server gets to notice the files that changed under it before pages are requested. */
+	syncSettle?: number;
+}
+
 /** A state plugin's module specifier, alone or with the options it's created with. */
 export type PluginSpec = string | [string, Record<string, unknown>];
 
@@ -112,7 +144,13 @@ export interface PageOverride {
 }
 
 export interface Config {
+	/**
+	 * The URL of the user's own dev server: where `tunnelvision auth` logs in,
+	 * and what's captured in external mode. An owned server serves the same
+	 * paths under its own origin.
+	 */
 	baseUrl: string;
+	server: ServerConfig;
 	viewport: Viewport;
 	/** Default milliseconds to wait before capturing each page. */
 	wait: number;
@@ -155,6 +193,7 @@ export interface Config {
 
 export const DEFAULT_CONFIG: Config = {
 	baseUrl: "http://localhost:3000",
+	server: {},
 	viewport: { width: 1280, height: 800 },
 	wait: 1000,
 	settle: DEFAULT_SETTLE_MS,
@@ -196,6 +235,7 @@ function withDefaults(partial: Partial<Config>): Config {
 		...DEFAULT_CONFIG,
 		...partial,
 		viewport: { ...DEFAULT_CONFIG.viewport, ...(partial.viewport ?? {}) },
+		server: { ...DEFAULT_CONFIG.server, ...(partial.server ?? {}) },
 		diff: { ...DEFAULT_CONFIG.diff, ...(partial.diff ?? {}) },
 		match: { ...DEFAULT_CONFIG.match, ...(partial.match ?? {}) },
 		styles: { ...DEFAULT_CONFIG.styles, ...(partial.styles ?? {}) },
@@ -287,6 +327,7 @@ export function applyOverrides(config: Config, o: Overrides): Config {
 	const next: Config = {
 		...config,
 		viewport: { ...config.viewport },
+		server: { ...config.server },
 		diff: { ...config.diff },
 		match: { ...config.match },
 		styles: { ...config.styles },
@@ -295,7 +336,11 @@ export function applyOverrides(config: Config, o: Overrides): Config {
 		atoms: { ...config.atoms },
 		workarounds: { ...config.workarounds },
 	};
-	if (o.baseUrl !== undefined) next.baseUrl = o.baseUrl;
+	// A server named on the command line is one already running: capture it as it is.
+	if (o.baseUrl !== undefined) {
+		next.baseUrl = o.baseUrl;
+		next.server.external = true;
+	}
 	if (o.width !== undefined) next.viewport.width = o.width;
 	if (o.height !== undefined) next.viewport.height = o.height;
 	if (o.wait !== undefined) next.wait = o.wait;

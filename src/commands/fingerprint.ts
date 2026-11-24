@@ -7,7 +7,7 @@ import { extractScript } from "../elements.js";
 import { fingerprintScript, VISUAL_ATTRIBUTES } from "../fingerprint.js";
 import { runDriver, type DriverEvent } from "../playwright.js";
 import { StateSession } from "../state.js";
-import { captureRev, prepareCapture } from "./shoot.js";
+import { captureRev, withServedApp, type CaptureContext } from "./shoot.js";
 
 export interface FingerprintOptions extends Overrides {
 	root: string;
@@ -73,12 +73,18 @@ export function compareSamples(samples: Sample[]): Variation | null {
  * fingerprint (`--save`), the rest needs a look.
  */
 export async function fingerprint(opts: FingerprintOptions): Promise<number> {
-	const ctx = await prepareCapture({ ...opts, cheat: false });
+	// Fingerprinted on the server captures use, so it's the same pages cheat mode will see.
+	const run = await withServedApp({ ...opts, cheat: false, force: true }, (ctx) => fingerprintPages(opts, ctx));
+	if ("reused" in run) throw new Error("unreachable: fingerprinting always loads the pages");
+	return run.result;
+}
+
+async function fingerprintPages(opts: FingerprintOptions, ctx: CaptureContext): Promise<number> {
 	const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tunnelvision-fingerprint-"));
-	const auth = path.isAbsolute(ctx.config.authFile) ? ctx.config.authFile : path.join(ctx.paths.root, ctx.config.authFile);
+	const auth = ctx.auth;
 	// Replay recorded state, as a capture would: live data varies from load to load.
 	const slugs = ctx.pages.map((page) => page.filename.replace(/\.png$/i, ""));
-	const state = await StateSession.open(ctx.paths, ctx.config, ctx.version.key, captureRev(ctx), slugs);
+	const state = await StateSession.open(ctx.paths, ctx.config, ctx.version.key, ctx.rev !== undefined ? ctx.rev : captureRev(ctx), slugs, null, ctx.servedRoot);
 	try {
 		for (let round = 0; round < 3; round++) {
 			const config = round === 0 ? ctx.config : loadConfig(ctx.paths);
@@ -90,7 +96,7 @@ export async function fingerprint(opts: FingerprintOptions): Promise<number> {
 					{
 						viewport: config.viewport,
 						scaleFactor: 1,
-						authFile: fs.existsSync(auth) ? auth : undefined,
+						authFile: auth,
 						concurrency: Math.max(1, Math.floor(config.concurrency)),
 						extractJs: extractScript([], []),
 						fingerprintJs: fingerprintScript(config.cheatMode.ignoreAttributes),

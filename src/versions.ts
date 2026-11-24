@@ -4,6 +4,7 @@ import { versionDir, type Paths } from "./paths.js";
 import type { VersionInfo } from "./git.js";
 import type { SheetCheck } from "./stylemaps.js";
 import { currentRenderer, type Renderer } from "./renderer.js";
+import type { ServerMode } from "./server.js";
 
 export interface VersionMeta {
 	key: string;
@@ -25,6 +26,12 @@ export interface VersionMeta {
 	state?: string;
 	/** What rendered the screenshots; absent in captures made before it was recorded. */
 	renderer?: Renderer;
+	/**
+	 * Who served the app: tunnelvision's own dev server on a snapshot
+	 * (`owned`), or one already running (`external`). Absent in captures
+	 * made before tunnelvision started its own, which were all external.
+	 */
+	server?: ServerMode;
 }
 
 function metaPath(paths: Paths, key: string): string {
@@ -106,6 +113,7 @@ export function metaFromInfo(
 	baseUrl: string,
 	pageCount: number,
 	rev?: string | null,
+	server?: ServerMode,
 ): VersionMeta {
 	return {
 		key: info.key,
@@ -117,7 +125,13 @@ export function metaFromInfo(
 		baseUrl,
 		pageCount,
 		renderer: currentRenderer(),
+		...(server ? { server } : {}),
 	};
+}
+
+/** Who served a Version's app (captures from before it was recorded were all of a running server). */
+export function serverModeOf(meta: VersionMeta): ServerMode {
+	return meta.server ?? "external";
 }
 
 /**

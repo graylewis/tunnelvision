@@ -349,17 +349,26 @@ mapper) {
 /** What to know before trusting which pixels counted as changed. */
 function diffWarnings(fromDir, toDir, config) {
     const out = [];
-    const renderer = (dir) => {
+    const meta = (dir) => {
         try {
-            return JSON.parse(fs.readFileSync(path.join(dir, "meta.json"), "utf8")).renderer;
+            return JSON.parse(fs.readFileSync(path.join(dir, "meta.json"), "utf8"));
         }
         catch {
             return undefined;
         }
     };
-    const differs = rendererDifference(renderer(fromDir), renderer(toDir));
+    const from = meta(fromDir);
+    const to = meta(toDir);
+    const differs = rendererDifference(from?.renderer, to?.renderer);
     if (differs)
         out.push(`the versions were rendered differently (${differs}): pixels can differ with nothing changed, so re-capture both on one machine`);
+    // Captures from before tunnelvision started its own server were all of a running one.
+    const served = (m) => (m?.server === "owned" ? "tunnelvision's own dev server" : "a running server");
+    if (from && to && served(from) !== served(to)) {
+        const older = from.server === "owned" ? null : path.basename(fromDir);
+        out.push(`the versions were served differently (${served(from)} → ${served(to)}): what the switch changed shows as visual changes` +
+            (older ? `; \`tunnelvision shoot --at ${older}\` recaptures the older one the same way` : ""));
+    }
     if (config.diff.maxDiffPercent !== undefined) {
         out.push(`diff.maxDiffPercent is set (${config.diff.maxDiffPercent}%), so a change smaller than that share of its element isn't counted; remove it to count changes in pixels`);
     }

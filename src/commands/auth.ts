@@ -6,7 +6,8 @@ import { saveAuth } from "../playwright.js";
 
 export interface AuthOptions {
 	root: string;
-	url: string;
+	/** The login URL to open; the config's baseUrl (the user's own dev server) when not given. */
+	url?: string;
 	/** Where to write the auth context; defaults to config.authFile. */
 	out?: string;
 }
@@ -19,12 +20,13 @@ export async function auth(opts: AuthOptions): Promise<number> {
 	const outFile = path.isAbsolute(rel) ? rel : path.join(paths.root, rel);
 
 	console.log(pc.bold("Opening a browser for you to log in…"));
-	console.log(pc.dim(`  target:  ${opts.url}`));
+	const url = opts.url ?? config.baseUrl;
+	console.log(pc.dim(`  target:  ${url}`));
 	console.log(pc.dim(`  saving:  ${outFile}`));
 	console.log(pc.dim("  Sign in, then press <enter> in this terminal to save the session."));
 
 	try {
-		await saveAuth(opts.url, outFile);
+		await saveAuth(url, outFile);
 	} catch (err) {
 		console.error(pc.red(`Couldn't save the session: ${(err as Error).message}`));
 		return 1;

@@ -3,10 +3,11 @@ import pc from "picocolors";
 import fs from "node:fs";
 import { applyOverrides, loadConfig, type Config, type Overrides } from "../config.js";
 import { resolvePaths, versionDir, type Paths } from "../paths.js";
+import { lockRuns } from "../runlock.js";
 import { resolveVersion, snapshotTree, type VersionInfo } from "../git.js";
 import { discoverPages, type PageSource } from "../pagesource.js";
 import { resolvePages, type Page } from "../pages.js";
-import { runDriver, runPages, type DriverEvent, type DriverReply, type PageJob, type RunResult } from "../playwright.js";
+import { BUILD_ERROR, primePages, runDriver, runPages, type DriverEvent, type DriverReply, type PageJob, type RunResult } from "../playwright.js";
 import {
 	assignDirs,
 	cropRect,
@@ -24,7 +25,10 @@ import { Cascade } from "../cascade.js";
 import { LOCATOR_VERSION, StyleLocator } from "../stylesource.js";
 import { checkKey, describeCheck, type SheetCheck } from "../stylemaps.js";
 import { writeStyleManifest, type ElementStyles, type RawSheet, type RawStyles } from "../styles.js";
-import { metaFromInfo, writeMeta } from "../versions.js";
+import { listVersions, metaFromInfo, readMeta, serverModeOf, versionRev, writeMeta, type VersionMeta } from "../versions.js";
+import { currentRenderer, rendererDifference } from "../renderer.js";
+import { describePlan, OwnedServer, planServer, ServerError, serverLog, warmUp, writeRehostedAuth, type ServerPlan } from "../server.js";
+import { rehome, treeOf } from "../worktree.js";
 import { stabilizeScript } from "../stabilize.js";
 import { resolveComponents, SourceResolver, type ComponentFile } from "../reactsource.js";
 import {
@@ -48,7 +52,14 @@ import { StateSession, type Rerecord } from "../state.js";
 
 export interface ShootOptions extends Overrides {
 	root: string;
-	/** Capture even when the working tree is dirty is always allowed; this only affects messaging. */
+	/** Capture even when the code is the same as the latest Version's (which is otherwise reused). */
+	force?: boolean;
+	/**
+	 * Recapture this existing Version, at the files it was captured from,
+	 * through tunnelvision's own dev server (e.g. a baseline captured from a
+	 * running server before tunnelvision started its own).
+	 */
+	at?: string;
 }
 
 export interface CaptureContext {
@@ -65,6 +76,24 @@ export interface CaptureContext {
 	cheat: boolean;
 	/** State to record afresh instead of replaying (`tunnelvision rerecord`). */
 	rerecord?: Rerecord;
+	/** How the app is served: by tunnelvision from a snapshot, or by a server already running. */
+	serve: ServerPlan;
+	/** The saved login the browser starts with, if any. */
+	auth?: string;
+	/** A commit holding exactly the files captured, once known (see `captureRev`). */
+	rev?: string | null;
+	/** The owned server's worktree project root, where the served files are read from. */
+	servedRoot?: string;
+	/** Rewrites paths in the worktree to the same paths in the repository. */
+	rehome: <T>(value: T) => T;
+	/** The same, for paths anywhere in a message. */
+	rehomeText: (text: string) => string;
+	/** The URL pages were captured under, recorded in the Version. */
+	servedUrl: string;
+	/** Whether a capture of the same code may stand in for this one (see `reuseUnchanged`). */
+	reusable: boolean;
+	/** Keep this capture time in the Version (a recapture keeps its place in the history). */
+	capturedAt?: string;
 }
 
 /** Load config + discover and resolve pages and the version key. Throws on fatal problems. */
@@ -76,10 +105,163 @@ export async function prepareCapture(opts: ShootOptions): Promise<CaptureContext
 	const source = discoverPages(opts.root);
 
 	const pages = resolvePages(source.locs, config);
-	const version = resolveVersion(opts.root);
+	let version = resolveVersion(opts.root);
+	const serve = planServer(opts.root, config);
+	let rev: string | undefined;
+	let capturedAt: string | undefined;
+	if (opts.at) {
+		const meta = readMeta(paths, opts.at);
+		if (!meta) throw new Error(`No Version ${opts.at} to recapture.`);
+		const at = versionRev(meta);
+		if (!at) throw new Error(`Version ${opts.at}'s files weren't kept (captured before snapshots, or outside git), so it can't be recaptured.`);
+		if (serve.mode !== "owned") throw new Error(`Recapturing a Version needs tunnelvision's own dev server, but ${serve.why}.`);
+		version = { key: opts.at, fromGit: meta.fromGit, dirty: meta.dirty, sha: meta.sha };
+		rev = at;
+		capturedAt = meta.capturedAt;
+	}
 	const outputDir = versionDir(paths, version.key);
+	const authFile = path.isAbsolute(config.authFile) ? config.authFile : path.join(paths.root, config.authFile);
 
-	return { paths, config, version, pages, source, outputDir, byElement: !opts.onlyPages, cheat: useCheatMode(opts, config) };
+	return {
+		paths,
+		config,
+		version,
+		pages,
+		source,
+		outputDir,
+		byElement: !opts.onlyPages,
+		cheat: useCheatMode(opts, config),
+		serve,
+		auth: fs.existsSync(authFile) ? authFile : undefined,
+		rev,
+		rehome: (v) => v,
+		rehomeText: (t) => t,
+		servedUrl: serve.mode === "external" ? serve.url : config.baseUrl,
+		reusable: !opts.force && !opts.at && !changesCapture(opts),
+		capturedAt,
+	};
+}
+
+/** Whether command-line flags change what a capture holds, so an earlier capture of the same code can't stand in for it. */
+function changesCapture(o: Overrides): boolean {
+	return [o.width, o.height, o.wait, o.settle, o.retina, o.scaleFactor, o.auth, o.onlyPages].some((v) => v !== undefined);
+}
+
+/** What serves a capture's app, for as long as it runs. */
+export interface Served {
+	stop(): Promise<void>;
+	/** Why the app stopped being served mid-capture, if it did. */
+	failure(): string | null;
+}
+
+/**
+ * Get the app served for a capture. An external server only has to answer.
+ * An owned one is started on a snapshot of the files being captured; the
+ * pages and saved login are pointed at it, and every page is requested once
+ * up front so the server compiles them all at once. Throws, with the
+ * server's output, when it can't start or a page doesn't build.
+ */
+export async function serveApp(ctx: CaptureContext): Promise<Served> {
+	console.log(pc.dim(`  ${describePlan(ctx.serve)}`));
+	if (ctx.serve.mode === "external") {
+		await assertReachable(ctx.serve.url);
+		return { stop: async () => {}, failure: () => null };
+	}
+	ctx.rev ??= captureRev(ctx);
+	if (!ctx.rev) throw new Error("Couldn't snapshot the working tree for tunnelvision's dev server.");
+	const say = (line: string) => console.log(pc.dim(`  ${line}`));
+	const rev = ctx.rev;
+	const plan = ctx.serve;
+	const userAuth = ctx.auth;
+	let server = await OwnedServer.start(ctx.paths, ctx.config, plan, rev, say);
+
+	/** Point the capture at the server, and have it compile every page. */
+	const attach = async (): Promise<void> => {
+		const base = new URL(ctx.config.baseUrl);
+		ctx.servedUrl = `${server.origin}${base.pathname.replace(/\/+$/, "")}`;
+		ctx.pages = resolvePages(ctx.source.locs, { ...ctx.config, baseUrl: ctx.servedUrl });
+		ctx.auth = writeRehostedAuth(ctx.paths, userAuth, ctx.config.baseUrl, server.origin) ?? undefined;
+		ctx.servedRoot = server.tree.root;
+		const { top, repoTop } = server.tree;
+		ctx.rehome = (v) => rehome(v, top, repoTop);
+		ctx.rehomeText = (t) => t.split(`${top}/`).join(`${repoTop}/`);
+
+		const started = Date.now();
+		const failures = await warmUp(ctx.pages.map((p) => p.url), cookieHeader(ctx.auth, ctx.servedUrl));
+		const broken = failures.filter((f) => f.status !== null && f.status >= 500);
+		if (broken.length) {
+			throw new ServerError(
+				`${broken.length} page(s) didn't build on tunnelvision's dev server, so no Version was written:\n` +
+					broken.map((f) => `  ${f.status} ${new URL(f.url).pathname}`).join("\n") +
+					`\nFrom ${path.relative(ctx.paths.root, server.log)}:\n${server.tail()}`,
+			);
+		}
+		say(`${ctx.pages.length} page(s) compiled (${((Date.now() - started) / 1000).toFixed(1)}s)`);
+	};
+	const prime = (rounds: number) =>
+		primePages(ctx.pages.map((p) => p.url), { authFile: ctx.auth, concurrency: Math.max(1, Math.floor(ctx.config.concurrency)), rounds });
+
+	try {
+		await attach();
+		if (server.cold) {
+			// Client code compiles when a browser asks for it. With cold caches the server drops
+			// requests and reloads pages while it catches up (Vite answers 504 while its dependency
+			// optimizer runs, and in some cases until it restarts), so it's asked for everything first.
+			let t = Date.now();
+			const rounds = await prime(2);
+			say(`cold caches: every page loaded in the browser first, ${rounds.join(" → ")} request(s) dropped (${((Date.now() - t) / 1000).toFixed(1)}s)`);
+			if (rounds[rounds.length - 1] > 0) {
+				t = Date.now();
+				await server.stop();
+				server = await OwnedServer.start(ctx.paths, ctx.config, plan, rev, say);
+				await attach();
+				const after = await prime(1);
+				say(`restarted the dev server on the caches it wrote: ${after[0]} request(s) dropped (${((Date.now() - t) / 1000).toFixed(1)}s)`);
+			}
+		}
+		const failed = server.failure();
+		if (failed) throw new ServerError(failed);
+	} catch (err) {
+		await server.stop();
+		throw err;
+	}
+	return { stop: () => server.stop(), failure: () => server.failure() };
+}
+
+/**
+ * The latest Version, when it's of exactly the code this capture is of,
+ * served the same way and rendered alike: capturing again would only
+ * reproduce it. Under another key (the same files, committed) it's copied
+ * to this capture's key. Only for an owned server, which serves exactly the
+ * snapshot; a running one can serve anything.
+ */
+export function reuseUnchanged(ctx: CaptureContext): VersionMeta | null {
+	if (!ctx.reusable || ctx.serve.mode !== "owned" || ctx.rerecord) return null;
+	const latest = listVersions(ctx.paths).at(-1);
+	if (!latest || serverModeOf(latest) !== "owned" || latest.pageCount !== ctx.pages.length) return null;
+	if (rendererDifference(latest.renderer, currentRenderer())) return null;
+	const latestRev = versionRev(latest);
+	ctx.rev ??= captureRev(ctx);
+	if (!latestRev || !ctx.rev) return null;
+	const tree = treeOf(ctx.paths.root, ctx.rev);
+	if (!tree || tree !== treeOf(ctx.paths.root, latestRev)) return null;
+	if (latest.key !== ctx.version.key) {
+		const staging = path.join(ctx.paths.versions, `.${ctx.version.key}.${process.pid}`);
+		fs.rmSync(staging, { recursive: true, force: true });
+		fs.cpSync(versionDir(ctx.paths, latest.key), staging, { recursive: true });
+		fs.rmSync(ctx.outputDir, { recursive: true, force: true });
+		fs.renameSync(staging, ctx.outputDir);
+		writeMeta(ctx.paths, {
+			...latest,
+			key: ctx.version.key,
+			capturedAt: new Date().toISOString(),
+			fromGit: ctx.version.fromGit,
+			dirty: ctx.version.dirty,
+			sha: ctx.version.sha,
+			rev: ctx.rev,
+		});
+	}
+	return latest;
 }
 
 /**
@@ -118,19 +300,16 @@ async function assertReachable(baseUrl: string): Promise<void> {
 	} catch (err) {
 		throw new Error(
 			`Could not reach ${baseUrl} (${(err as Error).message}).\n` +
-				"Start your app (or set the base URL with --base-url) and try again.",
+				"Start that server (or remove server.external, so tunnelvision starts its own) and try again.",
 		);
 	}
 }
 
 /** Run the actual capture given a prepared context. */
 export async function runCapture(ctx: CaptureContext): Promise<RunResult> {
-	const authFile = path.isAbsolute(ctx.config.authFile)
-		? ctx.config.authFile
-		: path.join(ctx.paths.root, ctx.config.authFile);
-	const auth = fs.existsSync(authFile) ? authFile : undefined;
-	// Taken before capturing, while the files match what the app is serving.
-	const rev = captureRev(ctx);
+	const auth = ctx.auth;
+	// Taken before capturing, while the files match what the app is serving (an owned server took it before starting).
+	const rev = ctx.rev !== undefined ? ctx.rev : captureRev(ctx);
 
 	if (ctx.byElement) {
 		return runElementCapture(ctx, rev, auth);
@@ -160,10 +339,7 @@ export async function runCapture(ctx: CaptureContext): Promise<RunResult> {
 		(output) => path.relative(ctx.outputDir, output),
 	);
 
-	writeMeta(
-		ctx.paths,
-		metaFromInfo(ctx.version, ctx.config.baseUrl, ctx.pages.length, rev),
-	);
+	writeMeta(ctx.paths, versionMeta(ctx, rev));
 	return result;
 }
 
@@ -185,8 +361,10 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 	const started = Date.now();
 	const { config } = ctx;
 	const scale = config.scaleFactor && config.scaleFactor > 0 ? config.scaleFactor : config.retina ? 2 : 1;
-	const resolver = new SourceResolver(ctx.paths.root);
-	const locator = new StyleLocator(ctx.paths.root, { rebuild: config.workarounds.turbopackPostcssMaps });
+	// Source maps and the files they name are read where they're served from; what's recorded is rehomed to the repository.
+	const servedRoot = ctx.servedRoot ?? ctx.paths.root;
+	const resolver = new SourceResolver(servedRoot);
+	const locator = new StyleLocator(servedRoot, { rebuild: config.workarounds.turbopackPostcssMaps });
 	const maps = new MapReport({ turbopack: locator.checker.turbopack, rebuild: config.workarounds.turbopackPostcssMaps });
 	const produced: string[] = [];
 	const missing: string[] = [];
@@ -194,18 +372,20 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 	const noStyles: string[] = [];
 	const carriedPages: string[] = [];
 	const redirects: string[] = [];
+	const buildErrors: string[] = [];
+	let retries = 0;
 	let elementCount = 0;
 	let queried = 0;
 	let planned = 0;
 
 	// Before capturing, so broken maps are known up front; sheets only other pages load are checked as they turn up.
-	if (ctx.pages.length > 0) maps.report(await probeStyleMaps(ctx.pages[0].url, auth, locator), "before capturing");
+	if (ctx.pages.length > 0) maps.report(ctx.rehome(await probeStyleMaps(ctx.pages[0].url, auth, locator)), "before capturing");
 
 	const { reference, why } = findReference(ctx.paths, ctx.version.key, rev);
 	if (reference) console.log(pc.dim(`  carrying over from ${reference.meta.key}`));
 	else console.log(pc.dim(`  capturing everything: ${why}`));
 	const slugs = ctx.pages.map((page) => page.filename.replace(/\.png$/i, ""));
-	const state = await StateSession.open(ctx.paths, config, ctx.version.key, rev, slugs, ctx.rerecord ?? null);
+	const state = await StateSession.open(ctx.paths, config, ctx.version.key, rev, slugs, ctx.rerecord ?? null, ctx.servedRoot);
 	if (state) {
 		const from = state.from ? `replaying recorded state from ${state.from}` : "recording state (no earlier Recording)";
 		console.log(pc.dim(`  ${state.names.join(", ")}: ${from}`));
@@ -261,6 +441,7 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 				const tree = assignDirs(ev.tree);
 				// React source locations, which also feed each element's identity.
 				const components = await resolveComponents(tree, resolver);
+				ctx.rehome([...components.values()]);
 				addComponents(tree, components);
 				const withSource = [...components.values()].filter((c) => c.source).length;
 				if (components.size > 0 && withSource === 0) noReactSource.push(slug);
@@ -288,7 +469,7 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 				queried += asked;
 				planned += plan.total;
 				if (ev.styles || asked === 0) {
-					const located = ev.styles ? await locator.rules(ev.styles) : { rules: [], checks: [] };
+					const located = ctx.rehome(ev.styles ? await locator.rules(ev.styles) : { rules: [], checks: [] });
 					if (ev.styles) maps.read(ev.styles.sheets.length);
 					maps.report(located.checks, `on ${ctx.pages[i].url}`);
 					const computed = computedByNode(tree, raw);
@@ -327,9 +508,15 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 				progress(i, asked < plan.total ? pc.dim(`(styles read for ${asked} of ${plan.total} elements)`) : "");
 				return;
 			}
+			case "retry":
+				retries++;
+				console.log(pc.dim(`  ${ctx.pages[i].url}: loading again (${ctx.rehomeText(ev.reason)})`));
+				return;
 			case "error":
-				missing.push(`${slug} (${ev.error})`);
-				progress(i, pc.red(`failed: ${ev.error}`));
+				const error = ctx.rehomeText(ev.error);
+				if (error.startsWith(BUILD_ERROR)) buildErrors.push(`${ctx.pages[i].pathAndQuery}: ${error.slice(BUILD_ERROR.length)}`);
+				missing.push(`${slug} (${error})`);
+				progress(i, pc.red(`failed: ${error}`));
 				return;
 		}
 	};
@@ -355,6 +542,16 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 	} catch (err) {
 		fs.rmSync(staging, { recursive: true, force: true });
 		throw err;
+	}
+	// A page that didn't build would only show the error: no Version is better than one of error pages.
+	if (buildErrors.length) {
+		fs.rmSync(staging, { recursive: true, force: true });
+		const log = ctx.serve.mode === "owned" ? `\nThe dev server's output is in ${path.relative(ctx.paths.root, serverLog(ctx.paths))}.` : "";
+		throw new ServerError(
+			`${buildErrors.length} page(s) showed the dev server's error overlay instead of the page, so no Version was written:\n` +
+				buildErrors.map((e) => `  ${e}`).join("\n") +
+				log,
+		);
 	}
 
 	if (state) {
@@ -393,12 +590,13 @@ async function runElementCapture(ctx: CaptureContext, rev: string | null, auth?:
 	const summary = [
 		carriedPages.length && `${carriedPages.length} page(s) carried over unchanged`,
 		redirects.length && `${redirects.length} redirect(s)`,
+		retries && `${retries} page load(s) repeated after the server dropped requests`,
 		planned && `styles read for ${queried} of ${planned} elements`,
 	].filter(Boolean);
 	console.log(pc.dim(`  ${[...summary, `${((Date.now() - started) / 1000).toFixed(1)}s`].join(" · ")}`));
 	const styleMaps = maps.all();
 	writeMeta(ctx.paths, {
-		...metaFromInfo(ctx.version, config.baseUrl, ctx.pages.length, rev),
+		...versionMeta(ctx, rev),
 		...(styleMaps.length ? { styleMaps } : {}),
 		...(state ? { state: state.identity } : {}),
 	});
@@ -458,6 +656,12 @@ class MapReport {
 	all(): SheetCheck[] {
 		return [...this.found.values()];
 	}
+}
+
+/** The Version's record of a capture. */
+function versionMeta(ctx: CaptureContext, rev: string | null): VersionMeta {
+	const meta = metaFromInfo(ctx.version, ctx.servedUrl, ctx.pages.length, rev, ctx.serve.mode);
+	return ctx.capturedAt ? { ...meta, capturedAt: ctx.capturedAt } : meta;
 }
 
 /** A cookie in a Playwright storage state (the auth file). */
@@ -644,17 +848,59 @@ function pageWait(ctx: CaptureContext, page: Page): Pick<PageJob, "wait" | "wait
 	return out;
 }
 
-export async function shoot(opts: ShootOptions): Promise<number> {
-	const ctx = await prepareCapture(opts);
-	await assertReachable(ctx.config.baseUrl);
-
-	console.log(pc.bold(`Shooting ${ctx.pages.length} pages`) + pc.dim(` → version ${ctx.version.key}`));
-	logSource(ctx);
-	if (ctx.version.dirty) {
-		console.log(pc.yellow("  working tree is dirty; stored under a -dirty key"));
+/**
+ * Run `fn` with the app served for the capture and the project's capture
+ * lock held, stopping the server however it ends. When the latest Version
+ * already holds this code, `fn` isn't run and that Version is returned.
+ */
+export async function withServedApp<T>(
+	opts: ShootOptions,
+	fn: (ctx: CaptureContext) => Promise<T>,
+	before?: (ctx: CaptureContext) => Promise<void> | void,
+): Promise<{ ctx: CaptureContext; result: T } | { ctx: CaptureContext; reused: VersionMeta }> {
+	const paths = resolvePaths(opts.root);
+	const release = await lockRuns(paths);
+	try {
+		// Prepared once the lock is held, so a run that waited captures the code as it is now.
+		const ctx = await prepareCapture(opts);
+		await before?.(ctx);
+		const reused = reuseUnchanged(ctx);
+		if (reused) return { ctx, reused };
+		const served = await serveApp(ctx);
+		try {
+			const result = await fn(ctx);
+			const failed = served.failure();
+			if (failed) throw new ServerError(failed);
+			return { ctx, result };
+		} finally {
+			await served.stop();
+		}
+	} finally {
+		release();
 	}
+}
 
-	const result = await runCapture(ctx);
+/** Say that a capture was skipped because the latest Version already holds the same code. */
+export function logReused(ctx: CaptureContext, reused: VersionMeta): void {
+	const copied = reused.key !== ctx.version.key ? `; stored as ${ctx.version.key} too` : "";
+	console.log(pc.cyan(`  No code changes since ${reused.key}, so it stands${copied}. Pass --force to capture again.`));
+}
+
+export async function shoot(opts: ShootOptions): Promise<number> {
+	const run = await withServedApp(opts, (ctx) => runCapture(ctx), (ctx) => {
+		const what = opts.at ? `Recapturing ${opts.at}` : `Shooting ${ctx.pages.length} pages`;
+		console.log(pc.bold(what) + pc.dim(` → version ${ctx.version.key}`));
+		logSource(ctx);
+		if (ctx.version.dirty && !opts.at) {
+			console.log(pc.yellow("  working tree is dirty; stored under a -dirty key"));
+		}
+	});
+	const { ctx } = run;
+	if ("reused" in run) {
+		logReused(ctx, run.reused);
+		return 0;
+	}
+	const { result } = run;
 
 	console.log("");
 	console.log(pc.green(`  ✓ ${result.produced.length} captured`));
@@ -681,23 +927,24 @@ export interface RerecordOptions extends ShootOptions {
  * against the new data. Produces no review of its own.
  */
 export async function rerecord(opts: RerecordOptions): Promise<number> {
-	const ctx = await prepareCapture({ ...opts, cheat: false });
-	if (!ctx.config.plugins.length) throw new Error("No state plugins are configured (`plugins` in tunnelvision.json), so there's nothing to re-record.");
-	if (!ctx.byElement) throw new Error("State plugins don't run with --only-pages yet.");
-	let pages: Set<string> | null = null;
-	if (opts.pages?.length) {
-		const byPath = new Map(ctx.pages.map((p) => [p.pathAndQuery, p.filename.replace(/\.png$/i, "")]));
-		const unknown = opts.pages.filter((p) => !byPath.has(p));
-		if (unknown.length) throw new Error(`No page at ${unknown.join(", ")}. Pages: ${[...byPath.keys()].join(", ")}`);
-		pages = new Set(opts.pages.map((p) => byPath.get(p)!));
-	}
-	const [plugin, ...rest] = opts.unit ? opts.unit.split(":") : [];
-	ctx.rerecord = { pages, plugin: plugin || null, text: rest.length ? rest.join(":") : null };
-	await assertReachable(ctx.config.baseUrl);
-	const what = [pages ? `${pages.size} page(s)` : "every page", plugin ? `${plugin} units${ctx.rerecord.text ? ` matching ${ctx.rerecord.text}` : ""}` : "all units"];
-	console.log(pc.bold(`Re-recording state: ${what.join(", ")}`) + pc.dim(` → version ${ctx.version.key}`));
-	logSource(ctx);
-	const result = await runCapture(ctx);
+	const run = await withServedApp({ ...opts, cheat: false, force: true }, (ctx) => runCapture(ctx), (ctx) => {
+		if (!ctx.config.plugins.length) throw new Error("No state plugins are configured (`plugins` in tunnelvision.json), so there's nothing to re-record.");
+		if (!ctx.byElement) throw new Error("State plugins don't run with --only-pages yet.");
+		let pages: Set<string> | null = null;
+		if (opts.pages?.length) {
+			const byPath = new Map(ctx.pages.map((p) => [p.pathAndQuery, p.filename.replace(/\.png$/i, "")]));
+			const unknown = opts.pages.filter((p) => !byPath.has(p));
+			if (unknown.length) throw new Error(`No page at ${unknown.join(", ")}. Pages: ${[...byPath.keys()].join(", ")}`);
+			pages = new Set(opts.pages.map((p) => byPath.get(p)!));
+		}
+		const [plugin, ...rest] = opts.unit ? opts.unit.split(":") : [];
+		ctx.rerecord = { pages, plugin: plugin || null, text: rest.length ? rest.join(":") : null };
+		const what = [pages ? `${pages.size} page(s)` : "every page", plugin ? `${plugin} units${ctx.rerecord.text ? ` matching ${ctx.rerecord.text}` : ""}` : "all units"];
+		console.log(pc.bold(`Re-recording state: ${what.join(", ")}`) + pc.dim(` → version ${ctx.version.key}`));
+		logSource(ctx);
+	});
+	if ("reused" in run) throw new Error("unreachable: a re-recording always captures");
+	const { ctx, result } = run;
 	console.log("");
 	console.log(pc.green(`  ✓ ${result.produced.length} captured`));
 	if (result.missing.length > 0) {

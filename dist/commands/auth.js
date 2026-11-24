@@ -9,11 +9,12 @@ export async function auth(opts) {
     const rel = opts.out ?? config.authFile;
     const outFile = path.isAbsolute(rel) ? rel : path.join(paths.root, rel);
     console.log(pc.bold("Opening a browser for you to log in…"));
-    console.log(pc.dim(`  target:  ${opts.url}`));
+    const url = opts.url ?? config.baseUrl;
+    console.log(pc.dim(`  target:  ${url}`));
     console.log(pc.dim(`  saving:  ${outFile}`));
     console.log(pc.dim("  Sign in, then press <enter> in this terminal to save the session."));
     try {
-        await saveAuth(opts.url, outFile);
+        await saveAuth(url, outFile);
     }
     catch (err) {
         console.error(pc.red(`Couldn't save the session: ${err.message}`));

@@ -64,6 +64,24 @@ _Avoid_: Cached element
 An opt-in way of capturing a Version in which a Page whose render fingerprint matches the previous Version's is carried over without being settled or screenshotted. A project uses it by default only once it has proven to find exactly the same visual changes and causes as the normal way.
 _Avoid_: Fast mode
 
+## Serving
+
+**Owned server**:
+The framework's dev server that tunnelvision starts itself for one capture, in development mode, serving the snapshot worktree on a port of its own, and stops when the capture ends. A Version records whether it was captured from one.
+_Avoid_: Preview server, build (it's a dev server, so React keeps JSX locations)
+
+**External server**:
+A server already running that a capture is pointed at instead of an owned server: the user's own dev server, when the project asks for one or tunnelvision can't start the app.
+_Avoid_: User server (the user's own dev server is also where `tunnelvision auth` logs in, whatever serves captures)
+
+**Snapshot worktree**:
+The git worktree at `.tunnelvision/worktree` that an owned server serves, checked out at the commit holding exactly the files a Version is captured from. It persists between captures, with its own dependencies and the framework's caches, so a capture only recompiles what changed.
+_Avoid_: Copy, sandbox, cache
+
+**Reused Version**:
+A Version a capture doesn't take again because the latest Version was taken from an owned server on exactly the same files and rendered alike; it stands for the new capture, copied under the new key when the key differs.
+_Avoid_: Cached Version, skipped capture
+
 ## State
 
 **State plugin**:

@@ -73,7 +73,7 @@ export function latestExcluding(paths, key) {
 export function versionExists(paths, key) {
     return fs.existsSync(versionDir(paths, key));
 }
-export function metaFromInfo(info, baseUrl, pageCount, rev) {
+export function metaFromInfo(info, baseUrl, pageCount, rev, server) {
     return {
         key: info.key,
         capturedAt: new Date().toISOString(),
@@ -84,7 +84,12 @@ export function metaFromInfo(info, baseUrl, pageCount, rev) {
         baseUrl,
         pageCount,
         renderer: currentRenderer(),
+        ...(server ? { server } : {}),
     };
+}
+/** Who served a Version's app (captures from before it was recorded were all of a running server). */
+export function serverModeOf(meta) {
+    return meta.server ?? "external";
 }
 /**
  * The revision a version's files can be read or diffed at: its snapshot, or

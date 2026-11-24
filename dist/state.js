@@ -87,7 +87,9 @@ export class StateSession {
         });
     }
     /** The session for a capture, or null when no plugins are configured. */
-    static async open(paths, config, key, rev, slugs, rerecord = null) {
+    static async open(paths, config, key, rev, slugs, rerecord = null, 
+    /** Where the served files are, when not the project root (an owned server's worktree). */
+    servedRoot) {
         if (!config.plugins.length)
             return null;
         const plugins = await loadPlugins(paths.root, config.plugins);
@@ -103,7 +105,7 @@ export class StateSession {
             code: changes ? { changes, mapper: new LineMapper(changes, prefix), prefix } : null,
             slugs,
             now: Date.now(),
-            root: paths.root,
+            root: servedRoot ?? paths.root,
             rerecord,
         });
     }

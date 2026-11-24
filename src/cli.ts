@@ -26,7 +26,8 @@ function num(v: string): number {
 /** Common capture/diff overrides shared by several commands. */
 function withCaptureOptions(cmd: Command): Command {
 	return cmd
-		.option("--base-url <url>", "override the base URL from config")
+		.option("--base-url <url>", "capture the server already running at this URL instead of starting tunnelvision's own")
+		.option("--force", "capture even when the code is the same as the latest version's")
 		.option("--width <px>", "viewport width", num)
 		.option("--height <px>", "viewport height", num)
 		.option("--wait <ms>", "milliseconds to wait before each capture", num)
@@ -91,11 +92,16 @@ program
 	);
 
 withCaptureOptions(
-	program.command("shoot").description("Capture screenshots of every page for the current version"),
+	program
+		.command("shoot")
+		.description("Capture screenshots of every page for the current version")
+		.option("--at <version>", "recapture an existing version, at the files it was captured from, with tunnelvision's own dev server"),
 ).action((opts) =>
 	run(() =>
 		shoot({
 			root: ROOT,
+			force: opts.force,
+			at: opts.at,
 			baseUrl: opts.baseUrl,
 			width: opts.width,
 			height: opts.height,
@@ -162,11 +168,15 @@ withDiffOptions(
 withDiffOptions(
 	withCaptureOptions(
 		program.command("review").description("Capture the current version, then diff it against the previous"),
-	).option("--notify", "send a desktop notification when done, with buttons to open the result"),
+	)
+		.option("--notify", "send a desktop notification when done, with buttons to open the result")
+		.option("--rebaseline", "first recapture a baseline taken from a running server with tunnelvision's own dev server"),
 ).action((opts) =>
 	run(() =>
 		review({
 			root: ROOT,
+			force: opts.force,
+			rebaseline: opts.rebaseline,
 			baseUrl: opts.baseUrl,
 			width: opts.width,
 			height: opts.height,
@@ -191,7 +201,7 @@ withDiffOptions(
 program
 	.command("fingerprint")
 	.description("Load every page several times and check its render fingerprint never changes (needed for cheat mode)")
-	.option("--base-url <url>", "override the base URL from config")
+	.option("--base-url <url>", "fingerprint the server already running at this URL instead of starting tunnelvision's own")
 	.option("--auth <file>", "path to a saved login session (from `tunnelvision auth`)")
 	.option("--concurrency <n>", "pages loaded at once", num)
 	.option("--runs <n>", "loads of every page to compare", num, 2)
@@ -222,8 +232,8 @@ program
 
 program
 	.command("auth")
-	.description("Log in via a browser and save an auth context for authenticated screenshots")
-	.argument("<url>", "the login URL to open")
+	.description("Log in via a browser on your own dev server and save the session for authenticated screenshots")
+	.argument("[url]", "the login URL to open, on your running dev server (default: baseUrl); captures carry the session over to tunnelvision's")
 	.option("--out <file>", "where to save the auth context (defaults to config.authFile)")
 	.action((url, opts) => run(() => auth({ root: ROOT, url, out: opts.out })));
 

@@ -28,7 +28,7 @@ export async function init(opts) {
         const answer = await prompts({
             type: "text",
             name: "baseUrl",
-            message: "Base URL where your app is served",
+            message: "URL of your own dev server (where you log in; tunnelvision starts its own to capture)",
             initial: DEFAULT_CONFIG.baseUrl,
         });
         if (answer.baseUrl === undefined) {
@@ -46,6 +46,6 @@ export async function init(opts) {
     console.log(pc.dim(`  .gitignore ${changed ? "updated" : "already covers .tunnelvision/"}`));
     console.log("");
     console.log(pc.dim(`Commit ${path.relative(opts.root, paths.config)}: it holds the settings the whole team shares.`));
-    console.log(pc.dim("Next: start your app, then run `tunnelvision shoot` (or `review`)."));
+    console.log(pc.dim("Next: run `tunnelvision review`. It starts your app's dev server itself, on a snapshot of your code."));
     return 0;
 }

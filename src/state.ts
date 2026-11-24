@@ -213,6 +213,8 @@ export class StateSession {
 		rev: string | null,
 		slugs: string[],
 		rerecord: Rerecord | null = null,
+		/** Where the served files are, when not the project root (an owned server's worktree). */
+		servedRoot?: string,
 	): Promise<StateSession | null> {
 		if (!config.plugins.length) return null;
 		const plugins = await loadPlugins(paths.root, config.plugins);
@@ -228,7 +230,7 @@ export class StateSession {
 			code: changes ? { changes, mapper: new LineMapper(changes, prefix), prefix } : null,
 			slugs,
 			now: Date.now(),
-			root: paths.root,
+			root: servedRoot ?? paths.root,
 			rerecord,
 		});
 	}

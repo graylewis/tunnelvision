@@ -43,6 +43,54 @@ export function pageFunction(js) {
 function evaluate(page, js, arg) {
     return page.evaluate(pageFunction(js), arg);
 }
+/** Requests whose failure changes what a page renders. */
+const RENDER_TYPES = new Set(["document", "stylesheet", "script", "font", "image"]);
+/**
+ * A page load the server dropped requests from (connection resets, 5xx on a
+ * stylesheet or script): capturing it would record a page missing its styles
+ * or scripts, a visual change that isn't in the code. It's loaded again.
+ */
+export class DroppedLoad extends Error {
+    requests;
+    constructor(requests) {
+        super(`the server dropped ${requests.length} request(s) the page needs, e.g. ${requests[0]}`);
+        this.requests = requests;
+    }
+}
+/**
+ * Times a page is loaded before a dropped load counts as its failure, a
+ * second longer apart each time. Vite answers 504 for its prebundled
+ * dependencies while it re-optimizes them (a fresh cache discovering imports
+ * page by page) and reloads the page after, which can take several seconds.
+ */
+const LOAD_ATTEMPTS = 5;
+/** Whether a failed load is the server's momentary trouble rather than the page's, and worth loading again. */
+function transient(err) {
+    if (err instanceof DroppedLoad)
+        return true;
+    return /net::ERR_(CONNECTION_RESET|CONNECTION_REFUSED|CONNECTION_CLOSED|EMPTY_RESPONSE|SOCKET_NOT_CONNECTED)/.test(String(err?.message ?? err));
+}
+/** Starts the error a page reports when the dev server showed its error overlay instead of the page. */
+export const BUILD_ERROR = "build error: ";
+/**
+ * The dev server's error overlay, if it's showing one, as its first line:
+ * Vite's and Astro's (`<vite-error-overlay>`), or Next.js's error dialog
+ * (inside `<nextjs-portal>`, which opens on its own for a build error).
+ */
+export const ERROR_OVERLAY_JS = `() => {
+	const first = (text, fallback) => (text || "").trim().split("\\n").find((l) => l.trim()) || fallback;
+	const vite = document.querySelector("vite-error-overlay");
+	if (vite) {
+		const root = vite.shadowRoot || vite;
+		return "Vite/Astro: " + first(root.querySelector(".message-body, .message, pre")?.textContent, "error overlay");
+	}
+	const next = document.querySelector("nextjs-portal")?.shadowRoot;
+	if (next && next.querySelector("[data-nextjs-dialog], [data-nextjs-dialog-overlay]")) {
+		const label = next.querySelector("[data-nextjs-dialog-header], #nextjs__container_errors_label, #nextjs__container_errors_desc, h1, h2");
+		return "Next.js: " + first(label?.textContent || next.querySelector("[data-nextjs-dialog]")?.textContent, "error dialog");
+	}
+	return null;
+}`;
 /** Plain data, as it was when it crossed the old driver's JSON pipe: `undefined` becomes `null`. */
 function plain(value) {
     return JSON.parse(JSON.stringify(value, (_k, v) => (v === undefined ? null : v)));
@@ -336,7 +384,16 @@ async function openPage(browser, opts, index, job, ask, tell) {
         await opts.hooks?.beforeLoad?.(index, page);
         const bodies = new Map();
         const pending = [];
+        // What the page needed to render and didn't get: an overloaded server resets connections or errors.
+        const dropped = [];
+        page.on("requestfailed", (req) => {
+            const why = req.failure()?.errorText ?? "failed";
+            if (RENDER_TYPES.has(req.resourceType()) && !/ERR_ABORTED|ERR_BLOCKED/.test(why))
+                dropped.push(`${req.url()} (${why})`);
+        });
         page.on("response", (res) => {
+            if (res.status() >= 500 && RENDER_TYPES.has(res.request().resourceType()))
+                dropped.push(`${res.url()} (${res.status()})`);
             pending.push((async () => {
                 try {
                     const kind = res.request().resourceType();
@@ -372,7 +429,13 @@ async function openPage(browser, opts, index, job, ask, tell) {
         await page.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => { });
         if (job.wait)
             await page.waitForTimeout(job.wait);
+        if (dropped.length)
+            throw new DroppedLoad(dropped);
         await evaluate(page, HYDRATE_JS);
+        // Before the dev overlays are hidden (see `stabilize.ts`): an error overlay means the page didn't build.
+        const broken = await evaluate(page, ERROR_OVERLAY_JS);
+        if (broken)
+            throw new Error(`${BUILD_ERROR}${broken}`);
         await opts.hooks?.hydrated?.(index, page);
         await Promise.all([...pending]);
         const { fp, dom, resources } = await fingerprint(context, page, opts, bodies);
@@ -463,7 +526,19 @@ export async function runDriver(pages, opts, onEvent) {
     try {
         await Promise.all(pages.map(async (job, index) => {
             try {
-                const opened = await load.use(() => openPage(browser, opts, index, job, ask, tell));
+                const opened = await load.use(async () => {
+                    for (let attempt = 1;; attempt++) {
+                        try {
+                            return await openPage(browser, opts, index, job, ask, tell);
+                        }
+                        catch (err) {
+                            if (attempt >= LOAD_ATTEMPTS || !transient(err))
+                                throw err;
+                            tell({ index, event: "retry", attempt, reason: String(err.message ?? err).split("\n")[0] });
+                            await new Promise((r) => setTimeout(r, 1000 * attempt));
+                        }
+                    }
+                });
                 if (!opened)
                     return;
                 try {
@@ -488,6 +563,50 @@ export async function runDriver(pages, opts, onEvent) {
     await Promise.all(handling);
     if (failed)
         throw failed;
+}
+/**
+ * Load every page in the browser without capturing it, until a round of
+ * loads finds the server dropping nothing (at most `rounds`). A dev server
+ * that compiles client code on demand, and Vite's dependency optimizer in
+ * particular, only settles once a browser has asked for everything: with a
+ * fresh cache it answers 504 and reloads pages while it re-optimizes. Returns
+ * the requests dropped in each round.
+ */
+export async function primePages(urls, opts) {
+    const browser = await launch();
+    const dropped = [];
+    try {
+        const slots = new Semaphore(Math.max(1, opts.concurrency));
+        for (let round = 0; round < (opts.rounds ?? 3); round++) {
+            let count = 0;
+            await Promise.all(urls.map((url) => slots.use(async () => {
+                const context = await browser.newContext({ storageState: opts.authFile || undefined });
+                try {
+                    const page = await context.newPage();
+                    page.on("requestfailed", (req) => {
+                        if (RENDER_TYPES.has(req.resourceType()) && !/ERR_ABORTED|ERR_BLOCKED/.test(req.failure()?.errorText ?? ""))
+                            count++;
+                    });
+                    page.on("response", (res) => {
+                        if (res.status() >= 500 && RENDER_TYPES.has(res.request().resourceType()))
+                            count++;
+                    });
+                    await page.goto(url, { timeout: 120_000 }).catch(() => count++);
+                    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => { });
+                }
+                finally {
+                    await context.close();
+                }
+            })));
+            dropped.push(count);
+            if (count === 0)
+                break;
+        }
+    }
+    finally {
+        await browser.close();
+    }
+    return dropped;
 }
 /**
  * One viewport screenshot per page, for `--only-pages`. Pages load one at a
@@ -548,7 +667,8 @@ export async function saveAuth(url, outFile) {
         const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
         await rl.question("Hit <enter> after you have signed in: ");
         rl.close();
-        const state = await context.storageState();
+        // IndexedDB too: some auth libraries (Firebase) keep the session there rather than in cookies or local storage.
+        const state = await context.storageState({ indexedDB: true });
         fs.mkdirSync(path.dirname(outFile), { recursive: true });
         fs.writeFileSync(outFile, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
         fs.chmodSync(outFile, 0o600);

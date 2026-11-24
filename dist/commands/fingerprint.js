@@ -7,7 +7,7 @@ import { extractScript } from "../elements.js";
 import { fingerprintScript, VISUAL_ATTRIBUTES } from "../fingerprint.js";
 import { runDriver } from "../playwright.js";
 import { StateSession } from "../state.js";
-import { captureRev, prepareCapture } from "./shoot.js";
+import { captureRev, withServedApp } from "./shoot.js";
 /** Compare the fingerprints of loads of one page, and say what differed. */
 export function compareSamples(samples) {
     if (samples.every((s) => s.fingerprint === samples[0].fingerprint))
@@ -59,12 +59,18 @@ export function compareSamples(samples) {
  * fingerprint (`--save`), the rest needs a look.
  */
 export async function fingerprint(opts) {
-    const ctx = await prepareCapture({ ...opts, cheat: false });
+    // Fingerprinted on the server captures use, so it's the same pages cheat mode will see.
+    const run = await withServedApp({ ...opts, cheat: false, force: true }, (ctx) => fingerprintPages(opts, ctx));
+    if ("reused" in run)
+        throw new Error("unreachable: fingerprinting always loads the pages");
+    return run.result;
+}
+async function fingerprintPages(opts, ctx) {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "tunnelvision-fingerprint-"));
-    const auth = path.isAbsolute(ctx.config.authFile) ? ctx.config.authFile : path.join(ctx.paths.root, ctx.config.authFile);
+    const auth = ctx.auth;
     // Replay recorded state, as a capture would: live data varies from load to load.
     const slugs = ctx.pages.map((page) => page.filename.replace(/\.png$/i, ""));
-    const state = await StateSession.open(ctx.paths, ctx.config, ctx.version.key, captureRev(ctx), slugs);
+    const state = await StateSession.open(ctx.paths, ctx.config, ctx.version.key, ctx.rev !== undefined ? ctx.rev : captureRev(ctx), slugs, null, ctx.servedRoot);
     try {
         for (let round = 0; round < 3; round++) {
             const config = round === 0 ? ctx.config : loadConfig(ctx.paths);
@@ -74,7 +80,7 @@ export async function fingerprint(opts) {
                 await runDriver(ctx.pages.map((page, i) => ({ url: page.url, output: path.join(scratch, `${i}.png`), stabilizeJs: "" })), {
                     viewport: config.viewport,
                     scaleFactor: 1,
-                    authFile: fs.existsSync(auth) ? auth : undefined,
+                    authFile: auth,
                     concurrency: Math.max(1, Math.floor(config.concurrency)),
                     extractJs: extractScript([], []),
                     fingerprintJs: fingerprintScript(config.cheatMode.ignoreAttributes),

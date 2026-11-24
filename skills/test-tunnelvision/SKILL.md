@@ -19,7 +19,7 @@ Stop and say what's missing rather than working around it:
 
 - `tunnelvision.json` exists at the project root (else `/setup-tunnelvision`).
 - `tunnelvision doctor` shows `playwright chromium` ✓.
-- The app answers at `baseUrl` from the config (`curl -sI`). It must be the **dev server with hot reload**, not a production build, or the planted changes won't be served.
+- `tunnelvision doctor` shows how the app is served. With `✓ dev server`, tunnelvision starts its own on each commit's snapshot, so nothing needs to be running. With `! dev server` (capturing the server at `baseUrl`), the app must answer there (`curl -sI`) and be the **dev server with hot reload**, not a production build, or the planted changes won't be served.
 - `git status --porcelain` is empty. Ask the user to commit or stash; don't stash for them.
 - Note the current branch (or detached SHA) — you'll return to it.
 
@@ -32,9 +32,11 @@ Read `.tunnelvision/versions/*/meta.json` and pick the **baseline**: the Version
 ```sh
 git checkout -b tunnelvision-test/<short-sha>
 git commit --allow-empty -m "tunnelvision test: noise floor"
-tunnelvision shoot --no-cheat
+tunnelvision shoot --no-cheat --force
 tunnelvision diff <baseline> <noise-key>
 ```
+
+`--force` because the empty commit has the same files as the baseline: without it, tunnelvision's own dev server would reuse the baseline instead of capturing again, and there'd be no noise to see.
 
 `--no-cheat` makes every capture here a normal one even when cheat mode is the project's default: in cheat mode a page whose render fingerprint is unchanged is carried over rather than captured again, which would hide the noise this step looks for, and the test would grade cheat mode instead of the capture itself (`/setup-tunnelvision` checks cheat mode separately).
 
@@ -67,7 +69,7 @@ Write the plan **before capturing** as a manifest at `.tunnelvision/test-manifes
 
 Commit: `git commit -am "tunnelvision test: planted visual changes"`.
 
-Confirm the dev server picked the commit up before capturing. Vite dev serves sources, so `curl -s <baseUrl>/src/styles.css | grep -c '<new value>'` (adjust the path) settles it; for other servers, fetch a page and look for the changed copy, or check the server log for a rebuild. If nothing confirms it and the server is a preview/production build, stop and ask.
+With tunnelvision's own dev server there's nothing to confirm: it serves the commit. With a running server, confirm it picked the commit up before capturing. Vite dev serves sources, so `curl -s <baseUrl>/src/styles.css | grep -c '<new value>'` (adjust the path) settles it; for other servers, fetch a page and look for the changed copy, or check the server log for a rebuild. If nothing confirms it and the server is a preview/production build, stop and ask.
 
 ## 4. Capture and diff
 

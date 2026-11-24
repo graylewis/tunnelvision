@@ -92,10 +92,10 @@ under `.tunnelvision/`, keyed by the git commit they were taken at.
 
 Tracing visual changes back to the lines that caused them works best when your app provides both of the following:
 
-- **React 19+ in a development build.** React 19 records where each element's
-  JSX was written, which tunnelvision uses to find its `file:line`. React 18
-  and earlier, and production builds, only give component names. See
-  [React source locations](#react-source-locations).
+- **React 19+.** React 19 records where each element's JSX was written in a
+  development build, which tunnelvision uses to find its `file:line`. React 18
+  and earlier only give component names. The dev server tunnelvision starts is
+  always a development build. See [React source locations](#react-source-locations).
 - **CSS source maps enabled.** These map each style rule back to the line of
   source that wrote it. Plain CSS served unchanged doesn't need them, but
   PostCSS, Tailwind, Sass and CSS-in-JS do. With Vite, set
@@ -116,9 +116,8 @@ npm install --save-dev tunnelvision   # or -g for global
 ## Quick start
 
 ```bash
-tunnelvision init            # prompts for your base URL, writes tunnelvision.json (commit it)
-# start your app so it's serving at the base URL, then:
-tunnelvision review          # first run captures a baseline
+tunnelvision init            # prompts for your dev server's URL, writes tunnelvision.json (commit it)
+tunnelvision review          # starts your app's dev server itself; the first run captures a baseline
 # make a change, commit, then:
 tunnelvision review          # captures again and shows a visual diff
 ```
@@ -187,14 +186,78 @@ Not supported: a framework app in a subfolder of the directory tunnelvision
 runs in (a monorepo's `apps/web`), and Next's `basePath`, Astro's `base` and
 i18n prefixes. If you use a base path, put it in `baseUrl`.
 
+## How your app is served
+
+tunnelvision starts your app's dev server itself for each capture, and stops
+it when the capture ends ([ADR 0016](docs/adr/0016-tunnelvision-owns-the-dev-server.md)).
+You don't need your own dev server running, and editing files, hot reloads or a
+busy server don't change what's captured.
+
+- **A snapshot of your code.** The server runs in a git worktree at
+  `.tunnelvision/worktree`, brought to the commit tunnelvision already makes
+  for every Version (your uncommitted changes included). Each page in a Version
+  comes from exactly the files it's keyed to. The worktree stays between
+  captures, so the framework's caches (`.next`, Vite's prebundled
+  dependencies) stay warm. The server starts on the files its caches were
+  built from, and the files that changed are rewritten under it while it runs,
+  as your editor's saves are, so it recompiles them (Turbopack's persistent
+  cache otherwise keeps serving the old compile).
+- **Its own dependencies.** The worktree gets its own `node_modules`, installed
+  with your package manager, and installed again only when the lockfile or
+  `package.json` changes. A `file:` dependency pointing outside the
+  repository won't resolve from there.
+- **Ignored files it needs.** `.env*` files are copied in. Add globs for
+  anything else git ignores that the app needs to run, such as generated
+  clients, to `server.copyIgnored`.
+- **Development mode.** It's the framework's own dev server (`next dev`, `vite`,
+  `astro dev`), so React records JSX locations. tunnelvision follows your `dev`
+  script when it just runs the framework (so `next dev --turbopack` stays
+  Turbopack), without its port. Set `server.command` for anything else, with
+  `{port}` and `{host}` where they go.
+- **A port of its own**, derived from the project's path (41000–41999) and the
+  same every run, or `server.port`.
+- **Every page compiled at once.** Every page is requested once, in parallel,
+  before the browser visits any of them (following redirects only on its own
+  origin, so a hosted login page isn't hit twice).
+- **Cold caches are primed.** After a fresh install, every page is loaded in
+  the browser once before capturing, and the server is restarted if it's still
+  dropping requests (Vite's dependency optimizer, with an empty cache), so the
+  first capture isn't hit by reloads.
+- **Dropped requests mean a reload.** A page whose stylesheet, script, font or
+  image the server dropped (a reset connection, a 5xx) is loaded again, up to
+  five times, rather than captured without it. This applies to a running server
+  too.
+- **Broken builds fail the run.** A page that answers 5xx, or that shows the dev
+  server's error overlay, stops the capture and prints the end of
+  `.tunnelvision/server.log`. No Version is written.
+- **Unchanged code isn't captured twice.** When the latest Version came from
+  tunnelvision's server on exactly the same files, it stands for the new
+  capture (copied under the new key, after a commit). `--force` captures
+  anyway.
+- **One capture at a time.** Captures in the same project wait for each other.
+  A waiting one snapshots your files only when its turn comes, so a burst of
+  reviews captures just the newest code.
+
+To capture a server that's already running instead, set `server.external`
+(`true` for `baseUrl`, or a URL), or pass `--base-url`. Projects tunnelvision
+can't start (not Next.js, Vite or Astro, no `server.command`, or not in git)
+fall back to `baseUrl`, and `tunnelvision doctor` says which applies.
+
+Each Version records how it was served. A diff between one from a running
+server and one from tunnelvision's warns that the switch itself can show as
+changes. `review` offers to recapture the baseline the new way first
+(`--rebaseline` does it without asking), and `tunnelvision shoot --at <key>`
+recaptures any Version whose files were kept.
+
 ## How it works
 
 - **Page discovery** — Next.js and Astro projects' pages come from their
   file-based routes; everything else's from the one `sitemap*.xml`. See
   [Where pages come from](#where-pages-come-from).
-- **Target URLs** — takes the *path* of each route or `<loc>` and prepends your
-  configured `baseUrl` (default `http://localhost:3000`), so you screenshot local
-  dev regardless of the host in the sitemap.
+- **Target URLs** — takes the *path* of each route or `<loc>` and prepends the
+  origin of the dev server tunnelvision started (or `baseUrl`, default
+  `http://localhost:3000`, for a running server), so you screenshot local dev
+  regardless of the host in the sitemap.
 - **Versioning** — each capture is stored under `.tunnelvision/versions/<key>/`.
   The key is the short git SHA of `HEAD` (suffixed `-dirty` when the working tree
   has uncommitted changes), or a timestamp when you're not in a git repo.
@@ -221,12 +284,12 @@ i18n prefixes. If you use a base path, put it in `baseUrl`.
 | Command | What it does |
 | --- | --- |
 | `tunnelvision init` | Write `tunnelvision.json` at the project root (commit it) and add `.tunnelvision/` to `.gitignore`. Moves a config from the old `.tunnelvision/config.json` location if it finds one. |
-| `tunnelvision shoot` | Capture screenshots of every page for the current version. |
+| `tunnelvision shoot` | Capture screenshots of every page for the current version. `--at <key>` recaptures an existing version, at its files, with tunnelvision's own dev server. |
 | `tunnelvision diff [from] [to]` | Diff two versions. Defaults to current-vs-previous. |
-| `tunnelvision review` | Capture the current version, then diff it against the previous one. |
+| `tunnelvision review` | Capture the current version, then diff it against the previous one. `--rebaseline` first recaptures a baseline taken from a running server. |
 | `tunnelvision rerecord` | Re-capture the current version with state plugins' data taken afresh instead of replayed (`--page <path>`, `--unit <plugin[:text]>`). See [State plugins](#state-plugins). |
-| `tunnelvision auth <url>` | Log in via a browser and save an auth context for authenticated screenshots. |
-| `tunnelvision doctor` | Check Playwright's Chromium, git, config, the post-commit hook and pages (Next.js routes or sitemap). |
+| `tunnelvision auth [url]` | Log in via a browser on your own dev server and save the session for authenticated screenshots. |
+| `tunnelvision doctor` | Check Playwright's Chromium, config, how the app will be served, git, the post-commit hook and pages (Next.js routes or sitemap). |
 | `tunnelvision clean` | Prune versions (`--keep <n>`), diffs (`--diffs`), or everything (`--all`). |
 | `tunnelvision install-hook` | Install an opt-in git `post-commit` hook that runs `review` in the background and notifies you when it's done (see below). |
 | `tunnelvision skills` | Install the agent skills (`/setup-tunnelvision`, `/test-tunnelvision`) into `.agents/skills/`, linked from `.claude/skills/`. |
@@ -240,7 +303,8 @@ i18n prefixes. If you use a base path, put it in `baseUrl`.
 `shoot`, `review` and `diff` accept overrides that beat config values:
 
 ```
---base-url <url>        override the base URL
+--base-url <url>        capture the server already running at this URL instead of starting one
+--force                 capture even when the code is the same as the latest version's
 --width <px> --height <px>   viewport size
 --wait <ms>             wait before each capture
 --settle <ms>           let animations finish after the scroll pass (default 500)
@@ -596,8 +660,10 @@ Swift (`xcode-select --install`), and on Linux (`notify-send`), notifications
 have no buttons. Run `install-hook` again to update a hook installed by an
 older version.
 
-The review captures whatever your app is serving when it runs, so let it finish
-before editing files the app serves, or the capture may include those edits.
+The review captures a snapshot of the commit, so you can keep editing while it
+runs. Reviews of quick successive commits wait for each other. (With
+`server.external`, it captures whatever that server is serving, so let it
+finish before editing files the app serves.)
 
 ## Speed: carry-over and cheat mode
 
@@ -702,10 +768,19 @@ the components that rendered it, linked to the PR's head) along with **before
 ## Authenticated apps
 
 ```bash
-tunnelvision auth https://your-app.test/login
+# with your own dev server running at baseUrl:
+tunnelvision auth            # opens baseUrl; or pass the login URL: tunnelvision auth http://localhost:3000/login
 # sign in in the browser, press <enter> in the terminal
 tunnelvision shoot   # auth.json is used automatically if present
 ```
+
+Log in on your own dev server, where OAuth callbacks already point. Captures
+carry the session over to the server tunnelvision starts. Cookies apply to a
+host whatever its port, so they carry over as they are. Local storage and
+IndexedDB belong to an origin, which includes the port, so they're moved from
+`baseUrl`'s origin to the capture server's
+(`.tunnelvision/server/auth.json`). A session kept only in your dev server's
+memory doesn't carry over.
 
 The auth context (`.tunnelvision/auth.json`) holds live session cookies and is
 git-ignored.
@@ -721,6 +796,7 @@ it to the root.
 ```json
 {
   "baseUrl": "http://localhost:3000",
+  "server": { "copyIgnored": ["src/generated/**"] },
   "viewport": { "width": 1280, "height": 800 },
   "wait": 1000,
   "settle": 500,
@@ -742,6 +818,12 @@ it to the root.
   }
 }
 ```
+
+`baseUrl` is your own dev server: where `tunnelvision auth` logs in, and what's
+captured with `server.external`. `server` sets how tunnelvision serves the app
+for captures (see [How your app is served](#how-your-app-is-served)):
+`command` (with `{port}` and `{host}`), `port`, `copyIgnored`, `startTimeout`
+(milliseconds, default 120000) and `external` (`true` or a URL).
 
 `match` controls how per-element diffs pair elements between versions (see
 [How elements are matched](#how-elements-are-matched-between-versions)).
@@ -791,8 +873,10 @@ Precedence: **CLI flags > `tunnelvision.json` > built-in defaults**.
 
 `diff` and `review` exit non-zero when any page changed (or was added/removed),
 so they fail a build on unexpected visual changes. Use `--report results.json`
-for structured output. tunnelvision assumes your app is already served at the
-base URL and fails fast if it can't be reached.
+for structured output. tunnelvision starts the app's dev server itself, so CI
+needs the project's dependencies installable and any env files it needs in
+place. With `server.external`, it captures the app already served at the base
+URL and fails fast if it can't be reached.
 
 ## Layout
 
@@ -800,6 +884,10 @@ base URL and fails fast if it can't be reached.
 tunnelvision.json                   # committed config
 .tunnelvision/                      # git-ignored
   auth.json                         # secret
+  worktree/                         # the snapshot tunnelvision's dev server serves (with its own node_modules)
+  server/                           # the worktree's install record, copied files and rehosted auth.json (secret)
+  server.log                        # output of the last dev server tunnelvision started
+  review.lock                       # held while a capture runs
   versions/<key>/<page>/            # page.png, elements.json, styles.json, capture.json (settings + render fingerprint)
   versions/<key>/<page>/redirect.json   # instead, for a page that lands on another page
   versions/.<key>.<pid>/            # a capture still being written; swapped in when it's done
